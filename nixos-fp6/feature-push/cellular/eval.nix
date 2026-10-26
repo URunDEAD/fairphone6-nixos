@@ -31,4 +31,21 @@ in {
   account = on.systemd.user.services.fp6-ofono-account.serviceConfig.ExecStart;
   userGroups = on.users.users.user.extraGroups;
   writableRmtfsRejected = failed rw;
+  agps = {
+    enabled = on.services.fp6Agps.enable;
+    networkLocationDefault = on.services.fp6Agps.networkLocation.enable;
+    geoclueWifi = on.services.geoclue2.enableWifi;
+    serveBindsTo = on.systemd.services.fp6-agps.bindsTo;
+    serveWantedBy = on.systemd.services.fp6-agps.wantedBy;
+    serveFamilies = on.systemd.services.fp6-agps.serviceConfig.RestrictAddressFamilies;
+    timer = on.systemd.timers.fp6-agps-xtra.timerConfig;
+    gnssStateDir = on.systemd.services.fp6-gnss-nmea.serviceConfig.StateDirectory;
+  };
+  agpsNetworkOptIn = let c = evaluate { services.fp6Agps.networkLocation.enable = true; services.fp6Agps.lastFix = false; }; in {
+    geoclueWifi = c.services.geoclue2.enableWifi;
+    url = c.services.geoclue2.geoProviderUrl;
+    serveFamilies = c.systemd.services.fp6-agps.serviceConfig.RestrictAddressFamilies;
+    gnss = c.systemd.services.fp6-gnss-nmea.serviceConfig.ExecStart;
+    tmpfiles = c.systemd.tmpfiles.rules;
+  };
 }

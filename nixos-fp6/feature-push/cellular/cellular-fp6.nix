@@ -49,6 +49,7 @@ in {
     ../../mms-fp6.nix                  # nuntium user service
     ../../telephony-frontends-fp6.nix  # Lomiri dialer / messaging / contacts
     ./messaging-fp6.nix                # SMS notifications + telepathy-ofono SQLite
+    ./agps/agps-fp6.nix                # assisted GPS (XTRA / time / coarse position)
   ];
 
   options.services.fp6Cellular = {
@@ -97,6 +98,11 @@ in {
       userUID = lib.mkOption {
         type = lib.types.str;
         default = "10000";
+      };
+      fixCache = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "fp6-loc-nmea --fix-cache: file for the last fix, rounded to ~5 km (set by services.fp6Agps.lastFix).";
       };
     };
   };
@@ -326,7 +332,7 @@ in {
           Group = "geoclue";
           RuntimeDirectory = "fp6-gnss";
           RuntimeDirectoryMode = "0750";
-          ExecStart = "${lib.getExe pkgs.socat} UNIX-LISTEN:/run/fp6-gnss/nmea.sock,fork,unlink-early,mode=0660 EXEC:${lib.getExe fp6.fp6-loc-nmea}";
+          ExecStart = "${lib.getExe pkgs.socat} UNIX-LISTEN:/run/fp6-gnss/nmea.sock,fork,unlink-early,mode=0660 \"EXEC:${lib.getExe fp6.fp6-loc-nmea}${lib.optionalString (cfg.gnss.fixCache != null) " --fix-cache ${cfg.gnss.fixCache}"}\"";
           Restart = "on-failure";
           RestartSec = 5;
           SuccessExitStatus = [ 143 ];   # socat on SIGTERM (toggle off)

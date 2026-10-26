@@ -15,6 +15,10 @@ indications (Get/SetNmeaTypes = NotSupported). So this client:
      powers down when GeoClue (or the user's location toggle) stops it.
 It sends no other LOC request (no engine lock / NMEA types / assistance /
 operation-mode change) and logs nothing position-related to the journal.
+Assistance (XTRA, time, coarse position) is injected by fp6-agps; with
+--fix-cache PATH this client only feeds it: at most every 5 minutes it
+stores a good fix (horizontal uncertainty <= 500 m) ROUNDED to a 0.05 degree
+grid (~5 km) plus its time, mode 0600, for the next start's coarse position.
 """
 import os
 import select
@@ -125,11 +129,27 @@ def ddmm(v, lat):
     return (f"{deg:02d}{minutes:07.4f}" if lat else f"{deg:03d}{minutes:07.4f}"), hemi
 
 
+FIX_GRID = 0.05        # degrees; the cache never holds a precise position
+FIX_CACHE_EVERY = 300  # seconds
+
+
+def store_fix(path, lat, lon):
+    rnd = lambda v: round(round(v / FIX_GRID) * FIX_GRID, 2)
+    body = f'{{"lat": {rnd(lat)}, "lon": {rnd(lon)}, "t": {int(time.time())}, "grid": {FIX_GRID}}}\n'
+    tmp = path + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(body)
+    os.replace(tmp, path)
+
+
 class Nmea:
-    def __init__(self, out):
+    def __init__(self, out, fix_cache=None):
         self.out = out
         self.tracked = 0
         self.svs = []
+        self.fix_cache = fix_cache
+        self.cached_at = 0
 
     def write(self, s):
         self.out.write(s)
@@ -180,6 +200,13 @@ class Nmea:
             return
         lat = struct.unpack("<d", tl[0x10])[0]
         lon = struct.unpack("<d", tl[0x11])[0]
+        unc = struct.unpack("<f", tl[0x12])[0] if 0x12 in tl else 1e9
+        if self.fix_cache and unc <= 500 and time.time() - self.cached_at >= FIX_CACHE_EVERY:
+            self.cached_at = time.time()
+            try:
+                store_fix(self.fix_cache, lat, lon)
+            except OSError as e:
+                log(f"cannot store the coarse fix: {e.strerror}")
         la, ns = ddmm(lat, True)
         lo, ew = ddmm(lon, False)
         alt = struct.unpack("<f", tl[0x1B])[0] if 0x1B in tl else None
@@ -200,9 +227,12 @@ class Nmea:
 def main():
     # --no-stdin: manual/diagnostic runs (stdin EOF does not end the session)
     watch_stdin = "--no-stdin" not in sys.argv
+    fix_cache = None
+    if "--fix-cache" in sys.argv:
+        fix_cache = sys.argv[sys.argv.index("--fix-cache") + 1]
     out = sys.stdout
     loc = Loc()
-    gen = Nmea(out)
+    gen = Nmea(out, fix_cache)
     stopping = []
 
     def on_ind(m, tl):
