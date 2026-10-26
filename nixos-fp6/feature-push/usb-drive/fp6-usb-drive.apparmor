@@ -1,0 +1,35 @@
+# FP6 USB Drive app (QML + Rust backend, runs as the user). Complain mode by
+# default (usb-drive-fp6.nix); denials show up with fp6-apparmor-denials.
+# The privileged part is fp6-usb-drived (systemd sandbox, not this profile).
+abi <abi/5.0>,
+include <tunables/global>
+
+profile fp6-usb-drive /nix/store/*-fp6-usb-drive-*/bin/{.fp6-usb-drive-wrapped,fp6-usb-drive} flags=(attach_disconnected, mediate_deleted) {
+  include <abstractions/fp6-gui>
+  include <abstractions/fp6-network-client>
+
+  /nix/store/*-fp6-usb-drive-*/bin/* mrix,
+  # decompressors, mkfs, curl (downloads; HTTPS only, enforced in the app)
+  /nix/store/*/bin/{xz,unxz,gzip,.gzip-wrapped,zstd,bzip2,mkfs.fat,mkfs.vfat,mkfs.exfat,curl} mrix,
+
+  # the image library (default ~/Images; any folder under $HOME if changed)
+  owner @{HOME}/ r,
+  owner @{HOME}/Images/ rw,
+  owner @{HOME}/Images/** rwkl,
+  owner @{HOME}/** r,
+
+  # settings, verified-checksum cache, user download list
+  owner @{HOME}/.config/fp6-usb-drive/{,**} rwk,
+  owner @{HOME}/.local/state/fp6-usb-drive/{,**} rwk,
+  /etc/fp6-usb-drive/downloads.json r,
+
+  # free space of the library folder
+  @{PROC}/@{pid}/mountinfo r,
+
+  # D-Bus: helper on the system bus (policy restricts it to the phone user)
+  dbus (send, receive) bus=system peer=(name=org.fairphone6.UsbDrive),
+  dbus (send, receive) bus=system path=/org/fairphone6/UsbDrive interface=org.fairphone6.UsbDrive1,
+  dbus (send) bus=system path=/org/freedesktop/DBus interface=org.freedesktop.DBus,
+
+  include if exists <local/fp6-usb-drive>
+}

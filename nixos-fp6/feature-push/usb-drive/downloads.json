@@ -1,0 +1,89 @@
+{
+  "version": 1,
+  "comment": "Curated list for the USB Drive app. Official project hosts only (https); the SHA-256 is taken from the project's own sums file. See catalog.rs for the fields.",
+  "entries": [
+    {
+      "id": "ubuntu-26.04-desktop",
+      "name": "Ubuntu 26.04 LTS Desktop",
+      "description": "Live desktop and installer, amd64",
+      "homepage": "https://ubuntu.com/download/desktop",
+      "size": "about 6 GB",
+      "base": "https://releases.ubuntu.com/26.04/",
+      "sums": "SHA256SUMS",
+      "pattern": "ubuntu-{v}-desktop-amd64.iso"
+    },
+    {
+      "id": "ubuntu-26.04-server",
+      "name": "Ubuntu 26.04 LTS Server",
+      "description": "Live server installer, amd64",
+      "homepage": "https://ubuntu.com/download/server",
+      "size": "about 3 GB",
+      "base": "https://releases.ubuntu.com/26.04/",
+      "sums": "SHA256SUMS",
+      "pattern": "ubuntu-{v}-live-server-amd64.iso"
+    },
+    {
+      "id": "ubuntu-24.04-desktop",
+      "name": "Ubuntu 24.04 LTS Desktop",
+      "description": "Live desktop and installer, amd64",
+      "homepage": "https://ubuntu.com/download/desktop",
+      "size": "about 6 GB",
+      "base": "https://releases.ubuntu.com/24.04/",
+      "sums": "SHA256SUMS",
+      "pattern": "ubuntu-{v}-desktop-amd64.iso"
+    },
+    {
+      "id": "fedora-workstation",
+      "name": "Fedora Workstation 44",
+      "description": "Live desktop and installer, x86_64",
+      "homepage": "https://fedoraproject.org/workstation/download",
+      "size": "about 2.5 GB",
+      "base": "https://download.fedoraproject.org/pub/fedora/linux/releases/44/Workstation/x86_64/iso/",
+      "sumsBase": "https://dl.fedoraproject.org/pub/fedora/linux/releases/44/Workstation/x86_64/iso/",
+      "sumsIndex": "Fedora-Workstation-{v}-x86_64-CHECKSUM",
+      "pattern": "Fedora-Workstation-Live-{v}.x86_64.iso"
+    },
+    {
+      "id": "debian-netinst",
+      "name": "Debian 13 netinst",
+      "description": "Small network installer, amd64",
+      "homepage": "https://www.debian.org/distrib/netinst",
+      "size": "about 800 MB",
+      "base": "https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/",
+      "sums": "SHA256SUMS",
+      "pattern": "debian-{v}-amd64-netinst.iso"
+    },
+    {
+      "id": "debian-live-gnome",
+      "name": "Debian 13 Live GNOME",
+      "description": "Live desktop with installer, amd64",
+      "homepage": "https://www.debian.org/CD/live/",
+      "size": "about 3.5 GB",
+      "base": "https://cdimage.debian.org/debian-cd/current-live/amd64/iso-hybrid/",
+      "sums": "SHA256SUMS",
+      "pattern": "debian-live-{v}-amd64-gnome.iso"
+    },
+    {
+      "id": "nixos-graphical",
+      "name": "NixOS 26.05 graphical",
+      "description": "Live desktop with the graphical installer, x86_64",
+      "homepage": "https://nixos.org/download/",
+      "size": "about 3 GB",
+      "base": "https://channels.nixos.org/nixos-26.05/",
+      "sums": "latest-nixos-graphical-x86_64-linux.iso.sha256",
+      "pattern": "nixos-graphical-*-x86_64-linux.iso",
+      "url": "https://channels.nixos.org/nixos-26.05/latest-nixos-graphical-x86_64-linux.iso"
+    },
+    {
+      "id": "nixos-minimal",
+      "name": "NixOS 26.05 minimal",
+      "description": "Console installer, x86_64",
+      "homepage": "https://nixos.org/download/",
+      "size": "about 1.5 GB",
+      "base": "https://channels.nixos.org/nixos-26.05/",
+      "sums": "latest-nixos-minimal-x86_64-linux.iso.sha256",
+      "pattern": "nixos-minimal-*-x86_64-linux.iso",
+      "url": "https://channels.nixos.org/nixos-26.05/latest-nixos-minimal-x86_64-linux.iso"
+    }
+  ]
+}
