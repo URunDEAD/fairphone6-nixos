@@ -1,0 +1,39 @@
+From 293ae1d698ea33fdda11adc659dd5299d1fada41 Mon Sep 17 00:00:00 2001
+From: Paul Schuldesz <paulschuldesz@gmail.com>
+Date: Mon, 26 Oct 2026 15:33:15 +0200
+Subject: [PATCH milos-linux v1 0/3] media: qcom: camss: Milos front camera (CSIPHY3) fixes
+To: Jorijn van der Graaf <jorijnvdgraaf@catcrafts.net>
+
+Three small fixes for the Milos CAMSS support in milos-linux
+(combined-stable 63289f441152) that make the Fairphone 6 front camera
+(S5KKD1 on CSIPHY3, D-PHY) stream:
+
+1. drop the C-PHY per-rate entries from the D-PHY lane table,
+2. widen the CSID-340 PHY select field to three bits (PHY3 + 1 = 4 was
+   truncated to 0),
+3. use 16-byte RDI line alignment for Milos (TFE 128-bit bus).
+
+All three are based on the Fairphone camera-kernel sources
+(670223e10713). Tested on the Fairphone 6: all three sensors (IMX896,
+OV13B10, S5KKD1) capture with libcamera; rear strides are unchanged.
+
+These target the milos-linux tree (not mainline, where Milos CAMSS is
+not merged yet). They could also be squashed into the Milos CAMSS
+patches before those are posted to linux-media.
+
+Development was assisted by an AI coding tool (see the Assisted-by tags).
+
+Paul Schuldesz (3):
+  media: qcom: camss: csiphy-3ph: Drop C-PHY rate settings from the
+    Milos D-PHY table
+  media: qcom: camss: csid-340: Use a three-bit PHY select field
+  media: qcom: camss: vfe: Align Milos RDI lines to 16 bytes
+
+ .../platform/qcom/camss/camss-csid-340.c      |  2 +-
+ .../qcom/camss/camss-csiphy-3ph-1-0.c         | 43 +------------------
+ drivers/media/platform/qcom/camss/camss-vfe.c |  2 +
+ 3 files changed, 4 insertions(+), 43 deletions(-)
+
+-- 
+2.54.0
+

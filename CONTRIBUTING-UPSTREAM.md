@@ -206,3 +206,18 @@ patch is a backport of the merged canonical/mir PR #3000), **tqftpserv**
 (we package upstream v1.2; the fix is to stop Mobile NixOS shadowing it),
 **maliit-keyboard** (the panel-size-hint patch needs an agreed interface
 with Lomiri first).
+
+## Where the fix branches are published
+
+GitHub forks (pull requests can be opened from these):
+URunDEAD/mobile-nixos, URunDEAD/nixpkgs, URunDEAD/maliit-framework.
+
+GitHub mirrors of upstreams hosted elsewhere (upstream's main branch plus our
+`fp6/*` branches; merge requests still have to be opened on the original host):
+URunDEAD/qtmir, URunDEAD/lomiri-camera-app, URunDEAD/lomiri-telephony-service,
+URunDEAD/lomiri-system-settings, URunDEAD/lomiri-ui-toolkit, URunDEAD/morph-browser,
+URunDEAD/hfd-service, URunDEAD/nuntium, URunDEAD/qtcontacts-sqlite,
+URunDEAD/vvmplayer (gitlab.com), URunDEAD/chatty (gitlab.gnome.org),
+URunDEAD/imsd (forgejo.catcrafts.net), URunDEAD/ofono (git.kernel.org).
+
+Mailing-list series: `upstream-patches/` in this repository.

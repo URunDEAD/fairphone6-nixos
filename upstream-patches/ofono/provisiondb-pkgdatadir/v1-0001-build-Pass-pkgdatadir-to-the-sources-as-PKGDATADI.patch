@@ -1,0 +1,30 @@
+From 1c66ffd903147700ddcc8760bd751f9570a6fd19 Mon Sep 17 00:00:00 2001
+From: Paul Schuldesz <paulschuldesz@gmail.com>
+Date: Mon, 26 Oct 2026 15:31:26 +0200
+Subject: [PATCH v1 1/2] build: Pass pkgdatadir to the sources as PKGDATADIR
+To: ofono@lists.linux.dev
+
+provision.db is installed into $(pkgdatadir) (pkgdata_DATA), but the
+sources have no way to know where that is. Define PKGDATADIR so that the
+default provisioning database path can follow the configured prefix.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ Makefile.am | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/Makefile.am b/Makefile.am
+index cf51cdf..fd75dae 100644
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -691,6 +691,7 @@ endif
+ AM_CFLAGS = @DBUS_CFLAGS@ @GLIB_CFLAGS@ $(ell_cflags) $(builtin_cflags) \
+ 					-DOFONO_PLUGIN_BUILTIN \
+ 					-DPLUGINDIR=\""$(build_plugindir)"\" \
++					-DPKGDATADIR=\""$(pkgdatadir)"\" \
+ 					-DUNITDIR=\""$(top_builddir)/unit/"\"
+ 
+ AM_CPPFLAGS = -I$(builddir)/include -I$(builddir)/src -I$(srcdir)/src \
+-- 
+2.54.0
+

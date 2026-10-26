@@ -1,0 +1,39 @@
+From 293ae1d698ea33fdda11adc659dd5299d1fada41 Mon Sep 17 00:00:00 2001
+From: Paul Schuldesz <paulschuldesz@gmail.com>
+Date: Mon, 26 Oct 2026 15:29:58 +0200
+Subject: [PATCH milos-linux v1 3/3] media: qcom: camss: vfe: Align Milos RDI
+ lines to 16 bytes
+To: Jorijn van der Graaf <jorijnvdgraaf@catcrafts.net>
+
+The TFE on Milos writes RDI data in 128-bit bus words (downstream
+TFE665 rdi_width = 128, and its RAW10 line-mode calculation aligns
+width * 10 bits to that width). camss defaults to 8-byte line alignment,
+so for widths that are not a multiple of 16 bytes the negotiated
+bytesperline does not match what the hardware writes.
+
+Add CAMSS_MILOS to the group of SoCs that use 16-byte alignment. On the
+Fairphone 6 the front 3104x2336 RAW10 mode gets a stride of 3888 bytes
+(sizeimage 0x8a9600) and streams correctly; the rear sensors' strides
+(5120 and 1712) are unchanged.
+
+Assisted-by: Claude:claude-opus-5-5
+---
+ drivers/media/platform/qcom/camss/camss-vfe.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/drivers/media/platform/qcom/camss/camss-vfe.c b/drivers/media/platform/qcom/camss/camss-vfe.c
+index fb7ee2fcb2f1..908fa75b8317 100644
+--- a/drivers/media/platform/qcom/camss/camss-vfe.c
++++ b/drivers/media/platform/qcom/camss/camss-vfe.c
+@@ -2014,6 +2014,8 @@ static int vfe_bpl_align_rdi(struct vfe_device *vfe)
+ 	case CAMSS_8550:
+ 	case CAMSS_8650:
+ 	case CAMSS_8775P:
++	/* TFE665 writes RDI data in 128-bit bus words. */
++	case CAMSS_MILOS:
+ 	case CAMSS_X1E80100:
+ 		ret = 16;
+ 		break;
+-- 
+2.54.0
+

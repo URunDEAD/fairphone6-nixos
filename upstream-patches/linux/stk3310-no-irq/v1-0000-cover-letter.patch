@@ -1,0 +1,29 @@
+From 885c7af1119fcb2b5188c077ff1c105123a5b8e8 Mon Sep 17 00:00:00 2001
+From: Paul Schuldesz <paulschuldesz@gmail.com>
+Date: Mon, 26 Oct 2026 15:33:15 +0200
+Subject: [PATCH v1 0/1] iio: light: stk3310: IRQ-less operation
+To: Jonathan Cameron <jic23@kernel.org>
+Cc: David Lechner <dlechner@baylibre.com>,
+    Nuno Sá <nuno.sa@analog.com>,
+    Andy Shevchenko <andy@kernel.org>,
+    linux-iio@vger.kernel.org,
+    linux-kernel@vger.kernel.org
+
+The stk3310 driver accepts devices without an interrupt, but still
+enables the proximity interrupt in the chip and exposes event
+attributes that can never fire. This makes IRQ-less (polled) devices
+such as the STK36C61 on the Fairphone 6 event-free.
+
+Tested on the Fairphone 6 with iio-sensor-proxy.
+
+Development was assisted by an AI coding tool (see the Assisted-by tag).
+
+Paul Schuldesz (1):
+  iio: light: stk3310: Do not enable proximity interrupts without an IRQ
+
+ drivers/iio/light/stk3310.c | 42 ++++++++++++++++++++++++++++++-------
+ 1 file changed, 35 insertions(+), 7 deletions(-)
+
+-- 
+2.54.0
+

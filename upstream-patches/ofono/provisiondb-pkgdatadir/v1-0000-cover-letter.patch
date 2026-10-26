@@ -1,0 +1,30 @@
+From c2e6c2a7be06751469e31b86a1911b508899681d Mon Sep 17 00:00:00 2001
+From: Paul Schuldesz <paulschuldesz@gmail.com>
+Date: Mon, 26 Oct 2026 15:33:15 +0200
+Subject: [PATCH v1 0/2] Look up provision.db in the configured data directory
+To: ofono@lists.linux.dev
+
+provision_db_new_default() hard-codes /usr/share/ofono/provision.db,
+but the database is installed into $(pkgdatadir). With any prefix other
+than /usr automatic provisioning fails with "Unable to open provisioning
+database!". Patch 1 passes pkgdatadir to the sources, patch 2 uses it.
+
+Tested by building 2.19 with both patches on NixOS: ofonod now
+references $prefix/share/ofono/provision.db, and on a Fairphone 6
+(NixOS) an equivalent path fix makes the internet context get
+provisioned automatically.
+
+Development was assisted by an AI coding tool (see the Co-Authored-By
+trailer).
+
+Paul Schuldesz (2):
+  build: Pass pkgdatadir to the sources as PKGDATADIR
+  provisiondb: Look up the default database in PKGDATADIR
+
+ Makefile.am       | 1 +
+ src/provisiondb.c | 2 +-
+ 2 files changed, 2 insertions(+), 1 deletion(-)
+
+-- 
+2.54.0
+

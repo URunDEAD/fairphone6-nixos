@@ -1,0 +1,39 @@
+From c2e6c2a7be06751469e31b86a1911b508899681d Mon Sep 17 00:00:00 2001
+From: Paul Schuldesz <paulschuldesz@gmail.com>
+Date: Mon, 26 Oct 2026 15:31:26 +0200
+Subject: [PATCH v1 2/2] provisiondb: Look up the default database in
+ PKGDATADIR
+To: ofono@lists.linux.dev
+
+provision_db_new_default() only tries the hard-coded path
+/usr/share/ofono/provision.db, while the build installs the database to
+$(pkgdatadir), i.e. ${datadir}/ofono. With any prefix other than /usr
+(the autoconf default /usr/local, or distributions such as NixOS that
+install every package into its own prefix) the database is never found,
+and oFono logs "Unable to open provisioning database!" and fails to
+provision any GPRS context automatically.
+
+Use the configured PKGDATADIR instead. For the usual --prefix=/usr build
+the path is unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/provisiondb.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/provisiondb.c b/src/provisiondb.c
+index 6a913d8..39ec417 100644
+--- a/src/provisiondb.c
++++ b/src/provisiondb.c
+@@ -161,7 +161,7 @@ struct provision_db *provision_db_new_default(void)
+ {
+ 	struct provision_db *db = NULL;
+ 	size_t i;
+-	const char * const paths[] = { "/usr/share/ofono/provision.db" };
++	const char * const paths[] = { PKGDATADIR "/provision.db" };
+ 
+ 	for (i = 0; !db && i < L_ARRAY_SIZE(paths); i++)
+ 		db = provision_db_new(paths[i]);
+-- 
+2.54.0
+

@@ -1,0 +1,31 @@
+From e644d9ef03aedf77c386800c7d721e67c779e7fa Mon Sep 17 00:00:00 2001
+From: Paul Schuldesz <paulschuldesz@gmail.com>
+Date: Mon, 26 Oct 2026 15:33:15 +0200
+Subject: [RFC PATCH v1 0/1] scsi: ufs: qcom: Fix system resume on Milos (SM7635)
+To: Manivannan Sadhasivam <mani@kernel.org>,
+    James E.J. Bottomley <James.Bottomley@HansenPartnership.com>,
+    Martin K. Petersen <mkp@kernel.org>
+Cc: linux-arm-msm@vger.kernel.org,
+    linux-scsi@vger.kernel.org,
+    linux-kernel@vger.kernel.org
+
+On the Fairphone 6 (Milos / SM7635) every system suspend attempt ends
+with "hibern8 exit failed 5" and a full UFS host and device reset on
+resume. Milos has the same split host/PHY GDSC layout as SM8550/SM8650,
+so it needs the same no_phy_retention handling (spm_lvl 5).
+
+Sent as RFC: so far only the sysfs spm_lvl=5 read-back has been checked
+on hardware. A supervised suspend/resume run with this patch is still
+pending; I will send a non-RFC version with the results.
+
+Development was assisted by an AI coding tool (see the Assisted-by tag).
+
+Paul Schuldesz (1):
+  scsi: ufs: qcom: Power down the link during system suspend on Milos
+
+ drivers/ufs/host/ufs-qcom.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+-- 
+2.54.0
+

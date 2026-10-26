@@ -1,0 +1,29 @@
+From b1eb0d979d01cb20d180174dfd657eee29b3efeb Mon Sep 17 00:00:00 2001
+From: Paul Schuldesz <paulschuldesz@gmail.com>
+Date: Mon, 26 Oct 2026 15:33:15 +0200
+Subject: [PATCH v1 0/1] power: supply: qcom_battmgr: charge_* properties on SM8350/SM8550
+To: Sebastian Reichel <sre@kernel.org>
+Cc: linux-arm-msm@vger.kernel.org,
+    linux-pm@vger.kernel.org,
+    linux-kernel@vger.kernel.org
+
+On SM8350/SM8550 pmic_glink firmware the battery "unit" is never set,
+so charge_full and charge_full_design always return -ENODATA and
+UPower shows 0 Wh. This patch sets the unit to mAh for these variants
+and exposes charge_now from the charge counter.
+
+Tested on the Fairphone 6 (SM8550 variant). I could not test the
+SM8350 fallback; reports from other SM8350/SM8550 devices are welcome.
+
+Development was assisted by an AI coding tool (see the Assisted-by tag).
+
+Paul Schuldesz (1):
+  power: supply: qcom_battmgr: Report charge in uAh on SM8350/SM8550
+    variants
+
+ drivers/power/supply/qcom_battmgr.c | 19 ++++++++++++++++++-
+ 1 file changed, 18 insertions(+), 1 deletion(-)
+
+-- 
+2.54.0
+

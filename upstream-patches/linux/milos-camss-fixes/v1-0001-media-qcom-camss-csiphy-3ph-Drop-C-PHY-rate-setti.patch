@@ -1,0 +1,89 @@
+From 15554144c50c85d21ca101b35df4126e99bfef3d Mon Sep 17 00:00:00 2001
+From: Paul Schuldesz <paulschuldesz@gmail.com>
+Date: Mon, 26 Oct 2026 15:29:57 +0200
+Subject: [PATCH milos-linux v1 1/3] media: qcom: camss: csiphy-3ph: Drop C-PHY
+ rate settings from the Milos D-PHY table
+To: Jorijn van der Graaf <jorijnvdgraaf@catcrafts.net>
+
+lane_regs_milos, the D-PHY (2-phase) lane table for Milos, ends with 36
+per-data-rate AFE/CDR/settle entries taken from the downstream
+datarate_221_500Msps table. Downstream (Fairphone camera-kernel,
+cam_csiphy_core.c) only applies those rate tables in 3-phase mode
+(cam_csiphy_cphy_data_rate_config() is gated on csiphy_3phase): they are
+C-PHY settings in symbols per second, not D-PHY Mbps settings. Writing
+them while the PHY runs in D-PHY mode can break reception.
+
+Remove them from the D-PHY table. The remaining 92 entries match the
+downstream D-PHY mode-select, common and 2-phase sequences in order,
+value and flags (apart from the SKEW_CAL entries, which the generic code
+already skips). The C-PHY table lane_regs_milos_3ph is unchanged.
+
+With this change and the two following CSID/VFE fixes the Fairphone 6
+front camera (S5KKD1 on CSIPHY3, D-PHY) streams; the rear IMX896 and
+OV13B10 keep working.
+
+Downstream reference: Fairphone camera-kernel 670223e10713,
+drivers/cam_sensor_module/cam_csiphy/include/cam_csiphy_2_2_1_hwreg.h
+
+Assisted-by: Claude:claude-opus-5-5
+---
+ .../qcom/camss/camss-csiphy-3ph-1-0.c         | 43 +------------------
+ 1 file changed, 1 insertion(+), 42 deletions(-)
+
+diff --git a/drivers/media/platform/qcom/camss/camss-csiphy-3ph-1-0.c b/drivers/media/platform/qcom/camss/camss-csiphy-3ph-1-0.c
+index 472a9b01ae73..49a0741abadc 100644
+--- a/drivers/media/platform/qcom/camss/camss-csiphy-3ph-1-0.c
++++ b/drivers/media/platform/qcom/camss/camss-csiphy-3ph-1-0.c
+@@ -1104,48 +1104,7 @@ csiphy_lane_regs lane_regs_milos[] = {
+ 	{0x0C20, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+ 	{0x0C08, 0x19, 0x00, CSIPHY_SETTLE_CNT_LOWER_BYTE},
+ 	{0x0C10, 0x52, 0x00, CSIPHY_DEFAULT_PARAMS},
+-	/*
+-	 * Per-data-rate AFE / CDR / settle tuning for ~1.12 Gbps/lane
+-	 * (560 MHz link) from downstream datarate_221_500Msps. Uses the
+-	 * STANDARD-channel variants; short-channel duplicates are omitted.
+-	 */
+-	{0x0268, 0xF1, 0x00, CSIPHY_DEFAULT_PARAMS},
+-	{0x0294, 0x01, 0x00, CSIPHY_DEFAULT_PARAMS},
+-	{0x0278, 0x58, 0x00, CSIPHY_DEFAULT_PARAMS},
+-	{0x0288, 0x20, 0x00, CSIPHY_DEFAULT_PARAMS},
+-	{0x026C, 0x05, 0x00, CSIPHY_DEFAULT_PARAMS},
+-	{0x028C, 0x37, 0x00, CSIPHY_DEFAULT_PARAMS},
+-	{0x0270, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+-	{0x0274, 0x03, 0x00, CSIPHY_DEFAULT_PARAMS},
+-	{0x0668, 0xF1, 0x00, CSIPHY_DEFAULT_PARAMS},
+-	{0x0694, 0x01, 0x00, CSIPHY_DEFAULT_PARAMS},
+-	{0x0678, 0x58, 0x00, CSIPHY_DEFAULT_PARAMS},
+-	{0x0688, 0x20, 0x00, CSIPHY_DEFAULT_PARAMS},
+-	{0x066C, 0x05, 0x00, CSIPHY_DEFAULT_PARAMS},
+-	{0x068C, 0x37, 0x00, CSIPHY_DEFAULT_PARAMS},
+-	{0x0670, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+-	{0x0674, 0x03, 0x00, CSIPHY_DEFAULT_PARAMS},
+-	{0x0A68, 0xF1, 0x00, CSIPHY_DEFAULT_PARAMS},
+-	{0x0A94, 0x01, 0x00, CSIPHY_DEFAULT_PARAMS},
+-	{0x0A78, 0x58, 0x00, CSIPHY_DEFAULT_PARAMS},
+-	{0x0A88, 0x20, 0x00, CSIPHY_DEFAULT_PARAMS},
+-	{0x0A6C, 0x05, 0x00, CSIPHY_DEFAULT_PARAMS},
+-	{0x0A8C, 0x37, 0x00, CSIPHY_DEFAULT_PARAMS},
+-	{0x0A70, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+-	{0x0A74, 0x03, 0x00, CSIPHY_DEFAULT_PARAMS},
+-	/* datarate-sensitive settle (computed value substituted) */
+-	{0x020C, 0x66, 0x00, CSIPHY_SETTLE_CNT_LOWER_BYTE},
+-	{0x0208, 0x00, 0x00, CSIPHY_SETTLE_CNT_HIGHER_BYTE},
+-	{0x0210, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+-	{0x0214, 0x20, 0x00, CSIPHY_DEFAULT_PARAMS},
+-	{0x060C, 0x66, 0x00, CSIPHY_SETTLE_CNT_LOWER_BYTE},
+-	{0x0608, 0x00, 0x00, CSIPHY_SETTLE_CNT_HIGHER_BYTE},
+-	{0x0610, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+-	{0x0614, 0x20, 0x00, CSIPHY_DEFAULT_PARAMS},
+-	{0x0A0C, 0x66, 0x00, CSIPHY_SETTLE_CNT_LOWER_BYTE},
+-	{0x0A08, 0x00, 0x00, CSIPHY_SETTLE_CNT_HIGHER_BYTE},
+-	{0x0A10, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+-	{0x0A14, 0x20, 0x00, CSIPHY_DEFAULT_PARAMS},
++
+ };
+ 
+ /*
+-- 
+2.54.0
+

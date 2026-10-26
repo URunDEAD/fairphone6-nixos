@@ -1,0 +1,41 @@
+From 60c2e0be428c7df8ff5528cca778febb768eca46 Mon Sep 17 00:00:00 2001
+From: Paul Schuldesz <paulschuldesz@gmail.com>
+Date: Mon, 26 Oct 2026 15:29:57 +0200
+Subject: [PATCH milos-linux v1 2/3] media: qcom: camss: csid-340: Use a
+ three-bit PHY select field
+To: Jorijn van der Graaf <jorijnvdgraaf@catcrafts.net>
+
+CSI2_RX_CFG0_PHY_NUM_SEL is programmed with the CSIPHY index plus
+CSI2_RX_CFG0_PHY_NUM_SEL_BASE_IDX (1). The mask is GENMASK(21, 20), which
+is enough for the two CSIPHYs of QCM2290 but not for Milos, which also
+uses csid_ops_340 and has CSIPHY3: 3 + 1 = 4 is truncated to 0, so the
+CSID listens to no PHY at all.
+
+The downstream register map for this CSID (csid665 in the Fairphone
+camera-kernel) defines the field as three bits (mask 0x7). Widen the
+mask to GENMASK(22, 20). The encodings for PHY0..PHY2 do not change.
+
+Fixes the Fairphone 6 front camera (S5KKD1 on CSIPHY3) delivering no
+frames.
+
+Assisted-by: Claude:claude-opus-5-5
+---
+ drivers/media/platform/qcom/camss/camss-csid-340.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/media/platform/qcom/camss/camss-csid-340.c b/drivers/media/platform/qcom/camss/camss-csid-340.c
+index 9a5a6710c0c6..689a76935b1f 100644
+--- a/drivers/media/platform/qcom/camss/camss-csid-340.c
++++ b/drivers/media/platform/qcom/camss/camss-csid-340.c
+@@ -32,7 +32,7 @@
+ #define CSID_CSI2_RX_CFG0					(0x100)
+ #define		CSI2_RX_CFG0_NUM_ACTIVE_LANES_MASK	GENMASK(1, 0)
+ #define		CSI2_RX_CFG0_DLX_INPUT_SEL_MASK		GENMASK(17, 4)
+-#define		CSI2_RX_CFG0_PHY_NUM_SEL_MASK		GENMASK(21, 20)
++#define		CSI2_RX_CFG0_PHY_NUM_SEL_MASK		GENMASK(22, 20)
+ #define		CSI2_RX_CFG0_PHY_NUM_SEL_BASE_IDX	1
+ #define		CSI2_RX_CFG0_PHY_TYPE_SEL		BIT(24)
+ 
+-- 
+2.54.0
+
