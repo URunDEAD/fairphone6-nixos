@@ -23,3 +23,7 @@ ssh-ng://builder@(your-)?arm-builder
 \{ [0-9]{4}, [0-9]\.[0-9]+, [0-9]\.[0-9]+ \},$
 # IIO accelerometer traces in test data: "<ns timestamp> <x> <y> <z>" (raw counts)
 \+?[0-9]{6,12} -?[0-9]+ -?[0-9]+ -?[0-9]+$
+# coordinate formatter unit tests with synthetic values
+assert_eq!\(dd\([0-9.-]+, [0-9.-]+\)
+# WMM .COF coefficient file end markers
+:\+?9{40,}$
