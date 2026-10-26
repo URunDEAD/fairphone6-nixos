@@ -1,0 +1,18 @@
+--- a/src/indicator/nmofono/hotspot-manager.cpp
++++ b/src/indicator/nmofono/hotspot-manager.cpp
+@@ -491,6 +491,15 @@
+         }
+         wireless[QStringLiteral("ssid")] = QVariant(ssid);
+         wireless[QStringLiteral("mode")] = QVariant(mode);
++        if (mode == QLatin1String("ap"))
++        {
++            // FP6: without a channel NetworkManager picks 2472 MHz
++            // (channel 13) for this SSID, which the self-managed ath11k
++            // regulatory domain disables, so the AP never starts. Pin the
++            // band and a channel that every regulatory domain allows.
++            wireless[QStringLiteral("band")] = QVariant(QStringLiteral("bg"));
++            wireless[QStringLiteral("channel")] = QVariant(uint(FP6_HOTSPOT_CHANNEL));
++        }
+ 
+         connection["802-11-wireless"] = wireless;
+ 

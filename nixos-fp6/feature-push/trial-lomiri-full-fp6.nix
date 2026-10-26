@@ -14,6 +14,7 @@ let
       ./sensors/sensors-lomiri.nix
       ./camera/lomiri-camera-fp6.nix
       ./network/network-fp6.nix
+      ./network-checks/network-checks-fp6.nix
       ./cellular/cellular-fp6.nix
       ./contacts/contacts-fp6.nix
       ./ims/ims-fp6.nix
@@ -51,6 +52,9 @@ let
         # One camera app: Lomiri Camera. Snapshot needs the xdg camera portal (GNOME/Phosh only).
         hardware.fp6Camera.enableSnapshot = lib.mkForce false;
         hardware.fairphone6.network.enable = true;
+        # Hotspot channel pin, uplink forwarding, Wi-Fi client restore
+        # (results/feature-push-20261024/network-checks/README.md).
+        hardware.fairphone6.networkChecks.enable = true;
         services.fp6Cellular.enable = true;
         services.fp6Ims.enable = true;
         services.fp6RtcOffset.enable = true;
