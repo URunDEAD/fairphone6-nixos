@@ -41,6 +41,7 @@ typedef enum
   KIND_NONE = 0,
   KIND_HDR,
   KIND_NIGHT,
+  KIND_TIMELAPSE,
 } Fp6JobKind;
 
 static const struct
@@ -50,6 +51,7 @@ static const struct
 } fp6j_kinds[] = {
   {"hdr", KIND_HDR},
   {"night", KIND_NIGHT},
+  {"timelapse", KIND_TIMELAPSE},
 };
 
 typedef struct
@@ -285,6 +287,199 @@ out:
   return out;
 }
 
+/* ------------------------------------------------------------------------ */
+/* timelapse: frames at an interval -> H.264 MP4, encoded while capturing  */
+
+static void fp6j_finish_capture (Fp6LibcameraSrc * self);
+static void fp6j_fail_locked (Fp6LibcameraSrc * self, const gchar * msg);
+
+/* videoflip method for an EXIF orientation */
+static const gchar *
+fp6j_flip_method (guint16 exif)
+{
+  static const gchar *const m[9] = { "none", "none", "horizontal-flip",
+    "rotate-180", "vertical-flip", "upper-left-diagonal", "clockwise",
+    "upper-right-diagonal", "counterclockwise"
+  };
+  return m[exif <= 8 ? exif : 0];
+}
+
+/* p->lock held. Build and start the encoder for frames of p->job_info. */
+static gboolean
+fp6j_timelapse_open (Fp6LibcameraSrc * self, GError ** err)
+{
+  Fp6Phase2 *p = self->p2;
+  GstElement *pipe, *src, *flip, *conv, *capsf, *enc, *parse, *mux, *sink;
+  guint16 o = fp6_dng_orientation (p->flip, p->job_rotate);
+  gint w = GST_VIDEO_INFO_WIDTH (&p->job_info);
+  gint h = GST_VIDEO_INFO_HEIGHT (&p->job_info), ow, oh;
+  gchar *tmp;
+  GstCaps *caps;
+
+  /* encode size: long side tl_size (even), stream aspect */
+  ow = MIN (p->tl_size, w) & ~1;
+  oh = ((gint) ((gint64) ow * h / w)) & ~1;
+  if (o >= 5) {                 /* rotated by 90: portrait video */
+    gint t = ow;
+    ow = oh;
+    oh = t;
+  }
+  pipe = gst_pipeline_new ("fp6-timelapse");
+  src = gst_element_factory_make ("appsrc", NULL);
+  flip = gst_element_factory_make ("videoflip", NULL);
+  conv = gst_element_factory_make ("videoconvertscale", NULL);
+  capsf = gst_element_factory_make ("capsfilter", NULL);
+  enc = gst_element_factory_make ("x264enc", NULL);
+  parse = gst_element_factory_make ("h264parse", NULL);
+  mux = gst_element_factory_make ("mp4mux", NULL);
+  sink = gst_element_factory_make ("filesink", NULL);
+  if (!src || !flip || !conv || !capsf || !enc || !parse || !mux || !sink) {
+    g_set_error (err, GST_CORE_ERROR, GST_CORE_ERROR_MISSING_PLUGIN,
+        "timelapse encoder elements missing (x264enc/h264parse/mp4mux)");
+    gst_object_unref (pipe);
+    g_clear_object (&src);
+    g_clear_object (&flip);
+    g_clear_object (&conv);
+    g_clear_object (&capsf);
+    g_clear_object (&enc);
+    g_clear_object (&parse);
+    g_clear_object (&mux);
+    g_clear_object (&sink);
+    return FALSE;
+  }
+  caps = gst_video_info_to_caps (&p->job_info);
+  gst_caps_set_simple (caps, "framerate", GST_TYPE_FRACTION, p->tl_fps, 1,
+      NULL);
+  g_object_set (src, "caps", caps, "format", GST_FORMAT_TIME, "block", FALSE,
+      "max-bytes", (guint64) 512 * 1024 * 1024, NULL);
+  gst_caps_unref (caps);
+  gst_util_set_object_arg (G_OBJECT (flip), "method", fp6j_flip_method (o));
+  caps = gst_caps_new_simple ("video/x-raw", "format", G_TYPE_STRING, "I420",
+      "width", G_TYPE_INT, ow, "height", G_TYPE_INT, oh, NULL);
+  g_object_set (capsf, "caps", caps, NULL);
+  gst_caps_unref (caps);
+  /* constant quality; few threads so the viewfinder keeps its CPU */
+  gst_util_set_object_arg (G_OBJECT (enc), "pass", "quant");
+  gst_util_set_object_arg (G_OBJECT (enc), "speed-preset", "faster");
+  g_object_set (enc, "quantizer", 21, "threads", 2, "key-int-max",
+      p->tl_fps * 2, NULL);
+  tmp = g_strdup_printf ("%s.part", p->job_path);
+  g_object_set (sink, "location", tmp, NULL);
+  g_free (tmp);
+  gst_bin_add_many (GST_BIN (pipe), src, flip, conv, capsf, enc, parse, mux,
+      sink, NULL);
+  if (!gst_element_link_many (src, flip, conv, capsf, enc, parse, mux, sink,
+          NULL)
+      || gst_element_set_state (pipe,
+          GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
+    g_set_error (err, GST_CORE_ERROR, GST_CORE_ERROR_NEGOTIATION,
+        "cannot start the timelapse encoder");
+    gst_element_set_state (pipe, GST_STATE_NULL);
+    gst_object_unref (pipe);
+    return FALSE;
+  }
+  p->tl_pipe = pipe;
+  p->tl_src = src;
+  GST_INFO_OBJECT (self, "timelapse: %dx%d -> %dx%d (%s) at %d fps, every "
+      "%.2f s -> %s", w, h, ow, oh, fp6j_flip_method (o), p->tl_fps,
+      p->tl_interval_us / 1e6, p->job_path);
+  return TRUE;
+}
+
+/* streaming thread, p->lock held */
+static void
+fp6j_timelapse_frame (Fp6LibcameraSrc * self, GstBuffer * buf, gint64 now)
+{
+  Fp6Phase2 *p = self->p2;
+  GstVideoFrame vf;
+  GstBuffer *copy;
+  GstFlowReturn fr;
+
+  if (p->job_stop || (p->job_target > 0 && p->job_frames >= p->job_target)) {
+    fp6j_finish_capture (self);
+    return;
+  }
+  if (!p->tl_pipe) {
+    GError *err = NULL;
+    if (!fp6j_timelapse_open (self, &err)) {
+      fp6j_fail_locked (self, err ? err->message : "encoder");
+      g_clear_error (&err);
+      return;
+    }
+    p->tl_next = now;
+  }
+  if (now < p->tl_next)
+    return;
+  p->tl_next += p->tl_interval_us;
+  if (p->tl_next < now)         /* fell behind (slow frames): no burst */
+    p->tl_next = now + p->tl_interval_us;
+
+  /* tightly packed copy (the camera buffer goes back to its pool) */
+  if (!gst_video_frame_map (&vf, &p->job_info, buf, GST_MAP_READ))
+    return;
+  copy = gst_buffer_new_allocate (NULL, GST_VIDEO_INFO_SIZE (&p->job_info),
+      NULL);
+  if (copy) {
+    GstMapInfo m;
+    gst_buffer_map (copy, &m, GST_MAP_WRITE);
+    for (gint y = 0; y < GST_VIDEO_INFO_HEIGHT (&p->job_info); y++)
+      memcpy (m.data + (gsize) y * GST_VIDEO_INFO_PLANE_STRIDE (&p->job_info,
+              0), (guint8 *) GST_VIDEO_FRAME_PLANE_DATA (&vf, 0) +
+          (gsize) y * GST_VIDEO_FRAME_PLANE_STRIDE (&vf, 0),
+          MIN (GST_VIDEO_INFO_PLANE_STRIDE (&p->job_info, 0),
+              GST_VIDEO_FRAME_PLANE_STRIDE (&vf, 0)));
+    gst_buffer_unmap (copy, &m);
+    GST_BUFFER_PTS (copy) = gst_util_uint64_scale (p->job_frames, GST_SECOND,
+        p->tl_fps);
+    GST_BUFFER_DURATION (copy) = gst_util_uint64_scale (1, GST_SECOND,
+        p->tl_fps);
+    g_signal_emit_by_name (p->tl_src, "push-buffer", copy, &fr);
+    gst_buffer_unref (copy);
+    p->job_frames++;
+  }
+  gst_video_frame_unmap (&vf);
+}
+
+/* worker: finish the MP4 */
+static gboolean
+fp6j_timelapse_close (Fp6LibcameraSrc * self, GstElement * pipe,
+    GstElement * src, const gchar * path, gint frames, GError ** err)
+{
+  GstFlowReturn fr;
+  GstBus *bus = gst_element_get_bus (pipe);
+  GstMessage *msg;
+  gchar *tmp = g_strdup_printf ("%s.part", path);
+  gboolean ok = FALSE;
+
+  g_signal_emit_by_name (src, "end-of-stream", &fr);
+  msg = gst_bus_timed_pop_filtered (bus, 120 * GST_SECOND,
+      GST_MESSAGE_EOS | GST_MESSAGE_ERROR);
+  if (msg && GST_MESSAGE_TYPE (msg) == GST_MESSAGE_EOS)
+    ok = frames > 0;
+  else if (msg)
+    gst_message_parse_error (msg, err, NULL);
+  else
+    g_set_error (err, GST_CORE_ERROR, GST_CORE_ERROR_FAILED,
+        "timelapse encoder timed out");
+  if (msg)
+    gst_message_unref (msg);
+  gst_object_unref (bus);
+  gst_element_set_state (pipe, GST_STATE_NULL);
+  if (ok && g_rename (tmp, path) != 0) {
+    g_set_error (err, G_FILE_ERROR, g_file_error_from_errno (errno),
+        "cannot rename %s", tmp);
+    ok = FALSE;
+  }
+  if (!ok) {
+    g_unlink (tmp);
+    if (frames == 0 && err && !*err)
+      g_set_error (err, GST_CORE_ERROR, GST_CORE_ERROR_FAILED,
+          "no frames captured");
+  }
+  g_free (tmp);
+  return ok;
+}
+
 static gpointer
 fp6j_worker (gpointer data)
 {
@@ -299,6 +494,8 @@ fp6j_worker (gpointer data)
   Fp6Image *img = NULL;
   GError *err = NULL;
   Fp6Frame *ref;
+  GstElement *tl_pipe, *tl_src;
+  gint tl_frames;
 
   /* below the viewfinder's threads (inherited by the processing threads) */
   setpriority (PRIO_PROCESS, (id_t) syscall (SYS_gettid), 10);
@@ -312,9 +509,13 @@ fp6j_worker (gpointer data)
   rotate = p->job_rotate;
   quality = p->job_quality;
   zoom = p->job_zoom;
+  tl_pipe = p->tl_pipe;
+  tl_src = p->tl_src;
+  tl_frames = p->job_frames;
+  p->tl_pipe = p->tl_src = NULL;
   g_mutex_unlock (&p->lock);
 
-  ref = frames->len ? g_ptr_array_index (frames, 0) : NULL;
+  ref = frames && frames->len ? g_ptr_array_index (frames, 0) : NULL;
   switch (kind) {
     case KIND_HDR:
       img = fp6j_process_hdr (self, frames, &prog, &err);
@@ -336,13 +537,24 @@ fp6j_worker (gpointer data)
       }
       break;
     }
+    case KIND_TIMELAPSE:
+      if (tl_pipe && fp6j_timelapse_close (self, tl_pipe, tl_src, path,
+              tl_frames, &err))
+        result = g_strdup (path);
+      else if (!tl_pipe && !err)
+        g_set_error (&err, GST_CORE_ERROR, GST_CORE_ERROR_FAILED,
+            "no frames captured");
+      break;
     default:
       g_set_error (&err, GST_CORE_ERROR, GST_CORE_ERROR_FAILED,
           "unsupported job");
       break;
   }
   fp6_image_free (img);
-  g_ptr_array_unref (frames);
+  if (frames)
+    g_ptr_array_unref (frames);
+  if (tl_pipe)
+    gst_object_unref (tl_pipe);
 
   g_mutex_lock (&p->lock);
   if (p->job_cancel) {
@@ -383,10 +595,25 @@ fp6j_finish_capture (Fp6LibcameraSrc * self)
           gst_object_ref (self)));
 }
 
+/* p->lock held: drop an unfinished timelapse file */
+static void
+fp6j_drop_timelapse (Fp6Phase2 * p)
+{
+  if (p->tl_pipe) {
+    gchar *tmp = g_strdup_printf ("%s.part", p->job_path);
+    gst_element_set_state (p->tl_pipe, GST_STATE_NULL);
+    gst_object_unref (p->tl_pipe);
+    p->tl_pipe = p->tl_src = NULL;
+    g_unlink (tmp);
+    g_free (tmp);
+  }
+}
+
 static void
 fp6j_fail_locked (Fp6LibcameraSrc * self, const gchar * msg)
 {
   Fp6Phase2 *p = self->p2;
+  fp6j_drop_timelapse (p);
   fp6j_release_camera (self);
   g_clear_pointer (&p->frames, g_ptr_array_unref);
   g_free (p->job_error);
@@ -490,6 +717,7 @@ fp6j_probe (GstPad * pad, GstPadProbeInfo * pi, gpointer user)
     return GST_PAD_PROBE_OK;
   }
   if (p->job_cancel) {
+    fp6j_drop_timelapse (p);
     fp6j_release_camera (self);
     g_clear_pointer (&p->frames, g_ptr_array_unref);
     p->job_state = JOB_IDLE;
@@ -520,6 +748,9 @@ fp6j_probe (GstPad * pad, GstPadProbeInfo * pi, gpointer user)
     case KIND_HDR:
     case KIND_NIGHT:
       fp6j_step_frame (self, buf, now);
+      break;
+    case KIND_TIMELAPSE:
+      fp6j_timelapse_frame (self, buf, now);
       break;
     default:
       break;
@@ -649,10 +880,20 @@ fp6j_start (Fp6LibcameraSrc * self, const gchar * kind_name,
       p->n_steps = frames;
       break;
     }
+    case KIND_TIMELAPSE:
+      /* automatic exposure throughout; no frames kept in memory */
+      p->tl_interval_us = (gint64) (CLAMP (fp6j_param_double (s, "interval",
+                  2.0), 0.1, 3600.0) * G_USEC_PER_SEC);
+      p->tl_fps = CLAMP ((gint) fp6j_param_double (s, "fps", 30), 1, 60);
+      p->tl_size = CLAMP ((gint) fp6j_param_double (s, "size", 1440), 320,
+          4096);
+      p->job_deadline = G_MAXINT64;
+      break;
     default:
       break;
   }
-  p->job_target = p->n_steps;
+  p->job_target = kind == KIND_TIMELAPSE ?
+      (gint) fp6j_param_double (s, "frames", 0) : p->n_steps;
   p->job_state = JOB_CAPTURE;
   GST_INFO_OBJECT (self, "job %s: %d steps from %" G_GINT64_FORMAT " us x "
       "%.2f, WB %.3f/%.3f, lens %.1f -> %s", kind_name, p->n_steps, e0, g0,
@@ -693,6 +934,11 @@ fp6j_clear (Fp6LibcameraSrc * self)
 {
   Fp6Phase2 *p = self->p2;
   if (p->job_state == JOB_CAPTURE) {
+    if (p->job_kind == KIND_TIMELAPSE && p->tl_pipe) {
+      /* keep what was recorded */
+      fp6j_finish_capture (self);
+      return;
+    }
     fp6j_release_camera (self);
     g_clear_pointer (&p->frames, g_ptr_array_unref);
     g_free (p->job_error);

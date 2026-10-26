@@ -1,5 +1,5 @@
 diff --git a/CameraApp/fp6procontrols.cpp b/CameraApp/fp6procontrols.cpp
-index 15d872b..9275d73 100644
+index 15d872b..24fc8af 100644
 --- a/CameraApp/fp6procontrols.cpp
 +++ b/CameraApp/fp6procontrols.cpp
 @@ -10,6 +10,8 @@
@@ -118,7 +118,7 @@ index 15d872b..9275d73 100644
      Q_EMIT readoutChanged();
  
      if (serial != m_analysisSerial) {
-@@ -301,6 +381,93 @@ ACTION(continueStack, "stack-continue")
+@@ -301,6 +381,95 @@ ACTION(continueStack, "stack-continue")
  ACTION(cancelStack, "stack-cancel")
  #undef ACTION
  
@@ -131,9 +131,11 @@ index 15d872b..9275d73 100644
 +    QDir().mkpath(directory);
 +    const QString suffix = kind.toUpper();
 +    const QString path = QDir(directory).filePath(
-+        QStringLiteral("image%1_%2.jpg")
++        QStringLiteral("%1%2_%3.%4")
++            .arg(kind == QLatin1String("timelapse") ? QStringLiteral("video") : QStringLiteral("image"))
 +            .arg(QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_hhmmsszzz")))
-+            .arg(suffix));
++            .arg(suffix)
++            .arg(kind == QLatin1String("timelapse") ? QStringLiteral("mp4") : QStringLiteral("jpg")));
 +    gboolean ok = FALSE;
 +    g_signal_emit_by_name(obj, "job-start", kind.toUtf8().constData(),
 +                          path.toUtf8().constData(), gint(((rotate % 360) + 360) % 360),
@@ -318,20 +320,23 @@ index 434a709..e540d77 100644
  
  class Fp6OverlayProvider : public QQuickImageProvider
 diff --git a/qml/Viewfinder/ViewFinderOverlay.qml b/qml/Viewfinder/ViewFinderOverlay.qml
-index b765ed6..e1c6676 100644
+index b765ed6..56c0e77 100644
 --- a/qml/Viewfinder/ViewFinderOverlay.qml
 +++ b/qml/Viewfinder/ViewFinderOverlay.qml
-@@ -89,6 +89,9 @@ Item {
+@@ -89,6 +89,12 @@ Item {
          property bool proZebra: false
          property bool proPeaking: false
          property bool proLevel: false
 +        // FP6 phase 2
 +        property bool proRaw: false         // RAW (DNG) next to the JPEG in Pro mode
 +        property string fp6PhotoMode: "photo"   // photo | night (auto, not Pro)
++        property string fp6VideoMode: "video"   // video | timelapse
++        property real fp6TimelapseInterval: 2   // s between frames
++        property int fp6TimelapseFps: 30        // playback rate
  
          Component.onCompleted: {
              if (!photoResolutions) photoResolutions = {}
-@@ -138,6 +141,8 @@ Item {
+@@ -138,6 +144,8 @@ Item {
      Binding { target: camera.pro; property: "aeLock"; value: proActive && proPanel.aeLock }
      Binding { target: camera.pro; property: "awbLock"; value: proActive && proPanel.awbLock }
      Binding { target: camera.pro; property: "afLock"; value: proActive && proPanel.afLock }
@@ -340,7 +345,7 @@ index b765ed6..e1c6676 100644
      Binding { target: camera.pro; property: "analysis"
          value: !proActive ? 0 : ((settings.proHistogram ? 1 : 0) | (settings.proZebra ? 2 : 0)
                                   | (settings.proPeaking ? 4 : 0)) }
-@@ -153,6 +158,41 @@ Item {
+@@ -153,6 +161,45 @@ Item {
              console.log("Long exposure failed: " + error);
              PopupUtils.open(captureFailedDialogComponent);
          }
@@ -374,6 +379,10 @@ index b765ed6..e1c6676 100644
 +        return "";
 +    }
 +
++    readonly property bool fp6Timelapse: camera.captureMode == Camera.CaptureVideo && !main.contentExportMode
++                                         && camera.pro.available && settings.fp6VideoMode === "timelapse"
++    readonly property bool fp6TimelapseRunning: fp6Timelapse && camera.pro.jobState == 1
++
 +    /* Rebuild the camera pipeline (lens or raw stream change). */
 +    function restartCamera() {
 +        if (camera.cameraState != Camera.ActiveState || proStacking) return;
@@ -382,7 +391,7 @@ index b765ed6..e1c6676 100644
      }
  
      function photoDirectory() {
-@@ -615,7 +655,7 @@ Item {
+@@ -615,7 +662,7 @@ Item {
              onOpenedChanged: optionsOverlayLoader.item.closeValueSelector()
              enabled: camera.videoRecorder.recorderState == CameraRecorder.StoppedState
                       && !camera.photoCaptureInProgress && !camera.timedCaptureInProgress
@@ -391,7 +400,7 @@ index b765ed6..e1c6676 100644
              opacity: enabled ? 1.0 : 0.3
              property bool ready: optionsOverlayLoader.status == Loader.Ready
  
-@@ -714,7 +754,8 @@ Item {
+@@ -714,7 +761,8 @@ Item {
                      property string label: i18n.tr("HDR")
                      property bool isToggle: true
                      property int selectedIndex: bottomEdge.indexForValue(hdrOptionsModel, settings.hdrEnabled)
@@ -401,7 +410,28 @@ index b765ed6..e1c6676 100644
                      property bool visible: camera.captureMode === Camera.CaptureStillImage
                      property bool showInIndicators: true
  
-@@ -1120,10 +1161,24 @@ Item {
+@@ -1095,7 +1143,19 @@ Item {
+             // Ensure that the orientation is positive and within range.
+             orientation = (orientation + 360) % 360;
+ 
+-            if (camera.captureMode == Camera.CaptureVideo) {
++            if (camera.captureMode == Camera.CaptureVideo && viewFinderOverlay.fp6Timelapse) {
++                // FP6 phase 2: timelapse recorded by fp6libcamerasrc
++                if (camera.pro.jobState == 1) {
++                    camera.pro.stopJob();
++                } else if (!camera.pro.jobBusy) {
++                    var vdir = (StorageLocations.removableStoragePresent && settings.preferRemovableStorage)
++                            ? StorageLocations.removableStorageVideosLocation : StorageLocations.videosLocation;
++                    if (!camera.pro.startJob("timelapse", vdir, (360 - orientation) % 360, 92,
++                                             "p, interval=(double)%1, fps=(int)%2"
++                                             .arg(settings.fp6TimelapseInterval).arg(settings.fp6TimelapseFps)))
++                        PopupUtils.open(captureFailedDialogComponent);
++                }
++            } else if (camera.captureMode == Camera.CaptureVideo) {
+                 if (main.contentExportMode) {
+                     camera.videoRecorder.outputLocation = StorageLocations.temporaryLocation;
+                 } else if (StorageLocations.removableStoragePresent && settings.preferRemovableStorage) {
+@@ -1120,10 +1180,24 @@ Item {
                                             viewFinderOverlay.encodingQualityPercent())) {
                      PopupUtils.open(captureFailedDialogComponent);
                  }
@@ -426,7 +456,7 @@ index b765ed6..e1c6676 100644
                  camera.photoCaptureInProgress = true;
                  camera.imageCapture.setMetadata("Orientation", orientation);
                  camera.imageCapture.setMetadata("Date", new Date());
-@@ -1235,7 +1290,7 @@ Item {
+@@ -1235,7 +1309,7 @@ Item {
              onClicked: controls.changeRecordMode()
              enabled: camera.videoRecorder.recorderState == CameraRecorder.StoppedState && !main.contentExportMode
                       && !camera.photoCaptureInProgress && !camera.timedCaptureInProgress
@@ -435,7 +465,17 @@ index b765ed6..e1c6676 100644
          }
  
          ShootButton {
-@@ -1320,7 +1375,7 @@ Item {
+@@ -1256,7 +1330,8 @@ Item {
+                 (viewFinderOverlay.proStacking && camera.pro.stackState != 5)
+             )
+             state: (camera.captureMode == Camera.CaptureVideo) ?
+-                   ((camera.videoRecorder.recorderState == CameraRecorder.StoppedState) ? "record_off" : "record_on") :
++                   ((camera.videoRecorder.recorderState == CameraRecorder.StoppedState
++                     && !viewFinderOverlay.fp6TimelapseRunning) ? "record_off" : "record_on") :
+                    "camera"
+             onClicked: {
+                 if (burst.count == 0)
+@@ -1320,7 +1395,7 @@ Item {
              customRotation: main.staticRotationAngle
              enabled: !camera.switchInProgress && camera.videoRecorder.recorderState == CameraRecorder.StoppedState
                       && !camera.photoCaptureInProgress && !camera.timedCaptureInProgress
@@ -444,7 +484,7 @@ index b765ed6..e1c6676 100644
              iconName: "camera-flip"
              onClicked: controls.switchCamera()
          }
-@@ -1388,7 +1443,7 @@ Item {
+@@ -1388,7 +1463,7 @@ Item {
              spacing: units.gu(1)
              visible: camera.position !== Camera.FrontFace && !main.contentExportMode
                       && camera.videoRecorder.recorderState == CameraRecorder.StoppedState
@@ -453,7 +493,7 @@ index b765ed6..e1c6676 100644
              enabled: !viewFinderOverlay.proStacking && !camera.switchInProgress
              rotation: main.staticRotationAngle
              Fp6ProChip { value: "0.6×"; selected: camera.pro.ultrawide
-@@ -1397,6 +1452,31 @@ Item {
+@@ -1397,6 +1472,90 @@ Item {
                  onClicked: viewFinderOverlay.switchLens(false) }
          }
  
@@ -482,10 +522,69 @@ index b765ed6..e1c6676 100644
 +            }
 +        }
 +
++        // ---- FP6 phase 2: video modes (timelapse) and its settings
++        Column {
++            anchors {
++                horizontalCenter: parent.horizontalCenter
++                bottom: lensSelector.visible ? lensSelector.top : lensSelector.bottom
++                bottomMargin: units.gu(1)
++            }
++            spacing: units.gu(0.75)
++            visible: camera.captureMode == Camera.CaptureVideo && !main.contentExportMode
++                     && camera.pro.available
++                     && camera.videoRecorder.recorderState == CameraRecorder.StoppedState
++            enabled: !camera.pro.jobBusy
++            rotation: main.staticRotationAngle
++            Row {
++                anchors.horizontalCenter: parent.horizontalCenter
++                spacing: units.gu(0.75)
++                visible: settings.fp6VideoMode === "timelapse"
++                Fp6ProChip {
++                    title: i18n.tr("every")
++                    value: settings.fp6TimelapseInterval < 1 ? settings.fp6TimelapseInterval + " s"
++                           : settings.fp6TimelapseInterval + " s"
++                    onClicked: {
++                        var v = [0.5, 1, 2, 5, 10, 30, 60];
++                        var i = v.indexOf(settings.fp6TimelapseInterval);
++                        settings.fp6TimelapseInterval = v[(i + 1) % v.length];
++                    }
++                }
++                Fp6ProChip {
++                    title: i18n.tr("plays at")
++                    value: settings.fp6TimelapseFps + " fps"
++                    onClicked: {
++                        var v = [24, 30, 60];
++                        var i = v.indexOf(settings.fp6TimelapseFps);
++                        settings.fp6TimelapseFps = v[(i + 1) % v.length];
++                    }
++                }
++                Label {
++                    anchors.verticalCenter: parent.verticalCenter
++                    color: "white"; style: Text.Outline; styleColor: "black"
++                    textSize: Label.Small
++                    // speed-up factor
++                    text: "×" + Math.round(settings.fp6TimelapseInterval * settings.fp6TimelapseFps)
++                }
++            }
++            Row {
++                anchors.horizontalCenter: parent.horizontalCenter
++                spacing: units.gu(0.75)
++                Repeater {
++                    model: [ { m: "video", l: i18n.tr("VIDEO") }, { m: "timelapse", l: i18n.tr("TIMELAPSE") } ]
++                    Fp6ProChip {
++                        value: modelData.l
++                        selected: settings.fp6VideoMode === modelData.m
++                        highlighted: selected && modelData.m !== "video"
++                        onClicked: settings.fp6VideoMode = modelData.m
++                    }
++                }
++            }
++        }
++
          // ---- FP6 Pro mode toggle (top right) and panel
          Fp6ProChip {
              id: proToggle
-@@ -1466,6 +1546,12 @@ Item {
+@@ -1466,6 +1625,12 @@ Item {
              visible: viewFinderOverlay.proActive && settings.proLevel
          }
  

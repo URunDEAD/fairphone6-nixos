@@ -100,6 +100,10 @@ typedef struct _Fp6Phase2
   gdouble step_gain[32], step_ev[32];
   gdouble base_gr, base_gb;
   gfloat base_lens;
+  /* timelapse */
+  GstElement *tl_pipe, *tl_src;
+  gint64 tl_next, tl_interval_us;
+  gint tl_fps, tl_size;
 } Fp6Phase2;
 
 static gpointer fp6p2_dng_thread (gpointer data);
