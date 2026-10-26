@@ -19,6 +19,9 @@ profile morph-browser /nix/store/*-morph-browser-*/bin/.{morph-browser,webapp-co
   owner @{HOME}/.local/share/webapp-container/{,**} rwkl,
   owner @{HOME}/.cache/webapp-container/{,**} rwkl,
   owner @{HOME}/.config/webapp-container/{,**} rwkl,
+  # The user's own files: open them (file://, uploads) and save downloads.
+  owner @{HOME}/{Documents,Pictures,Music,Videos}/{,**} r,
+  owner @{HOME}/Downloads/{,**} rwk,
 
   # Chromium zygote/renderer/GPU/network-service processes. Chromium sets
   # no_new_privs before exec'ing them, and AppArmor refuses a transition to a
