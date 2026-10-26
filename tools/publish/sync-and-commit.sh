@@ -80,18 +80,31 @@ if [ "$public_only" = 0 ]; then
 fi
 
 # ---- (b) export + scan + public commit ----
-"$tools/export-public.sh" --src "$workspace" --dst "$public"
 # The export mirrors the whole live workspace, including other work still in
-# progress. With PATHs, stage only those (same relative paths) and drop the
-# rest of the exported changes, so one fix stays one commit.
+# progress, and its tree-wide scan fails on such files. With PATHs, only the
+# named files must pass: stage them, scan exactly those, and drop the rest of
+# the exported changes, so one fix stays one commit.
 if [ "${#paths[@]}" -gt 0 ]; then
+  "$tools/export-public.sh" --src "$workspace" --dst "$public" || \
+    echo "export: tree-wide scan reported hits in other files; checking only the named paths"
   for p in "${paths[@]}"; do
     [ -e "$public/$p" ] || git -C "$public" ls-files --error-unmatch -- "$p" >/dev/null 2>&1 || continue
     git -C "$public" add -A -- "$p"
   done
+  staged=$(mktemp)
+  git -C "$public" diff --cached --name-only --diff-filter=d | sed "s|^|$public/|" > "$staged"
+  if [ -s "$staged" ] && ! "$tools/secret-scan.sh" --files "$staged"; then
+    rm -f "$staged"
+    git -C "$public" reset -q
+    git -C "$public" checkout -q -- . && git -C "$public" clean -fdq
+    echo "public: secret scan hit in the named files; nothing committed" >&2
+    exit 1
+  fi
+  rm -f "$staged"
   git -C "$public" stash push --keep-index --include-untracked -q -m "fp6 unrelated export" >/dev/null 2>&1 \
     && git -C "$public" stash drop -q >/dev/null 2>&1 || true
 else
+  "$tools/export-public.sh" --src "$workspace" --dst "$public"
   git -C "$public" add -A
 fi
 if git -C "$public" diff --cached --quiet; then
