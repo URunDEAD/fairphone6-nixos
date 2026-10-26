@@ -1,0 +1,83 @@
+fp6: defer Morph user-agent changes out of navigationRequested (QtWebEngine 6.11 abort).
+
+Changing WebEngineProfile.httpUserAgent makes Chromium reload/restart
+navigations synchronously. Morph did that inside onNavigationRequested,
+which runs inside InterceptNavigationThrottle::CheckIfShouldIgnoreNavigation;
+Chromium in Qt 6.11 then aborts: 'Check failed: !in_sync_check_'. With the
+stock screen-size UA this hit the first main-frame navigation after start
+(typing a URL or search and pressing Enter).
+
+--- a/src/app/webbrowser/qml-qt6/Browser.qml
++++ b/src/app/webbrowser/qml-qt6/Browser.qml
+@@ -283,24 +283,30 @@
+             {
+                 currentWebview.hideContextMenu();
+                 var newUserAgentId = (UserAgentsModel.count > 0) ? DomainSettingsModel.getUserAgentId(requestDomain) : 0;
++                var webContext = currentWebview.context;
++                var desktopMode = browser.settings ? browser.settings.setDesktopMode : false;
++                var newScreenSize = desktopMode ? "large" : webContext.__ua.calcScreenSize();
+ 
+-                // change of the custom user agent
+-                if (newUserAgentId !== currentWebview.context.userAgentId)
++                // Changing the profile user agent makes Chromium reload/restart
++                // navigations synchronously. Doing that from inside this handler
++                // (it runs in Chromium's navigation throttle) aborts QtWebEngine 6.11:
++                // "FATAL intercept_navigation_throttle.cc Check failed: !in_sync_check_".
++                // So only touch the user agent when it actually changes, and then do
++                // it after the handler returned: block this request, apply the new
++                // user agent on the next event loop turn and navigate again.
++                if (newUserAgentId !== webContext.userAgentId || newScreenSize !== webContext.__ua.screenSize)
+                 {
+-                    currentWebview.context.userAgentId = newUserAgentId;
+-                    currentWebview.context.customUserAgent = (newUserAgentId > 0) ? UserAgentsModel.getUserAgentString(newUserAgentId) : "";
+-
+-		    // for some reason when letting through the request, another navigation request will take us back to the
+-                    // to the previous page. Therefore we block it first and navigate to the new url with the correct user agent.
++                    var webview = currentWebview;
+                     request.reject();
+-                    currentWebview.url = url;
++                    Qt.callLater(function() {
++                        webContext.userAgentId = newUserAgentId;
++                        webContext.customUserAgent = (newUserAgentId > 0) ? UserAgentsModel.getUserAgentString(newUserAgentId) : "";
++                        webContext.__ua.setDesktopMode(desktopMode);
++                        webview.url = url;
++                    });
+                     return;
+                 }
+-                else
+-                {
+-                    currentWebview.context.__ua.setDesktopMode(browser.settings ? browser.settings.setDesktopMode : false);
+-                    console.log("user agent: " + currentWebview.context.httpUserAgent);
+-                }
++                console.log("user agent: " + webContext.httpUserAgent);
+             }
+         }
+     }
+--- a/src/app/webcontainer/qml-qt6/WebViewImplOxide.qml
++++ b/src/app/webcontainer/qml-qt6/WebViewImplOxide.qml
+@@ -346,14 +346,18 @@
+           // change of the custom user agent
+           if (newUserAgentId !== webview.context.userAgentId)
+           {
+-            webview.context.userAgentId = newUserAgentId;
+-            webview.context.userAgent = (newUserAgentId > 0) ? UserAgentsModel.getUserAgentString(newUserAgentId)
+-                                                             : localUserAgentOverride ? localUserAgentOverride : webview.context.defaultUserAgent;
+-
+-            // for some reason when letting through the request, another navigation request will take us back to the
+-            // to the previous page. Therefore we block it first and navigate to the new url with the correct user agent.
++            // Changing the profile user agent inside the navigation request handler
++            // aborts QtWebEngine 6.11 (Chromium "Check failed: !in_sync_check_"),
++            // so block the request and apply the user agent + navigate afterwards.
+             request.action = WebEngineNavigationRequest.IgnoreRequest;
+-            webview.url = url;
++            var webContext = webview.context;
++            var newUserAgent = (newUserAgentId > 0) ? UserAgentsModel.getUserAgentString(newUserAgentId)
++                                                    : localUserAgentOverride ? localUserAgentOverride : webContext.defaultUserAgent;
++            Qt.callLater(function() {
++                webContext.userAgentId = newUserAgentId;
++                webContext.userAgent = newUserAgent;
++                webview.url = url;
++            });
+             return;
+           }
+           else

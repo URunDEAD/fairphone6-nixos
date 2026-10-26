@@ -1,0 +1,108 @@
+--- a/src/maliit/standaloneinputmethodhost.cpp
++++ b/src/maliit/standaloneinputmethodhost.cpp
+@@ -23,6 +23,8 @@
+     , mConnection(connection)
+     , mWindowGroup(windowGroup)
+ {
++    connect(mWindowGroup, &WindowGroup::inputMethodAreaChanged,
++            mConnection, &MInputContextConnection::updateInputMethodArea);
+ }
+ 
+ bool StandaloneInputMethodHost::hiddenText(bool &valid)
+@@ -155,7 +157,7 @@
+ 
+ void StandaloneInputMethodHost::setInputMethodArea(const QRegion &region, QWindow *window)
+ {
+-    mWindowGroup->setScreenRegion(region, window);
++    mWindowGroup->setInputMethodArea(region, window);
+ }
+ 
+ void StandaloneInputMethodHost::setSelection(int start, int length)
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -527,6 +527,7 @@
+     endfunction()
+ 
+     create_test(sanitychecks)
++    create_test(ut_standaloneinputmethodarea)
+     create_test(ut_mattributeextensionmanager)
+     create_test(ut_mimonscreenplugins)
+     create_test(ut_mimpluginmanager ${DUMMY_PLUGINS})
+--- /dev/null
++++ b/tests/ut_standaloneinputmethodarea/ut_standaloneinputmethodarea.h
+@@ -0,0 +1,10 @@
++#ifndef UT_STANDALONEINPUTMETHODAREA_H
++#define UT_STANDALONEINPUTMETHODAREA_H
++#include <QtTest/QtTest>
++class Ut_StandaloneInputMethodArea : public QObject
++{
++    Q_OBJECT
++private Q_SLOTS:
++    void reportsVisibleAreaWithoutChangingTouchMask();
++};
++#endif
+--- /dev/null
++++ b/tests/ut_standaloneinputmethodarea/ut_standaloneinputmethodarea.cpp
+@@ -0,0 +1,62 @@
++#include "ut_standaloneinputmethodarea.h"
++#include "abstractplatform.h"
++#include "windowgroup.h"
++#include "maliit/standaloneinputmethodhost.h"
++#include "minputcontextconnection.h"
++#include <QWindow>
++
++class AreaTestConnection : public MInputContextConnection
++{
++public:
++    QList<QRegion> areas;
++    void updateInputMethodArea(const QRegion &area) override { areas.append(area); }
++};
++
++class AreaTestPlatform : public Maliit::AbstractPlatform
++{
++public:
++    QRegion touchMask;
++    void setupInputPanel(QWindow *, Maliit::Position) override {}
++    void setInputRegion(QWindow *, const QRegion &region) override { touchMask = region; }
++};
++
++void Ut_StandaloneInputMethodArea::reportsVisibleAreaWithoutChangingTouchMask()
++{
++    qRegisterMetaType<QRegion>("QRegion");
++    auto *platform = new AreaTestPlatform;
++    QSharedPointer<Maliit::AbstractPlatform> platformOwner(platform);
++    Maliit::WindowGroup group(platformOwner);
++    AreaTestConnection connection;
++    Maliit::StandaloneInputMethodHost host(&connection, &group);
++    QWindow window;
++    window.setGeometry(0, 0, 372, 828);
++    host.registerWindow(&window, Maliit::PositionCenterBottom);
++    group.activate();
++    window.show();
++    QCoreApplication::processEvents();
++    QSignalSpy areas(&group, SIGNAL(inputMethodAreaChanged(QRegion)));
++    QVERIFY(areas.isValid());
++
++    const QRegion mask(0, 570, 372, 258);
++    const QRegion area(0, 580, 372, 248);
++    host.setScreenRegion(mask, &window);
++    host.setInputMethodArea(area, &window);
++    QCOMPARE(areas.count(), 1);
++    QCOMPARE(qvariant_cast<QRegion>(areas.last().at(0)), area.translated(window.position()));
++    QCOMPARE(platform->touchMask, mask);
++    QCOMPARE(connection.areas.count(), 1);
++    QCOMPARE(connection.areas.last(), area.translated(window.position()));
++
++    window.hide();
++    QTRY_VERIFY(qvariant_cast<QRegion>(areas.last().at(0)).isEmpty());
++    QVERIFY(connection.areas.last().isEmpty());
++    window.show();
++    QTRY_COMPARE(qvariant_cast<QRegion>(areas.last().at(0)), area.translated(window.position()));
++    QCOMPARE(connection.areas.last(), area.translated(window.position()));
++    host.setInputMethodArea(QRegion(), &window);
++    QVERIFY(qvariant_cast<QRegion>(areas.last().at(0)).isEmpty());
++    QVERIFY(connection.areas.last().isEmpty());
++    QCOMPARE(platform->touchMask, mask);
++}
++
++QTEST_MAIN(Ut_StandaloneInputMethodArea)

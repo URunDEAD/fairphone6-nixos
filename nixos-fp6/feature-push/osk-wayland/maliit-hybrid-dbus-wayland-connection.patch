@@ -1,0 +1,383 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index a6eae52..eadcfe9 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -83,7 +83,9 @@ set(CONNECTION_SOURCES
+ if(enable-wayland)
+     list(APPEND CONNECTION_SOURCES
+          connection/waylandinputmethodconnection.cpp
+-         connection/waylandinputmethodconnection.h)
++         connection/waylandinputmethodconnection.h
++         connection/hybridinputcontextconnection.cpp
++         connection/hybridinputcontextconnection.h)
+ 
+     ecm_add_qtwayland_client_protocol(CONNECTION_SOURCES PROTOCOL ${WAYLANDPROTOCOLS_PATH}/unstable/input-method/input-method-unstable-v1.xml BASENAME input-method-unstable-v1)
+ 
+diff --git a/connection/connectionfactory.cpp b/connection/connectionfactory.cpp
+index 3dec727..7c1b1ed 100644
+--- a/connection/connectionfactory.cpp
++++ b/connection/connectionfactory.cpp
+@@ -18,6 +18,7 @@
+ 
+ #ifdef HAVE_WAYLAND
+ #include "waylandinputmethodconnection.h"
++#include "hybridinputcontextconnection.h"
+ #endif
+ 
+ namespace Maliit {
+@@ -43,6 +44,12 @@ MInputContextConnection *createWestonIMProtocolConnection()
+ {
+     return new WaylandInputMethodConnection;
+ }
++
++MInputContextConnection *createHybridDBusWaylandConnection()
++{
++    QSharedPointer<Maliit::Server::DBus::Address> address(new Maliit::Server::DBus::DynamicAddress);
++    return new HybridInputContextConnection(address);
++}
+ #endif
+ 
+ } // namespace Maliit
+diff --git a/connection/connectionfactory.h b/connection/connectionfactory.h
+index 25f4188..bab5112 100644
+--- a/connection/connectionfactory.h
++++ b/connection/connectionfactory.h
+@@ -28,6 +28,8 @@ MInputContextConnection *createInputContextConnectionWithFixedAddress(const QStr
+ 
+ #ifdef HAVE_WAYLAND
+ MInputContextConnection *createWestonIMProtocolConnection();
++//! FP6: D-Bus (dynamic address) and zwp_input_method_v1 in one connection.
++MInputContextConnection *createHybridDBusWaylandConnection();
+ #endif
+ 
+ } // namespace Maliit
+diff --git a/connection/hybridinputcontextconnection.cpp b/connection/hybridinputcontextconnection.cpp
+new file mode 100644
+index 0000000..8b6f82f
+--- /dev/null
++++ b/connection/hybridinputcontextconnection.cpp
+@@ -0,0 +1,94 @@
++/* This file is part of Maliit framework (FP6 hybrid connection).
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License version 2.1 as published by the Free Software Foundation
++ * and appearing in the file LICENSE.LGPL included in the packaging
++ * of this file.
++ */
++
++#include "hybridinputcontextconnection.h"
++#include "waylandinputmethodconnection.h"
++
++#include <QKeyEvent>
++
++HybridInputContextConnection::HybridInputContextConnection(const QSharedPointer<Maliit::Server::DBus::Address> &address)
++    : DBusInputContextConnection(address)
++    , mWayland(new WaylandInputMethodConnection(this))
++{
++}
++
++HybridInputContextConnection::~HybridInputContextConnection()
++{
++}
++
++bool HybridInputContextConnection::waylandActive() const
++{
++    return activeConnection == WaylandInputMethodConnection::waylandConnectionId();
++}
++
++void HybridInputContextConnection::sendPreeditString(const QString &string,
++                                                     const QList<Maliit::PreeditTextFormat> &preeditFormats,
++                                                     int replacementStart, int replacementLength,
++                                                     int cursorPos)
++{
++    if (waylandActive()) {
++        MInputContextConnection::sendPreeditString(string, preeditFormats, replacementStart,
++                                                   replacementLength, cursorPos);
++        mWayland->sendPreeditString(string, preeditFormats, replacementStart, replacementLength, cursorPos);
++    } else {
++        DBusInputContextConnection::sendPreeditString(string, preeditFormats, replacementStart,
++                                                      replacementLength, cursorPos);
++    }
++}
++
++void HybridInputContextConnection::sendCommitString(const QString &string, int replaceStart,
++                                                    int replaceLength, int cursorPos)
++{
++    if (waylandActive()) {
++        MInputContextConnection::sendCommitString(string, replaceStart, replaceLength, cursorPos);
++        mWayland->sendCommitString(string, replaceStart, replaceLength, cursorPos);
++    } else {
++        DBusInputContextConnection::sendCommitString(string, replaceStart, replaceLength, cursorPos);
++    }
++}
++
++void HybridInputContextConnection::sendKeyEvent(const QKeyEvent &keyEvent,
++                                                Maliit::EventRequestType requestType)
++{
++    if (waylandActive()) {
++        MInputContextConnection::sendKeyEvent(keyEvent, requestType);
++        mWayland->sendKeyEvent(keyEvent, requestType);
++    } else {
++        DBusInputContextConnection::sendKeyEvent(keyEvent, requestType);
++    }
++}
++
++void HybridInputContextConnection::invokeAction(const QString &action, const QKeySequence &sequence)
++{
++    if (!waylandActive())
++        DBusInputContextConnection::invokeAction(action, sequence);
++}
++
++void HybridInputContextConnection::setSelection(int start, int length)
++{
++    if (waylandActive())
++        mWayland->setSelection(start, length);
++    else
++        DBusInputContextConnection::setSelection(start, length);
++}
++
++QString HybridInputContextConnection::selection(bool &valid)
++{
++    if (waylandActive())
++        return mWayland->selection(valid);
++    return DBusInputContextConnection::selection(valid);
++}
++
++void HybridInputContextConnection::setLanguage(const QString &language)
++{
++    // D-Bus remembers the language for new clients; Wayland sends it if active.
++    DBusInputContextConnection::setLanguage(language);
++    if (waylandActive())
++        mWayland->setLanguage(language);
++}
+diff --git a/connection/hybridinputcontextconnection.h b/connection/hybridinputcontextconnection.h
+new file mode 100644
+index 0000000..0ef68b1
+--- /dev/null
++++ b/connection/hybridinputcontextconnection.h
+@@ -0,0 +1,56 @@
++/* This file is part of Maliit framework (FP6 hybrid connection).
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License version 2.1 as published by the Free Software Foundation
++ * and appearing in the file LICENSE.LGPL included in the packaging
++ * of this file.
++ */
++
++#ifndef HYBRIDINPUTCONTEXTCONNECTION_H
++#define HYBRIDINPUTCONTEXTCONNECTION_H
++
++#include "dbusinputcontextconnection.h"
++
++#include <QScopedPointer>
++
++class WaylandInputMethodConnection;
++
++/*! \internal
++ * \brief Serves D-Bus input-context clients (Maliit Qt5 plugin) and the
++ * compositor's zwp_input_method_v1 (text-input v1/v2/v3 clients) at once.
++ *
++ * All inbound requests land on this D-Bus connection; Wayland requests use
++ * WaylandInputMethodConnection::waylandConnectionId(). Outbound text goes to
++ * whichever client is active.
++ */
++class HybridInputContextConnection : public DBusInputContextConnection
++{
++    Q_OBJECT
++    Q_DISABLE_COPY(HybridInputContextConnection)
++
++public:
++    explicit HybridInputContextConnection(const QSharedPointer<Maliit::Server::DBus::Address> &address);
++    virtual ~HybridInputContextConnection();
++
++    void sendPreeditString(const QString &string,
++                           const QList<Maliit::PreeditTextFormat> &preeditFormats,
++                           int replacementStart = 0,
++                           int replacementLength = 0,
++                           int cursorPos = -1) override;
++    void sendCommitString(const QString &string, int replaceStart = 0,
++                          int replaceLength = 0, int cursorPos = -1) override;
++    void sendKeyEvent(const QKeyEvent &keyEvent,
++                      Maliit::EventRequestType requestType) override;
++    void invokeAction(const QString &action, const QKeySequence &sequence) override;
++    void setSelection(int start, int length) override;
++    QString selection(bool &valid) override;
++    void setLanguage(const QString &language) override;
++
++private:
++    bool waylandActive() const;
++
++    QScopedPointer<WaylandInputMethodConnection> mWayland;
++};
++
++#endif
+diff --git a/connection/minputcontextconnection.h b/connection/minputcontextconnection.h
+index c9d223f..963a3e2 100644
+--- a/connection/minputcontextconnection.h
++++ b/connection/minputcontextconnection.h
+@@ -378,6 +378,9 @@ public:
+     void handleDisconnection(unsigned int connectionId);
+ 
+ private:
++    // FP6: the Wayland input-method bridge reads the state of the connection it feeds.
++    friend class WaylandInputMethodConnection;
++
+     /*!
+      * \brief get the X window id of the active app window. Warning: Undefined on non-X11 platforms
+      */
+diff --git a/connection/waylandinputmethodconnection.cpp b/connection/waylandinputmethodconnection.cpp
+index 25e6fbf..2a4ab4c 100644
+--- a/connection/waylandinputmethodconnection.cpp
++++ b/connection/waylandinputmethodconnection.cpp
+@@ -156,7 +156,9 @@ bool matchesFlag(int value,
+     return ((value & flag) == flag);
+ }
+ 
+-const unsigned int wayland_connection_id(1);
++// FP6: far above the D-Bus connection counter (which starts at 1), so a hybrid
++// connection can tell Wayland from D-Bus clients by the active connection id.
++const unsigned int wayland_connection_id(0x7ffffff0u);
+ 
+ } // unnamed namespace
+ 
+@@ -213,7 +215,8 @@ struct WaylandInputMethodConnectionPrivate
+ {
+     Q_DECLARE_PUBLIC(WaylandInputMethodConnection)
+ 
+-    WaylandInputMethodConnectionPrivate(WaylandInputMethodConnection *connection);
++    WaylandInputMethodConnectionPrivate(WaylandInputMethodConnection *connection,
++                                        MInputContextConnection *inboundTarget);
+     ~WaylandInputMethodConnectionPrivate();
+ 
+     void handleRegistryGlobal(uint32_t name,
+@@ -224,6 +227,7 @@ struct WaylandInputMethodConnectionPrivate
+     Maliit::Wayland::InputMethodContext *context();
+ 
+     WaylandInputMethodConnection *q_ptr;
++    MInputContextConnection *target;
+     wl_display *display;
+     wl_registry *registry;
+     QScopedPointer<Maliit::Wayland::InputMethod> input_method;
+@@ -263,8 +267,10 @@ const wl_registry_listener maliit_registry_listener = {
+ 
+ } // unnamed namespace
+ 
+-WaylandInputMethodConnectionPrivate::WaylandInputMethodConnectionPrivate(WaylandInputMethodConnection *connection)
++WaylandInputMethodConnectionPrivate::WaylandInputMethodConnectionPrivate(WaylandInputMethodConnection *connection,
++                                                                         MInputContextConnection *inboundTarget)
+     : q_ptr(connection),
++      target(inboundTarget ? inboundTarget : connection),
+       display(0),
+       registry(0),
+       input_method()
+@@ -294,7 +300,8 @@ void WaylandInputMethodConnectionPrivate::handleRegistryGlobal(uint32_t name,
+     Q_Q(WaylandInputMethodConnection);
+ 
+     if (!strcmp(interface, "zwp_input_method_v1")) {
+-        input_method.reset(new Maliit::Wayland::InputMethod(q, registry, name));
++        Q_UNUSED(q);
++        input_method.reset(new Maliit::Wayland::InputMethod(target, registry, name));
+     }
+ }
+ 
+@@ -311,10 +318,26 @@ Maliit::Wayland::InputMethodContext *WaylandInputMethodConnectionPrivate::contex
+ // MInputContextWestonIMProtocolConnection
+ 
+ WaylandInputMethodConnection::WaylandInputMethodConnection()
+-    : d_ptr(new WaylandInputMethodConnectionPrivate(this))
++    : d_ptr(new WaylandInputMethodConnectionPrivate(this, nullptr))
+ {
+ }
+ 
++WaylandInputMethodConnection::WaylandInputMethodConnection(MInputContextConnection *inboundTarget)
++    : d_ptr(new WaylandInputMethodConnectionPrivate(this, inboundTarget))
++{
++}
++
++unsigned int WaylandInputMethodConnection::waylandConnectionId()
++{
++    return wayland_connection_id;
++}
++
++bool WaylandInputMethodConnection::hasContext() const
++{
++    Q_D(const WaylandInputMethodConnection);
++    return d->input_method && d->input_method->context();
++}
++
+ WaylandInputMethodConnection::~WaylandInputMethodConnection()
+ {
+ }
+@@ -337,7 +360,7 @@ void WaylandInputMethodConnection::sendPreeditString(const QString &string,
+                                                cursor_pos);
+ 
+     if (replace_length > 0) {
+-        int cursor = widgetState().value(CursorPositionAttribute).toInt();
++        int cursor = d->target->widgetState().value(CursorPositionAttribute).toInt();
+         uint32_t index = string.midRef(qMin(cursor + replace_start, cursor), qAbs(replace_start)).toUtf8().size();
+         uint32_t length = string.midRef(cursor + replace_start, replace_length).toUtf8().size();
+         d->context()->delete_surrounding_text(index, length);
+@@ -383,7 +406,7 @@ void WaylandInputMethodConnection::sendCommitString(const QString &string,
+     }
+ 
+     if (replace_length > 0) {
+-        int cursor = widgetState().value(CursorPositionAttribute).toInt();
++        int cursor = d->target->widgetState().value(CursorPositionAttribute).toInt();
+         uint32_t index = string.midRef(qMin(cursor + replace_start, cursor), qAbs(replace_start)).toUtf8().size();
+         uint32_t length = string.midRef(cursor + replace_start, replace_length).toUtf8().size();
+         d->context()->delete_surrounding_text(index, length);
+@@ -442,7 +465,7 @@ QString WaylandInputMethodConnection::selection(bool &valid)
+ 
+     qCDebug(lcWaylandConnection) << Q_FUNC_INFO;
+ 
+-    Maliit::Wayland::InputMethodContext *context = d->input_method->context();
++    Maliit::Wayland::InputMethodContext *context = d->context();
+ 
+     valid = context && !context->selection().isEmpty();
+     return context ? context->selection() : QString();
+@@ -469,7 +492,7 @@ void WaylandInputMethodConnection::setSelection(int start, int length)
+     if (!d->context())
+         return;
+ 
+-    QString surrounding = widgetState().value(SurroundingTextAttribute).toString();
++    QString surrounding = d->target->widgetState().value(SurroundingTextAttribute).toString();
+     uint32_t index(surrounding.leftRef(start + length).toUtf8().size());
+     uint32_t anchor(surrounding.leftRef(start).toUtf8().size());
+ 
+diff --git a/connection/waylandinputmethodconnection.h b/connection/waylandinputmethodconnection.h
+index d436be4..fd73ff8 100644
+--- a/connection/waylandinputmethodconnection.h
++++ b/connection/waylandinputmethodconnection.h
+@@ -35,6 +35,12 @@ class WaylandInputMethodConnection : public MInputContextConnection
+ 
+ public:
+     explicit WaylandInputMethodConnection();
++    /*! FP6: forward inbound zwp_input_method_v1 events to \a inboundTarget
++     *  (with connection id waylandConnectionId()) instead of to this object,
++     *  so one server connection can serve D-Bus and Wayland clients. */
++    explicit WaylandInputMethodConnection(MInputContextConnection *inboundTarget);
++    static unsigned int waylandConnectionId();
++    bool hasContext() const;
+     virtual ~WaylandInputMethodConnection();
+ 
+     virtual void sendPreeditString(const QString &string,
+diff --git a/src/maliit/standaloneinputmethod.cpp b/src/maliit/standaloneinputmethod.cpp
+index 0ef25b3..e4bcb66 100644
+--- a/src/maliit/standaloneinputmethod.cpp
++++ b/src/maliit/standaloneinputmethod.cpp
+@@ -131,6 +131,13 @@ std::unique_ptr<MInputContextConnection> createConnection()
+ {
+ #ifdef HAVE_WAYLAND
+     auto forceDbus = qgetenv("MALIIT_FORCE_DBUS_CONNECTION");
++    // FP6: MALIIT_HYBRID_CONNECTION=1 keeps the D-Bus server (Qt5 Maliit
++    // input-context clients) and also binds zwp_input_method_v1, so the
++    // compositor can route text-input v1/v2/v3 clients to this keyboard.
++    auto hybrid = qgetenv("MALIIT_HYBRID_CONNECTION");
++    if (QGuiApplication::platformName().startsWith("wayland") && !hybrid.isEmpty() && hybrid != "0") {
++        return std::unique_ptr<MInputContextConnection>(Maliit::createHybridDBusWaylandConnection());
++    }
+     if (QGuiApplication::platformName().startsWith("wayland") && (forceDbus.isEmpty() || forceDbus == "0")) {
+         return std::unique_ptr<MInputContextConnection>(Maliit::createWestonIMProtocolConnection());
+     } else
