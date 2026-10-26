@@ -1,0 +1,319 @@
+From 97acd7d1cd5297f3afa58f07f087accd0e005c03 Mon Sep 17 00:00:00 2001
+From: Paul Schuldesz <paulschuldesz@gmail.com>
+Date: Mon, 26 Oct 2026 16:30:17 +0200
+Subject: [PATCH 17/21] ipa: simple: agc: Mean-luma target with highlight limit
+ and damped steps
+
+The MSV-based loop moved by at most a few percent per stats frame
+(factor = 1 + 0.04 * error, with the error capped as the 5-bin MSV
+saturates at 1 in dark scenes), so a dark start or a scene change took
+5-10 s to converge, and the MSV cannot tell a dim frame from a black one.
+Its target (MSV 2.5, about half of full scale linear) also overexposed
+normal scenes, clipping windows and skies.
+
+Control on the mean of the gamma-encoded (2.2), black-subtracted luma
+histogram instead (target 0.46 of full scale, ~117/255), which tracks
+what is displayed also in high-contrast scenes. A 98th-percentile
+highlight limit may lower the exposure by at most half a stop below that
+target; while the quantile is clipped it steps down by a fixed 0.6x.
+The correction is computed from the exposure and gain the measured frame
+was taken with, damped (factor^0.65), bounded to 1/4..4x per stats frame
+with a log2 deadband of 0.08, and split exposure-time first, gain second.
+The target stays expressed relative to the classic MSV optimum
+(targetMsv) so exposure compensation can scale it.
+---
+ src/ipa/simple/algorithms/agc.cpp | 218 +++++++++++++++++-------------
+ src/ipa/simple/algorithms/agc.h   |   2 +-
+ 2 files changed, 123 insertions(+), 97 deletions(-)
+
+diff --git a/src/ipa/simple/algorithms/agc.cpp b/src/ipa/simple/algorithms/agc.cpp
+index a13a7552..7eef7964 100644
+--- a/src/ipa/simple/algorithms/agc.cpp
++++ b/src/ipa/simple/algorithms/agc.cpp
+@@ -22,106 +22,88 @@ LOG_DEFINE_CATEGORY(IPASoftExposure)
+ namespace ipa::soft::algorithms {
+ 
+ /*
+- * The number of bins to use for the optimal exposure calculations.
++ * The number of bins to use for the mean sample value (MSV), kept for the
++ * debug log and as the reference scale of the exposure target.
+  */
+ static constexpr unsigned int kExposureBinsCount = 5;
+ 
+ /*
+- * The exposure is optimal when the mean sample value of the histogram is
+- * in the middle of the range.
++ * The MSV of a "well exposed" frame: the middle of the 1..5 range. The
++ * exposure target below is expressed relative to it, so an exposure value
++ * compensation can scale targetMsv by 2^EV and keep this meaning.
+  */
+ static constexpr float kExposureOptimal = kExposureBinsCount / 2.0;
+ 
+ /*
+- * This implements the hysteresis for the exposure adjustment.
+- * It is small enough to have the exposure close to the optimal, and is big
+- * enough to prevent the exposure from wobbling around the optimal value.
++ * The AGC aims for a mean luma of kTargetMean (fraction of full scale)
++ * after a 2.2 gamma encoding of the black-subtracted statistics: measuring
++ * the mean in the encoded domain tracks what the viewer sees, so high
++ * contrast scenes (a lamp or a window in a dim room) are not rendered dark
++ * the way a linear mean target would render them. 0.46 is ~117/255.
+  */
+-static constexpr float kExposureSatisfactory = 0.2;
++static constexpr double kTargetMean = 0.46;
++static constexpr double kEncodingGamma = 2.2;
+ 
+ /*
+- * Proportional gain for exposure/gain adjustment. Maps the MSV error to a
+- * multiplicative correction factor:
+- *
+- *   factor = 1.0 + kExpProportionalGain * error
+- *
+- * With kExpProportionalGain = 0.04:
+- *   - max error ~2.5 -> factor 1.10 (~10% step, same as before)
+- *   - error 1.0      -> factor 1.04 (~4% step)
+- *   - error 0.3      -> factor 1.012 (~1.2% step)
+- *
+- * This replaces the fixed 10% bang-bang step with a proportional correction
+- * that converges smoothly and avoids overshooting near the target.
++ * Highlight constraint: the 98th percentile luma should stay below
++ * kHighlightMax of the range, but the highlights may lower the exposure by
++ * at most a factor kHighlightMaxDrop (half a stop): a bright window or sky
++ * must not darken the subject.
+  */
+-static constexpr float kExpProportionalGain = 0.04;
++static constexpr double kHighlightQuantile = 0.98;
++static constexpr double kHighlightMax = 0.92;
++static constexpr double kHighlightMaxDrop = 0.7;
++static constexpr double kHighlightClipped = 0.98;
++static constexpr double kClippedStep = 0.6;
+ 
+ /*
+- * Maximum multiplicative step per frame, to bound the correction when the
+- * scene changes dramatically.
++ * Loop dynamics. The stats run every few frames and the sensor applies new
++ * values with a delay of a couple of frames, while the correction below is
++ * computed from the values the measured frame was actually exposed with,
++ * so a damped multiplicative step converges without oscillating:
++ * the applied correction is factor^kDamping, bounded per stats frame.
++ * Corrections within kDeadband (log2 units) are ignored to avoid hunting.
+  */
+-static constexpr float kExpMaxStep = 0.15;
++static constexpr double kDamping = 0.65;
++static constexpr double kMaxStepUp = 4.0;
++static constexpr double kMaxStepDown = 0.25;
++static constexpr double kDeadband = 0.08;
+ 
+ Agc::Agc()
+ {
+ }
+ 
+-void Agc::updateExposure(IPAContext &context, IPAFrameContext &frameContext, double exposureMSV)
++void Agc::updateExposure(IPAContext &context, IPAFrameContext &frameContext,
++			 double factor)
+ {
+ 	int32_t &exposure = frameContext.sensor.exposure;
+ 	double &again = frameContext.sensor.gain;
++	const auto &cfg = context.configuration.agc;
+ 
+-	double error = kExposureOptimal - exposureMSV;
+-
+-	if (std::abs(error) <= kExposureSatisfactory)
++	if (std::abs(std::log2(factor)) < kDeadband)
+ 		return;
+ 
++	factor = std::clamp(std::pow(factor, kDamping), kMaxStepDown, kMaxStepUp);
++
+ 	/*
+-	 * Compute a proportional correction factor. The sign of the error
+-	 * determines the direction: positive error means too dark (increase),
+-	 * negative means too bright (decrease).
++	 * Split the total exposure (lines x gain) between the exposure time
++	 * and the analogue gain: exposure time first up to its maximum, gain
++	 * only beyond that. The minimum gain is the sensor's 1x point.
+ 	 */
+-	float step = std::clamp(static_cast<float>(error) * kExpProportionalGain,
+-				-kExpMaxStep, kExpMaxStep);
+-	float factor = 1.0f + step;
+-
+-	if (factor > 1.0f) {
+-		/* Scene too dark: increase exposure first, then gain. */
+-		if (exposure < context.configuration.agc.exposureMax) {
+-			int32_t next = static_cast<int32_t>(exposure * factor);
+-			exposure = std::max(next, exposure + 1);
+-		} else {
+-			double next = again * factor;
+-			if (next - again < context.configuration.agc.againMinStep)
+-				again += context.configuration.agc.againMinStep;
+-			else
+-				again = next;
+-		}
+-	} else {
+-		/* Scene too bright: decrease gain first, then exposure. */
+-		if (again > context.configuration.agc.again10) {
+-			double next = again * factor;
+-			if (again - next < context.configuration.agc.againMinStep)
+-				again -= context.configuration.agc.againMinStep;
+-			else
+-				again = next;
+-		} else {
+-			int32_t next = static_cast<int32_t>(exposure * factor);
+-			exposure = std::min(next, exposure - 1);
+-		}
+-	}
++	const double gainFloor = std::max(cfg.againMin, cfg.again10);
++	const double total = std::max(static_cast<double>(exposure), 1.0) *
++			     std::max(again, cfg.againMin) * factor;
++
++	double newExposure = std::clamp(total / gainFloor,
++					static_cast<double>(cfg.exposureMin),
++					static_cast<double>(cfg.exposureMax));
++	double newGain = std::clamp(total / newExposure, cfg.againMin, cfg.againMax);
+ 
+-	exposure = std::clamp(exposure, context.configuration.agc.exposureMin,
+-			      context.configuration.agc.exposureMax);
+-	again = std::clamp(again, context.configuration.agc.againMin,
+-			   context.configuration.agc.againMax);
++	exposure = static_cast<int32_t>(std::lround(newExposure));
++	again = newGain;
+ 
+ 	context.activeState.agc.exposure = exposure;
+ 	context.activeState.agc.again = again;
+-
+-	LOG(IPASoftExposure, Debug)
+-		<< "exposureMSV " << exposureMSV
+-		<< " error " << error << " factor " << factor
+-		<< " exp " << exposure << " again " << again;
+ }
+ 
+ void Agc::process(IPAContext &context,
+@@ -155,41 +137,85 @@ void Agc::process(IPAContext &context,
+ 		return;
+ 	}
+ 
+-	/*
+-	 * Calculate Mean Sample Value (MSV) according to formula from:
+-	 * https://www.araa.asn.au/acra/acra2007/papers/paper84final.pdf
+-	 */
+ 	const auto &histogram = stats->yHistogram;
+-	const unsigned int blackLevelHistIdx =
+-		context.activeState.blc.level / (256 / SwIspStats::kYHistogramSize);
+-	const unsigned int histogramSize =
+-		SwIspStats::kYHistogramSize - blackLevelHistIdx;
+-	const unsigned int yHistValsPerBin = histogramSize / kExposureBinsCount;
+-	const unsigned int yHistValsPerBinMod =
+-		histogramSize / (histogramSize % kExposureBinsCount + 1);
+-	int exposureBins[kExposureBinsCount] = {};
+-	unsigned int denom = 0;
+-	unsigned int num = 0;
+-
+-	if (yHistValsPerBin == 0) {
+-		LOG(IPASoftExposure, Debug)
+-			<< "Not adjusting exposure due to insufficient histogram data";
++	constexpr unsigned int kHistSize = SwIspStats::kYHistogramSize;
++	constexpr double kBinWidth = 256.0 / kHistSize;
++	const double black = context.activeState.blc.level;
++	const double range = std::max(255.0 - black, 1.0);
++
++	uint64_t count = 0;
++	for (unsigned int i = 0; i < kHistSize; i++)
++		count += histogram[i];
++	if (count == 0) {
++		LOG(IPASoftExposure, Debug) << "Empty histogram, exposure unchanged";
+ 		return;
+ 	}
+ 
+-	for (unsigned int i = 0; i < histogramSize; i++) {
+-		unsigned int idx = (i - (i / yHistValsPerBinMod)) / yHistValsPerBin;
+-		exposureBins[idx] += histogram[blackLevelHistIdx + i];
++	/*
++	 * Linear mean and the highlight quantile, black level subtracted
++	 * and normalised to the sensor range, taking each bin at its centre.
++	 * The MSV of the classic 5-bin split is kept for reference.
++	 */
++	double sum = 0.0;
++	double sumLinear = 0.0;
++	double highlight = 1.0;
++	uint64_t seen = 0;
++	bool highlightFound = false;
++	const uint64_t highlightCount =
++		static_cast<uint64_t>(kHighlightQuantile * count);
++	const unsigned int blackIdx = std::min<unsigned int>(black / kBinWidth, kHistSize - 1);
++	const unsigned int msvSize = kHistSize - blackIdx;
++	uint64_t msvNum = 0, msvDen = 0;
++
++	for (unsigned int i = 0; i < kHistSize; i++) {
++		const double v = std::clamp(((i + 0.5) * kBinWidth - black) / range, 0.0, 1.0);
++		sum += std::pow(v, 1.0 / kEncodingGamma) * histogram[i];
++		sumLinear += v * histogram[i];
++		seen += histogram[i];
++		if (!highlightFound && seen >= highlightCount) {
++			highlight = std::max(v, 1.0 / range);
++			highlightFound = true;
++		}
++		if (i >= blackIdx) {
++			const unsigned int bin = std::min((i - blackIdx) * kExposureBinsCount / msvSize,
++							  kExposureBinsCount - 1);
++			msvNum += static_cast<uint64_t>(histogram[i]) * (bin + 1);
++			msvDen += histogram[i];
++		}
+ 	}
+-
+-	for (unsigned int i = 0; i < kExposureBinsCount; i++) {
+-		LOG(IPASoftExposure, Debug) << i << ": " << exposureBins[i];
+-		denom += exposureBins[i];
+-		num += exposureBins[i] * (i + 1);
++	const double mean = std::max(sum / count, std::pow(0.5 / range, 1.0 / kEncodingGamma));
++	const double meanLinear = sumLinear / count;
++	const double exposureMSV = msvDen ? static_cast<double>(msvNum) / msvDen : 0.0;
++
++	/* Exposure value compensation scales this (2^EV x kExposureOptimal). */
++	const double targetMsv = kExposureOptimal;
++	const double target = kTargetMean *
++			      std::pow(targetMsv / kExposureOptimal, 1.0 / kEncodingGamma);
++
++	/* The encoded mean scales with the exposure to the power 1/gamma. */
++	const double meanFactor = std::pow(target / mean, kEncodingGamma);
++	double factor = meanFactor;
++	if (highlight * factor > kHighlightMax) {
++		/*
++		 * A clipped quantile no longer measures how far over the
++		 * highlights are: step down by a fixed amount then.
++		 */
++		const double highlightFactor = highlight >= kHighlightClipped
++					     ? kClippedStep : kHighlightMax / highlight;
++		factor = std::min(meanFactor,
++				  std::max(highlightFactor, meanFactor * kHighlightMaxDrop));
+ 	}
+ 
+-	float exposureMSV = (denom == 0 ? 0 : static_cast<float>(num) / denom);
+-	updateExposure(context, frameContext, exposureMSV);
++	const int32_t oldExposure = frameContext.sensor.exposure;
++	const double oldGain = frameContext.sensor.gain;
++	updateExposure(context, frameContext, factor);
++
++	LOG(IPASoftExposure, Debug)
++		<< "mean " << mean << " (linear " << meanLinear << ") p98 " << highlight
++		<< " MSV " << exposureMSV << " target " << target
++		<< " factor " << factor
++		<< " exp " << oldExposure << "->" << frameContext.sensor.exposure
++		<< " again " << oldGain << "->" << frameContext.sensor.gain;
+ }
+ 
+ REGISTER_IPA_ALGORITHM(Agc, "Agc")
+diff --git a/src/ipa/simple/algorithms/agc.h b/src/ipa/simple/algorithms/agc.h
+index 112d9f5a..fc58218b 100644
+--- a/src/ipa/simple/algorithms/agc.h
++++ b/src/ipa/simple/algorithms/agc.h
+@@ -25,7 +25,7 @@ public:
+ 		     ControlList &metadata) override;
+ 
+ private:
+-	void updateExposure(IPAContext &context, IPAFrameContext &frameContext, double exposureMSV);
++	void updateExposure(IPAContext &context, IPAFrameContext &frameContext, double factor);
+ };
+ 
+ } /* namespace ipa::soft::algorithms */
+-- 
+2.54.0
+

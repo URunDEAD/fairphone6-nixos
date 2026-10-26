@@ -1,0 +1,67 @@
+From 1e12ca26009b1b139e5636f80c812c58c122477d Mon Sep 17 00:00:00 2001
+From: Paul Schuldesz <paulschuldesz@gmail.com>
+Date: Mon, 26 Oct 2026 16:44:38 +0200
+Subject: [PATCH 21/21] ipa: simple: agc: Exposure compensation factor and
+ exported correction
+
+Let other IPA code steer the automatic exposure without running a
+second AE loop: activeState.agc.evFactor (2^EV, default 1) scales the
+Agc target, and activeState.agc.correction holds the undamped total
+exposure correction computed from the latest statistics, for code that
+drives exposure time or gain itself (one of them manual) to apply to the
+automatic one.
+---
+ src/ipa/simple/algorithms/agc.cpp |  5 ++++-
+ src/ipa/simple/ipa_context.h      | 13 +++++++++++++
+ 2 files changed, 17 insertions(+), 1 deletion(-)
+
+diff --git a/src/ipa/simple/algorithms/agc.cpp b/src/ipa/simple/algorithms/agc.cpp
+index 7eef7964..2441cb64 100644
+--- a/src/ipa/simple/algorithms/agc.cpp
++++ b/src/ipa/simple/algorithms/agc.cpp
+@@ -188,7 +188,8 @@ void Agc::process(IPAContext &context,
+ 	const double exposureMSV = msvDen ? static_cast<double>(msvNum) / msvDen : 0.0;
+ 
+ 	/* Exposure value compensation scales this (2^EV x kExposureOptimal). */
+-	const double targetMsv = kExposureOptimal;
++	const double targetMsv = kExposureOptimal *
++				 std::clamp(context.activeState.agc.evFactor, 1.0 / 256, 256.0);
+ 	const double target = kTargetMean *
+ 			      std::pow(targetMsv / kExposureOptimal, 1.0 / kEncodingGamma);
+ 
+@@ -206,6 +207,8 @@ void Agc::process(IPAContext &context,
+ 				  std::max(highlightFactor, meanFactor * kHighlightMaxDrop));
+ 	}
+ 
++	context.activeState.agc.correction = factor;
++
+ 	const int32_t oldExposure = frameContext.sensor.exposure;
+ 	const double oldGain = frameContext.sensor.gain;
+ 	updateExposure(context, frameContext, factor);
+diff --git a/src/ipa/simple/ipa_context.h b/src/ipa/simple/ipa_context.h
+index 36a28256..4760f0c7 100644
+--- a/src/ipa/simple/ipa_context.h
++++ b/src/ipa/simple/ipa_context.h
+@@ -53,6 +53,19 @@ struct IPAActiveState {
+ 		int32_t exposure;
+ 		double again;
+ 		bool valid;
++		/*
++		 * Exposure value compensation as a linear factor (2^EV) the
++		 * Agc applies to its target; 1.0 = no compensation.
++		 */
++		double evFactor = 1.0;
++		/*
++		 * Total exposure (time x gain) correction the Agc computed
++		 * from the latest statistics, undamped, before the split
++		 * into time and gain: 1.0 = on target. Code that drives
++		 * exposure or gain itself (manual modes) can apply it to
++		 * the automatic parameter.
++		 */
++		double correction = 1.0;
+ 	} agc;
+ 
+ 	struct {
+-- 
+2.54.0
+
