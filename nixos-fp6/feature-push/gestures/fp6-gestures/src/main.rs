@@ -892,6 +892,24 @@ const EV_KEY: u16 = 0x01;
 const EV_ABS: u16 = 0x03;
 const TOUCH_NAME: &str = "ESWIN EPH86XX Touchscreen";
 
+/// capabilities/key bitmap (hex words, highest first, 64-bit on aarch64).
+fn has_key(caps: &str, key: u16) -> bool {
+    let words: Vec<u64> = caps.split_whitespace().filter_map(|w| u64::from_str_radix(w, 16).ok()).collect();
+    let (word, bit) = ((key / 64) as usize, key % 64);
+    words.len() > word && words[words.len() - 1 - word] >> bit & 1 == 1
+}
+
+#[cfg(test)]
+#[test]
+fn fp6_key_capabilities() {
+    // Read from the phone's /sys/class/input/eventN/device/capabilities/key.
+    assert!(has_key("4000000000000 0", volume::KEY_VOLUMEDOWN)); // pmic_resin
+    assert!(has_key("8000000000000 0", volume::KEY_VOLUMEUP)); // gpio-keys
+    assert!(has_key("10000000000000 0", volume::KEY_POWER)); // pmic_pwrkey
+    assert!(!has_key("8000000000000 0", volume::KEY_VOLUMEDOWN));
+    assert!(!has_key("400 0 0 8000 0 0", volume::KEY_VOLUMEUP)); // touchscreen
+}
+
 /// /dev/input/eventN nodes whose key capabilities include any of `keys`,
 /// or (keys empty) whose name is `name`.
 fn input_nodes(keys: &[u16], name: &str) -> Vec<std::path::PathBuf> {
@@ -907,14 +925,7 @@ fn input_nodes(keys: &[u16], name: &str) -> Vec<std::path::PathBuf> {
         let matches = if keys.is_empty() {
             std::fs::read_to_string(entry.join("device/name")).map_or(false, |n| n.trim() == name)
         } else {
-            std::fs::read_to_string(entry.join("device/capabilities/key")).map_or(false, |caps| {
-                let words: Vec<u64> = caps.split_whitespace().filter_map(|w| u64::from_str_radix(w, 16).ok()).collect();
-                // Highest word first; 64-bit words on aarch64.
-                keys.iter().any(|&k| {
-                    let (word, bit) = ((k / 64) as usize, k % 64);
-                    words.len() > word && words[words.len() - 1 - word] >> bit & 1 == 1
-                })
-            })
+            std::fs::read_to_string(entry.join("device/capabilities/key")).map_or(false, |caps| keys.iter().any(|&k| has_key(&caps, k)))
         };
         if matches {
             out.push(std::path::Path::new("/dev/input").join(base));
