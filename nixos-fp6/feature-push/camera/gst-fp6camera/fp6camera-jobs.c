@@ -42,6 +42,7 @@ typedef enum
   KIND_HDR,
   KIND_NIGHT,
   KIND_TIMELAPSE,
+  KIND_BRACKET,
 } Fp6JobKind;
 
 static const struct
@@ -52,6 +53,7 @@ static const struct
   {"hdr", KIND_HDR},
   {"night", KIND_NIGHT},
   {"timelapse", KIND_TIMELAPSE},
+  {"bracket", KIND_BRACKET},
 };
 
 typedef struct
@@ -537,6 +539,36 @@ fp6j_worker (gpointer data)
       }
       break;
     }
+    case KIND_BRACKET:{
+      /* every frame as its own JPEG: <path without .jpg>_EV+2.0.jpg */
+      gchar *base = g_str_has_suffix (path, ".jpg") ?
+          g_strndup (path, strlen (path) - 4) : g_strdup (path);
+      GString *list = g_string_new (NULL);
+      for (guint i = 0; i < frames->len && !p->job_cancel; i++) {
+        Fp6Frame *f = g_ptr_array_index (frames, i);
+        gchar *fp = g_strdup_printf ("%s_EV%+.1f.jpg", base, f->ev);
+        Fp6Image *one = fp6j_apply_zoom (fp6j_frame_image (f), zoom);
+        if (!one || !fp6j_save (self, one, fp, rotate, flip, quality,
+                f->exp_us, f->gain, "lomiri-camera-app (fp6 bracket)", &err)) {
+          fp6_image_free (one);
+          g_free (fp);
+          if (!err)
+            g_set_error (&err, GST_CORE_ERROR, GST_CORE_ERROR_FAILED,
+                "out of memory");
+          break;
+        }
+        fp6_image_free (one);
+        g_string_append_printf (list, "%s%s", list->len ? "\n" : "", fp);
+        g_free (fp);
+        fp6_progress (&prog, (i + 1.0) / frames->len);
+      }
+      if (!err && list->len)
+        result = g_string_free (list, FALSE);
+      else
+        g_string_free (list, TRUE);
+      g_free (base);
+      break;
+    }
     case KIND_TIMELAPSE:
       if (tl_pipe && fp6j_timelapse_close (self, tl_pipe, tl_src, path,
               tl_frames, &err))
@@ -747,6 +779,7 @@ fp6j_probe (GstPad * pad, GstPadProbeInfo * pi, gpointer user)
   switch (p->job_kind) {
     case KIND_HDR:
     case KIND_NIGHT:
+    case KIND_BRACKET:
       fp6j_step_frame (self, buf, now);
       break;
     case KIND_TIMELAPSE:
@@ -844,7 +877,8 @@ fp6j_start (Fp6LibcameraSrc * self, const gchar * kind_name,
   p->job_deadline = g_get_monotonic_time () + 30 * G_USEC_PER_SEC;
 
   switch (kind) {
-    case KIND_HDR:{
+    case KIND_HDR:
+    case KIND_BRACKET:{
       /* EV 0 first (the moment of the tap), then darker and brighter */
       gdouble ev = CLAMP (fp6j_param_double (s, "ev", 2.0), 0.3, 4.0);
       gint frames = (gint) fp6j_param_double (s, "frames", 3);
@@ -854,8 +888,17 @@ fp6j_start (Fp6LibcameraSrc * self, const gchar * kind_name,
         evs[3] = -2 * ev, evs[4] = 2 * ev;
       for (gint i = 0; i < frames; i++) {
         p->step_ev[i] = evs[i];
-        fp6j_exposure_for_ev (e0, g0, evs[i], FP6J_HANDHELD_US, e_max,
-            &p->step_exp[i], &p->step_gain[i]);
+        if (kind == KIND_BRACKET) {
+          /* Pro bracketing: the shutter time moves (the ISO stays, as a
+           * tripod user expects); gain only where the time hits a limit */
+          gdouble want = e0 * pow (2.0, evs[i]);
+          gint64 e = CLAMP ((gint64) llround (want), 40, MAX (e_max, 40));
+          p->step_exp[i] = e;
+          p->step_gain[i] = CLAMP (g0 * want / e, 1.0, 64.0);
+        } else {
+          fp6j_exposure_for_ev (e0, g0, evs[i], FP6J_HANDHELD_US, e_max,
+              &p->step_exp[i], &p->step_gain[i]);
+        }
       }
       p->n_steps = frames;
       break;

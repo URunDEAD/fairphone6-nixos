@@ -320,10 +320,10 @@ index 434a709..e540d77 100644
  
  class Fp6OverlayProvider : public QQuickImageProvider
 diff --git a/qml/Viewfinder/ViewFinderOverlay.qml b/qml/Viewfinder/ViewFinderOverlay.qml
-index b765ed6..56c0e77 100644
+index b765ed6..90700e1 100644
 --- a/qml/Viewfinder/ViewFinderOverlay.qml
 +++ b/qml/Viewfinder/ViewFinderOverlay.qml
-@@ -89,6 +89,12 @@ Item {
+@@ -89,6 +89,15 @@ Item {
          property bool proZebra: false
          property bool proPeaking: false
          property bool proLevel: false
@@ -333,10 +333,13 @@ index b765ed6..56c0e77 100644
 +        property string fp6VideoMode: "video"   // video | timelapse
 +        property real fp6TimelapseInterval: 2   // s between frames
 +        property int fp6TimelapseFps: 30        // playback rate
++        property int proBracket: 0              // 0 off, 1: 3 x +-1 EV, 2: 3 x +-2 EV, 3: 5 x +-1 EV
++        property int proIntervalS: 0            // intervalometer: seconds between photos (0 off)
++        property int proIntervalCount: 10       // photos per run
  
          Component.onCompleted: {
              if (!photoResolutions) photoResolutions = {}
-@@ -138,6 +144,8 @@ Item {
+@@ -138,6 +147,8 @@ Item {
      Binding { target: camera.pro; property: "aeLock"; value: proActive && proPanel.aeLock }
      Binding { target: camera.pro; property: "awbLock"; value: proActive && proPanel.awbLock }
      Binding { target: camera.pro; property: "afLock"; value: proActive && proPanel.afLock }
@@ -345,7 +348,7 @@ index b765ed6..56c0e77 100644
      Binding { target: camera.pro; property: "analysis"
          value: !proActive ? 0 : ((settings.proHistogram ? 1 : 0) | (settings.proZebra ? 2 : 0)
                                   | (settings.proPeaking ? 4 : 0)) }
-@@ -153,6 +161,45 @@ Item {
+@@ -153,6 +164,70 @@ Item {
              console.log("Long exposure failed: " + error);
              PopupUtils.open(captureFailedDialogComponent);
          }
@@ -372,8 +375,10 @@ index b765ed6..56c0e77 100644
 +       ("" = a normal camerabin photo) */
 +    function fp6JobKind() {
 +        if (main.contentExportMode || !camera.pro.available
-+                || camera.captureMode != Camera.CaptureStillImage || proActive)
++                || camera.captureMode != Camera.CaptureStillImage)
 +            return "";
++        if (proActive)
++            return settings.proBracket > 0 && !proLongExposure ? "bracket" : "";
 +        if (settings.fp6PhotoMode === "night") return "night";
 +        if (settings.hdrEnabled) return "hdr";
 +        return "";
@@ -383,6 +388,29 @@ index b765ed6..56c0e77 100644
 +                                         && camera.pro.available && settings.fp6VideoMode === "timelapse"
 +    readonly property bool fp6TimelapseRunning: fp6Timelapse && camera.pro.jobState == 1
 +
++    function fp6JobParams(kind) {
++        if (kind === "bracket")
++            return ["", "p, ev=1.0, frames=3", "p, ev=2.0, frames=3", "p, ev=1.0, frames=5"][settings.proBracket];
++        return "";
++    }
++
++    // Pro intervalometer: a photo every proIntervalS seconds, proIntervalCount times
++    Timer {
++        id: fp6Interval
++        property int taken: 0
++        interval: Math.max(1, settings.proIntervalS) * 1000
++        repeat: true
++        function begin() { taken = 0; controls.shoot(); taken = 1; start(); }
++        onTriggered: {
++            if (taken >= settings.proIntervalCount || !proActive) { stop(); return; }
++            if (!camera.photoCaptureInProgress && !camera.pro.jobBusy && !proStacking) {
++                controls.shoot();
++                taken++;
++            }
++        }
++    }
++    readonly property bool fp6IntervalRunning: fp6Interval.running
++
 +    /* Rebuild the camera pipeline (lens or raw stream change). */
 +    function restartCamera() {
 +        if (camera.cameraState != Camera.ActiveState || proStacking) return;
@@ -391,7 +419,23 @@ index b765ed6..56c0e77 100644
      }
  
      function photoDirectory() {
-@@ -615,7 +662,7 @@ Item {
+@@ -332,6 +407,15 @@ Item {
+     }
+ 
+     function triggerShoot() {
++        if (fp6Interval.running) {          // FP6: tap again to stop the intervalometer
++            fp6Interval.stop();
++            return;
++        }
++        if (proActive && settings.proIntervalS > 0 && camera.captureMode == Camera.CaptureStillImage
++                && !proStacking && shootButton.enabled) {
++            fp6Interval.begin();
++            return;
++        }
+         if (proStacking) {
+             if (camera.pro.stackState == 3) camera.pro.continueStack();
+             else if (camera.pro.stackState != 5) camera.pro.stopStack();
+@@ -615,7 +699,7 @@ Item {
              onOpenedChanged: optionsOverlayLoader.item.closeValueSelector()
              enabled: camera.videoRecorder.recorderState == CameraRecorder.StoppedState
                       && !camera.photoCaptureInProgress && !camera.timedCaptureInProgress
@@ -400,7 +444,7 @@ index b765ed6..56c0e77 100644
              opacity: enabled ? 1.0 : 0.3
              property bool ready: optionsOverlayLoader.status == Loader.Ready
  
-@@ -714,7 +761,8 @@ Item {
+@@ -714,7 +798,8 @@ Item {
                      property string label: i18n.tr("HDR")
                      property bool isToggle: true
                      property int selectedIndex: bottomEdge.indexForValue(hdrOptionsModel, settings.hdrEnabled)
@@ -410,7 +454,7 @@ index b765ed6..56c0e77 100644
                      property bool visible: camera.captureMode === Camera.CaptureStillImage
                      property bool showInIndicators: true
  
-@@ -1095,7 +1143,19 @@ Item {
+@@ -1095,7 +1180,19 @@ Item {
              // Ensure that the orientation is positive and within range.
              orientation = (orientation + 360) % 360;
  
@@ -431,7 +475,7 @@ index b765ed6..56c0e77 100644
                  if (main.contentExportMode) {
                      camera.videoRecorder.outputLocation = StorageLocations.temporaryLocation;
                  } else if (StorageLocations.removableStoragePresent && settings.preferRemovableStorage) {
-@@ -1120,10 +1180,24 @@ Item {
+@@ -1120,10 +1217,26 @@ Item {
                                             viewFinderOverlay.encodingQualityPercent())) {
                      PopupUtils.open(captureFailedDialogComponent);
                  }
@@ -439,9 +483,11 @@ index b765ed6..56c0e77 100644
 +                // FP6 phase 2: bracketed / multi-frame capture in the element
 +                if (camera.pro.jobBusy) return;   // one at a time (progress shown)
 +                shootFeedback.start();
-+                if (!camera.pro.startJob(viewFinderOverlay.fp6JobKind(), viewFinderOverlay.photoDirectory(),
++                var jk = viewFinderOverlay.fp6JobKind();
++                if (!camera.pro.startJob(jk, viewFinderOverlay.photoDirectory(),
 +                                         (360 - orientation) % 360,
-+                                         viewFinderOverlay.encodingQualityPercent(), "")) {
++                                         viewFinderOverlay.encodingQualityPercent(),
++                                         viewFinderOverlay.fp6JobParams(jk))) {
 +                    PopupUtils.open(captureFailedDialogComponent);
 +                }
              } else {
@@ -456,7 +502,7 @@ index b765ed6..56c0e77 100644
                  camera.photoCaptureInProgress = true;
                  camera.imageCapture.setMetadata("Orientation", orientation);
                  camera.imageCapture.setMetadata("Date", new Date());
-@@ -1235,7 +1309,7 @@ Item {
+@@ -1235,7 +1348,7 @@ Item {
              onClicked: controls.changeRecordMode()
              enabled: camera.videoRecorder.recorderState == CameraRecorder.StoppedState && !main.contentExportMode
                       && !camera.photoCaptureInProgress && !camera.timedCaptureInProgress
@@ -465,7 +511,7 @@ index b765ed6..56c0e77 100644
          }
  
          ShootButton {
-@@ -1256,7 +1330,8 @@ Item {
+@@ -1256,7 +1369,8 @@ Item {
                  (viewFinderOverlay.proStacking && camera.pro.stackState != 5)
              )
              state: (camera.captureMode == Camera.CaptureVideo) ?
@@ -475,7 +521,7 @@ index b765ed6..56c0e77 100644
                     "camera"
              onClicked: {
                  if (burst.count == 0)
-@@ -1320,7 +1395,7 @@ Item {
+@@ -1320,7 +1434,7 @@ Item {
              customRotation: main.staticRotationAngle
              enabled: !camera.switchInProgress && camera.videoRecorder.recorderState == CameraRecorder.StoppedState
                       && !camera.photoCaptureInProgress && !camera.timedCaptureInProgress
@@ -484,7 +530,7 @@ index b765ed6..56c0e77 100644
              iconName: "camera-flip"
              onClicked: controls.switchCamera()
          }
-@@ -1388,7 +1463,7 @@ Item {
+@@ -1388,7 +1502,7 @@ Item {
              spacing: units.gu(1)
              visible: camera.position !== Camera.FrontFace && !main.contentExportMode
                       && camera.videoRecorder.recorderState == CameraRecorder.StoppedState
@@ -493,7 +539,7 @@ index b765ed6..56c0e77 100644
              enabled: !viewFinderOverlay.proStacking && !camera.switchInProgress
              rotation: main.staticRotationAngle
              Fp6ProChip { value: "0.6×"; selected: camera.pro.ultrawide
-@@ -1397,6 +1472,90 @@ Item {
+@@ -1397,6 +1511,90 @@ Item {
                  onClicked: viewFinderOverlay.switchLens(false) }
          }
  
@@ -584,10 +630,18 @@ index b765ed6..56c0e77 100644
          // ---- FP6 Pro mode toggle (top right) and panel
          Fp6ProChip {
              id: proToggle
-@@ -1466,6 +1625,12 @@ Item {
+@@ -1466,6 +1664,20 @@ Item {
              visible: viewFinderOverlay.proActive && settings.proLevel
          }
  
++        Label {
++            anchors { horizontalCenter: parent.horizontalCenter; top: parent.top; topMargin: units.gu(16) }
++            visible: viewFinderOverlay.fp6IntervalRunning
++            color: "white"; style: Text.Outline; styleColor: "black"
++            text: i18n.tr("Interval: %1 of %2 · every %3 s · tap to stop")
++                  .arg(fp6Interval.taken).arg(settings.proIntervalCount).arg(settings.proIntervalS)
++        }
++
 +        Fp6JobFeedback {
 +            anchors { horizontalCenter: parent.horizontalCenter; top: parent.top; topMargin: units.gu(9) }
 +            pro: camera.pro
@@ -681,13 +735,33 @@ index 0000000..9777f1b
 +    }
 +}
 diff --git a/qml/components/Fp6ProPanel.qml b/qml/components/Fp6ProPanel.qml
-index 7ef68d6..156d668 100644
+index 7ef68d6..006e056 100644
 --- a/qml/components/Fp6ProPanel.qml
 +++ b/qml/components/Fp6ProPanel.qml
-@@ -302,6 +302,10 @@ Item {
+@@ -302,6 +302,30 @@ Item {
                          selected: settings.proLevel; onClicked: settings.proLevel = !settings.proLevel }
                      Fp6ProChip { title: i18n.tr("grid"); value: settings.gridEnabled ? i18n.tr("on") : i18n.tr("off")
                          selected: settings.gridEnabled; onClicked: settings.gridEnabled = !settings.gridEnabled }
++                    // Phase 2: exposure bracketing (separate files) and intervalometer
++                    Fp6ProChip { title: i18n.tr("bracket")
++                        value: [i18n.tr("off"), "3×±1", "3×±2", "5×±1"][settings.proBracket]
++                        selected: settings.proBracket > 0
++                        onClicked: settings.proBracket = (settings.proBracket + 1) % 4 }
++                    Fp6ProChip { title: i18n.tr("interval")
++                        value: settings.proIntervalS > 0 ? settings.proIntervalS + " s" : i18n.tr("off")
++                        selected: settings.proIntervalS > 0
++                        onClicked: {
++                            var v = [0, 2, 5, 10, 30, 60, 300];
++                            settings.proIntervalS = v[(v.indexOf(settings.proIntervalS) + 1) % v.length];
++                        }
++                    }
++                    Fp6ProChip { title: i18n.tr("photos"); visible: settings.proIntervalS > 0
++                        value: settings.proIntervalCount
++                        onClicked: {
++                            var v = [5, 10, 20, 50, 100, 500];
++                            settings.proIntervalCount = v[(v.indexOf(settings.proIntervalCount) + 1) % v.length];
++                        }
++                    }
 +                    // Phase 2: DNG next to the JPEG (Pictures/.../RAW/)
 +                    Fp6ProChip { title: i18n.tr("format"); value: settings.proRaw ? "RAW+JPEG" : "JPEG"
 +                        selected: settings.proRaw; highlighted: settings.proRaw && !pro.rawActive
