@@ -15,6 +15,7 @@ let
       ./camera/lomiri-camera-fp6.nix
       ./network/network-fp6.nix
       ./cellular/cellular-fp6.nix
+      ./contacts/contacts-fp6.nix
       ./ims/ims-fp6.nix
       ./misc/rtc-offset-fp6.nix
       ./misc/sd-automount-fp6.nix

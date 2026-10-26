@@ -31,7 +31,7 @@ index 0db3afd..702e460 100644
              // just emit the signal to pretend we did a contact search
              Q_EMIT request->stateChanged(QContactAbstractRequest::FinishedState);
 diff --git a/liblomiritelephonyservice/contactutils.cpp b/liblomiritelephonyservice/contactutils.cpp
-index 45a53cc..c719f62 100644
+index 45a53cc..4f76330 100644
 --- a/liblomiritelephonyservice/contactutils.cpp
 +++ b/liblomiritelephonyservice/contactutils.cpp
 @@ -22,6 +22,7 @@
@@ -42,31 +42,50 @@ index 45a53cc..c719f62 100644
  
  QTCONTACTS_USE_NAMESPACE
  
-@@ -34,7 +35,26 @@ QContactManager *sharedManager(const QString &engine)
-     if (!qgetenv("TELEPHONY_SERVICE_TEST").isEmpty()) {
-         finalEngine = "memory";
-     }
+@@ -30,11 +31,28 @@ namespace ContactUtils
+ 
+ QContactManager *sharedManager(const QString &engine)
+ {
+-    QString finalEngine = engine;
+-    if (!qgetenv("TELEPHONY_SERVICE_TEST").isEmpty()) {
+-        finalEngine = "memory";
+-    }
 -    static QContactManager *instance = new QContactManager(finalEngine);
-+    // FP6: the "galera" engine (address-book-service) is not installed on
-+    // this NixOS/Lomiri build. A QContactManager for a missing engine is the
-+    // invalid engine, whose fetch requests never start, never finish and thus
-+    // silently drop every SMS notification and messaging-menu entry. Fall back
-+    // to an engine that exists (qtcontacts-sqlite holds the user's contacts).
-+    static QContactManager *instance = [&finalEngine]() {
-+        const QString override = qEnvironmentVariable("TELEPHONY_SERVICE_CONTACTS_ENGINE");
-+        if (!override.isEmpty()) {
-+            finalEngine = override;
++    // FP6: backport of upstream 611f2583/e1d8b523 (lomiri-telephony-service
++    // main): default to qtcontacts-sqlite, the store lomiri-addressbook-app and
++    // lomiri-history-service use, overridable with LOMIRI_CONTACT_BACKEND.
++    // 0.6.2 hard-wired "galera" (address-book-service), which is not packaged:
++    // QtContacts then hands back its invalid engine, whose fetch requests never
++    // start or finish, so no contact name ever resolved. If the chosen engine
++    // is not installed either, use "memory" rather than the invalid engine.
++    static QContactManager *instance = [&engine]() {
++        QString finalEngine = engine;
++        if (qEnvironmentVariableIsSet("TELEPHONY_SERVICE_TEST")) {
++            finalEngine = QStringLiteral("memory");
++        } else if (finalEngine.isEmpty()) {
++            finalEngine = qEnvironmentVariable("LOMIRI_CONTACT_BACKEND", "org.nemomobile.contacts.sqlite");
 +        }
 +        const QStringList available = QContactManager::availableManagers();
 +        if (!available.contains(finalEngine)) {
-+            const QString fallback = available.contains(QStringLiteral("org.nemomobile.contacts.sqlite"))
-+                    ? QStringLiteral("org.nemomobile.contacts.sqlite") : QStringLiteral("memory");
 +            qWarning() << "ContactUtils: contacts engine" << finalEngine << "is not available"
-+                       << available << "- using" << fallback;
-+            finalEngine = fallback;
++                       << available << "- using \"memory\"";
++            finalEngine = QStringLiteral("memory");
 +        }
 +        return new QContactManager(finalEngine);
 +    }();
      return instance;
+ }
+ 
+diff --git a/liblomiritelephonyservice/contactutils.h b/liblomiritelephonyservice/contactutils.h
+index 2a018c9..b7042ca 100644
+--- a/liblomiritelephonyservice/contactutils.h
++++ b/liblomiritelephonyservice/contactutils.h
+@@ -32,7 +32,7 @@ QTCONTACTS_USE_NAMESPACE
+ 
+ namespace ContactUtils
+ {
+-    QContactManager *sharedManager(const QString &engine = "galera");
++    QContactManager *sharedManager(const QString &engine = QString());
+     QString formatContactName(const QContact &contact);
  }
  
