@@ -1,0 +1,68 @@
+diff --git a/src/platforms/mirserver/qmirserver_p.cpp b/src/platforms/mirserver/qmirserver_p.cpp
+index db192d0..8816061 100644
+--- a/src/platforms/mirserver/qmirserver_p.cpp
++++ b/src/platforms/mirserver/qmirserver_p.cpp
+@@ -46,6 +46,7 @@
+ #include <miral/x11_support.h>
+ #include <miral/keymap.h>
+ #include <miral/wayland_extensions.h>
++#include <miral/application.h>
+ 
+ #include <miral/lambda_as_function.h>
+ 
+@@ -186,6 +187,33 @@ inline void exportEnvVarToSystemd(const std::string& key, const std::string& val
+     sdManager.call("SetEnvironment", QStringList() << pair);
+ }
+ 
++namespace {
++// FP6 privacy-lock. Upstream qtmir offered these to every Wayland client:
++// with them any app could type or tap into other apps (virtual keyboard /
++// pointer), list and activate every window (foreign toplevel), try to
++// capture the screen (screencopy) or become the input method and see what
++// is typed (input-method-v2). Nothing on the phone needs them: Maliit types
++// through zwp_input_method_v1 (Mir's TextInputHub), the shell draws its own
++// panels and screen-capture reads back the shell's own frames. They are
++// offered to nobody; FP6_WAYLAND_PRIVILEGED_ALLOW_ALL=1 in Lomiri's
++// environment restores the upstream behaviour (tests only).
++void fp6RestrictPrivilegedExtensions(miral::WaylandExtensions& extensions)
++{
++    static bool const allowAll = qEnvironmentVariableIntValue("FP6_WAYLAND_PRIVILEGED_ALLOW_ALL") == 1;
++    for (char const* name : {miral::WaylandExtensions::zwp_virtual_keyboard_manager_v1,
++                             miral::WaylandExtensions::zwlr_virtual_pointer_manager_v1,
++                             miral::WaylandExtensions::zwlr_foreign_toplevel_manager_v1,
++                             miral::WaylandExtensions::zwlr_screencopy_manager_v1,
++                             miral::WaylandExtensions::zwp_input_method_manager_v2}) {
++        extensions.conditionally_enable(name, [](miral::WaylandExtensions::EnableInfo const& info) {
++            qCInfo(QTMIR_MIR_MESSAGES) << info.name() << (allowAll ? "offered to" : "not offered to")
++                                       << "pid" << miral::pid_of(info.app());
++            return allowAll;
++        });
++    }
++}
++} // namespace
++
+ void QMirServerPrivate::run(const std::function<void()> &startCallback)
+ {
+     m_mirServerHooks.create_prompt_session_listener(std::dynamic_pointer_cast<miroil::PromptSessionListener>(std::make_shared<qtmir::PromptSessionListener>()));
+@@ -211,6 +239,7 @@ void QMirServerPrivate::run(const std::function<void()> &startCallback)
+     }};
+ 
+     miral::WaylandExtensions waylandExtensions{};
++    fp6RestrictPrivilegedExtensions(waylandExtensions);
+     waylandExtensions.add_extension(qtmir::qtWindowmanagerExtension());
+     waylandExtensions.add_extension(qtmir::qtKwinServerDecorationManagerExtension(m_windowModelNotifier));
+ 
+@@ -258,12 +287,7 @@ void QMirServerPrivate::run(const std::function<void()> &startCallback)
+             m_mirServerHooks,
+         waylandExtensions
+             .enable(miral::WaylandExtensions::zwlr_layer_shell_v1)
+-            .enable(miral::WaylandExtensions::zwlr_foreign_toplevel_manager_v1)
+-            .enable(miral::WaylandExtensions::zxdg_output_manager_v1)
+-            .enable(miral::WaylandExtensions::zwp_virtual_keyboard_manager_v1)
+-            .enable(miral::WaylandExtensions::zwlr_virtual_pointer_manager_v1)
+-            .enable(miral::WaylandExtensions::zwp_input_method_manager_v2)
+-            .enable(miral::WaylandExtensions::zwlr_screencopy_manager_v1),
++            .enable(miral::WaylandExtensions::zxdg_output_manager_v1),
+             miral::set_window_management_policy<WrappedWindowManagementPolicy>(m_windowModelNotifier,
+                                                                                m_windowController,
+                                                                                m_workspaceController,

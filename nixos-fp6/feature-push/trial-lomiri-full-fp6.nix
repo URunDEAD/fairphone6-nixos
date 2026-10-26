@@ -54,6 +54,7 @@ let
       ./app-ready/app-ready-fp6.nix
       ./screen-capture/screen-capture-fp6.nix
       ({ ... }: { imports = [ ./notifications/notifications-fp6.nix ]; hardware.fairphone6.notifications.enable = false; })
+      ({ ... }: { imports = [ ./privacy-lock/privacy-lock-fp6.nix ]; hardware.fairphone6.privacyLock.enable = true; })
       ({ lib, options, ... }: {
         # fp6-lomiri-powerd replaces the manual-only brightness bridge.
         # lomiri-gpu-fp6.nix restates it at mkOverride 10.

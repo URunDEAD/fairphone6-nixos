@@ -1,0 +1,127 @@
+diff -u a/PageComponent.qml b/PageComponent.qml
+--- a/PageComponent.qml	2026-10-26 21:11:05.623638168 +0200
++++ b/PageComponent.qml	2026-10-26 21:52:43.716326400 +0200
+@@ -226,6 +226,51 @@
+                 text: i18n.tr("App permissions")
+                 onClicked: pageStack.addPageToNextColumn(root, Qt.resolvedUrl("AppAccess.qml"), {pluginManager: pluginManager})
+             }
++
++            // FP6 privacy-lock (feature-push/privacy-lock): pages in ../fp6-privacy.
++            GSettings {
++                id: fp6Privacy
++                schema.id: "com.fairphone6.privacy"
++            }
++
++            SettingsListItems.Standard {
++                objectName: "fp6PrivacyIndicators"
++                text: i18n.tr("Camera, microphone & location indicator")
++                Switch {
++                    property bool serverChecked: fp6Privacy.indicatorsEnabled !== false
++                    onServerCheckedChanged: checked = serverChecked
++                    Component.onCompleted: checked = serverChecked
++                    onTriggered: fp6Privacy.indicatorsEnabled = checked
++                }
++            }
++
++            // (Clipboard page: settings-page/Clipboard.qml, listed here once
++            // Lomiri's Mir offers ext-data-control; see privacy-lock README.)
++
++            SettingsListItems.SingleValueProgression {
++                objectName: "fp6WifiMac"
++                text: i18n.tr("Private Wi-Fi address")
++                value: fp6Privacy.wifiMacRandomization !== false ? i18n.tr("On") : i18n.tr("Off")
++                onClicked: pageStack.addPageToNextColumn(root, Qt.resolvedUrl("../fp6-privacy/WifiMac.qml"), { settings: fp6Privacy })
++            }
++
++            SettingsItemTitle {
++                text: i18n.tr("Emergency")
++            }
++
++            SettingsListItems.SingleValueProgression {
++                objectName: "fp6EmergencyInfo"
++                text: i18n.tr("Emergency information")
++                value: fp6Privacy.emergencyOnLockscreen === true ? i18n.tr("On lock screen") : i18n.tr("Off")
++                onClicked: pageStack.addPageToNextColumn(root, Qt.resolvedUrl("../fp6-privacy/EmergencyInfo.qml"), { settings: fp6Privacy })
++            }
++
++            SettingsListItems.SingleValueProgression {
++                objectName: "fp6Sos"
++                text: i18n.tr("Emergency SOS")
++                value: fp6Privacy.sosEnabled === true ? (fp6Privacy.testMode === true ? i18n.tr("Test mode") : i18n.tr("On")) : i18n.tr("Off")
++                onClicked: pageStack.addPageToNextColumn(root, Qt.resolvedUrl("../fp6-privacy/Sos.qml"), { settings: fp6Privacy })
++            }
+         }
+     }
+ }
+diff -u a/PhoneLocking.qml b/PhoneLocking.qml
+--- a/PhoneLocking.qml	2026-10-26 21:11:05.623691616 +0200
++++ b/PhoneLocking.qml	2026-10-26 21:11:28.042007370 +0200
+@@ -84,6 +84,7 @@
+             }
+ 
+             SettingsListItems.SingleValueProgression {
++                id: lockTimeoutItem
+                 objectName: "lockTimeout"
+                 property bool lockOnSuspend: securityPrivacy.securityType !==
+                                                 LomiriSecurityPrivacyPanel.Swipe
+@@ -120,12 +121,56 @@
+                         { title: text, lockOnSuspend: lockOnSuspend } )
+             }
+ 
++            // FP6 privacy-lock: lock grace period after the display turns off
++            // (Lomiri Shell.qml), power key, lock-screen camera.
++            GSettings {
++                id: fp6Privacy
++                schema.id: "com.fairphone6.privacy"
++            }
++
++            SettingsListItems.SingleValueProgression {
++                objectName: "fp6LockGrace"
++                text: i18n.tr("Lock after the display turns off")
++                visible: lockTimeoutItem.lockOnSuspend
++                property int grace: fp6Privacy.lockGraceSeconds || 0
++                value: grace === 0 ? i18n.tr("Immediately") :
++                       grace < 60 ? i18n.tr("After %1 second", "After %1 seconds", grace).arg(grace) :
++                                    i18n.tr("After %1 minute", "After %1 minutes", Math.round(grace / 60)).arg(Math.round(grace / 60))
++                onClicked: pageStack.addPageToNextColumn(root, Qt.resolvedUrl("../fp6-privacy/LockGrace.qml"), { settings: fp6Privacy })
++            }
++
+             SettingsListItems.Standard {
+-                CheckBox {
+-                    checked: true
++                objectName: "fp6PowerKeyLocks"
++                text: i18n.tr("Power button locks instantly")
++                visible: lockTimeoutItem.lockOnSuspend && (fp6Privacy.lockGraceSeconds || 0) > 0
++                Switch {
++                    property bool serverChecked: fp6Privacy.powerKeyLocksInstantly !== false
++                    onServerCheckedChanged: checked = serverChecked
++                    Component.onCompleted: checked = serverChecked
++                    onTriggered: fp6Privacy.powerKeyLocksInstantly = checked
+                 }
+-                text: i18n.tr("Sleep locks immediately")
+-                visible: showAllUI
++            }
++
++            ListItems.Caption {
++                visible: lockTimeoutItem.lockOnSuspend
++                text: i18n.tr("The passcode or fingerprint is needed once the phone has locked. Turning the display back on before then skips the lock screen.")
++            }
++
++            SettingsListItems.Standard {
++                objectName: "fp6LockscreenCamera"
++                text: i18n.tr("Camera from the lock screen")
++                visible: lockTimeoutItem.lockOnSuspend
++                Switch {
++                    property bool serverChecked: fp6Privacy.lockscreenCamera === true
++                    onServerCheckedChanged: checked = serverChecked
++                    Component.onCompleted: checked = serverChecked
++                    onTriggered: fp6Privacy.lockscreenCamera = checked
++                }
++            }
++
++            ListItems.Caption {
++                visible: lockTimeoutItem.lockOnSuspend
++                text: i18n.tr("Opens the camera without unlocking. Only photos taken since then can be viewed; the gallery and other apps need the passcode.")
+             }
+ 
+             SettingsItemTitle {

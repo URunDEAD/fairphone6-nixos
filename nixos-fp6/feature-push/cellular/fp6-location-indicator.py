@@ -18,9 +18,22 @@ It is also the user's GeoClue agent (org.freedesktop.GeoClue2.Agent, id
 non-system apps when no agent is registered. AuthorizeApp grants the
 requested accuracy while location detection is on and refuses it when off;
 MaxAccuracyLevel follows the toggle (0 = none).
+
+Privacy (privacy-lock module):
+  * every AuthorizeApp answer is recorded in
+    $XDG_RUNTIME_DIR/fp6-privacy/location-apps.json (last 20: desktop id,
+    time, granted) for the status-bar in-use indicator (fp6-privacy-indicator);
+  * while location is off, QtPositioning's geoclue2 cache
+    (~/.local/share/qtposition-geoclue2, replayed by Qt apps as a fresh
+    position on startUpdates even when GeoClue refuses) is replaced by an
+    empty directory, so Qt can neither replay nor re-save it; it is removed
+    again when location is turned on.
 """
+import json
 import os
+import shutil
 import subprocess
+import time
 
 from gi.repository import Gio, GLib
 
@@ -39,6 +52,10 @@ AGENT_XML = """<node><interface name="org.freedesktop.GeoClue2.Agent">
 ACCURACY_EXACT = 8
 CONF = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
                     "fp6-location", "enabled")
+QT_CACHE = os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"),
+                        "qtposition-geoclue2")
+APPS_LOG = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}",
+                        "fp6-privacy", "location-apps.json")
 
 
 def log(msg):
@@ -60,6 +77,35 @@ def save_enabled(on):
             f.write("1\n" if on else "0\n")
     except OSError as e:
         log(f"cannot store setting: {e}")
+
+
+def block_qt_cache(block):
+    """Off: a directory where QtPositioning keeps its last position file."""
+    try:
+        if block:
+            if os.path.isdir(QT_CACHE):
+                return
+            if os.path.lexists(QT_CACHE):
+                os.remove(QT_CACHE)
+                log("removed the cached Qt position")
+            os.makedirs(QT_CACHE, mode=0o700)
+        elif os.path.isdir(QT_CACHE) and not os.path.islink(QT_CACHE):
+            shutil.rmtree(QT_CACHE, ignore_errors=True)
+    except OSError as e:
+        log(f"Qt position cache: {e}")
+
+
+def record_app(app, granted, history=[]):
+    history.append({"id": app, "time": time.time(), "granted": bool(granted)})
+    del history[:-20]
+    try:
+        os.makedirs(os.path.dirname(APPS_LOG), exist_ok=True)
+        tmp = APPS_LOG + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump({"apps": history}, f)
+        os.replace(tmp, APPS_LOG)
+    except OSError as e:
+        log(f"cannot record location app: {e}")
 
 
 class Indicator:
@@ -121,6 +167,7 @@ class Indicator:
             return
         self.enabled = on
         save_enabled(on)
+        block_qt_cache(not on)
         for name in ("location-detection-enabled", "gps-detection-enabled"):
             self.actions.lookup_action(name).set_state(GLib.Variant("b", on))
         self.root.set_state(self.root_state())
@@ -158,8 +205,9 @@ class Indicator:
 
     def agent_call(self, conn, sender, path, iface, method, params, inv):
         if method == "AuthorizeApp":
-            _app, req = params.unpack()
+            app, req = params.unpack()
             ok = self.enabled
+            record_app(app, ok)
             inv.return_value(GLib.Variant("(bu)", (ok, min(req, self.max_accuracy()) if ok else 0)))
         else:
             inv.return_dbus_error("org.freedesktop.DBus.Error.UnknownMethod", method)
@@ -195,6 +243,7 @@ class Indicator:
         self.set_enabled(want)
         if self.enabled != want:  # call failed; reflect reality (off)
             self.enabled = False
+        block_qt_cache(not self.enabled)
         return False
 
     def on_bus(self, conn, _name):

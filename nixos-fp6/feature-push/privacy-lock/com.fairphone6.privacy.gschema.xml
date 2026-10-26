@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- FP6 privacy & lock settings (privacy-lock module). Read by Lomiri (lock
+     grace, power key, lock-screen camera), fp6-privacyd, fp6-privacy-indicator,
+     fp6-privacy-clipboard and the Security & Privacy pages. -->
+<schemalist gettext-domain="lomiri-system-settings">
+  <schema id="com.fairphone6.privacy" path="/com/fairphone6/privacy/">
+    <!-- Auto-lock -->
+    <key name="lock-grace-seconds" type="u">
+      <range min="0" max="3600"/>
+      <default>0</default>
+      <summary>Lock this long after the display turns off (0 = immediately)</summary>
+    </key>
+    <key name="power-key-locks-instantly" type="b">
+      <default>true</default>
+      <summary>The power key locks at once, whatever the grace period</summary>
+    </key>
+    <!-- Lock-screen camera -->
+    <key name="lockscreen-camera" type="b">
+      <default>false</default>
+      <summary>Camera shortcut on the lock screen (restricted camera, photos of this session only)</summary>
+    </key>
+    <!-- Emergency information -->
+    <key name="emergency-on-lockscreen" type="b">
+      <default>false</default>
+      <summary>Show the emergency information on the lock screen</summary>
+    </key>
+    <key name="emergency-info" type="s">
+      <default>'{}'</default>
+      <summary>Emergency information (JSON: ownerName, ownerMessage, bloodType, allergies, medications, conditions, notes, organDonor, contacts[{name, relation, number}])</summary>
+    </key>
+    <!-- SOS -->
+    <key name="sos-enabled" type="b">
+      <default>false</default>
+      <summary>Press the power key quickly several times to call the emergency number</summary>
+    </key>
+    <key name="sos-presses" type="u">
+      <range min="3" max="10"/>
+      <default>5</default>
+      <summary>Number of quick power presses that start SOS</summary>
+    </key>
+    <key name="sos-countdown" type="u">
+      <range min="3" max="30"/>
+      <default>5</default>
+      <summary>Seconds to cancel before the call starts</summary>
+    </key>
+    <key name="sos-number" type="s">
+      <default>'112'</default>
+      <summary>Emergency number SOS calls</summary>
+    </key>
+    <key name="sos-send-sms" type="b">
+      <default>false</default>
+      <summary>After the call, text the emergency contacts with the location</summary>
+    </key>
+    <key name="test-mode" type="b">
+      <default>false</default>
+      <summary>Test mode: SOS and the lock-screen contact buttons only show what they would do (no call, no SMS)</summary>
+    </key>
+    <!-- In-use indicators -->
+    <key name="indicators-enabled" type="b">
+      <default>true</default>
+      <summary>Show a status-bar icon while an app uses the camera, microphone or location</summary>
+    </key>
+    <!-- Wi-Fi MAC -->
+    <key name="wifi-mac-randomization" type="b">
+      <default>true</default>
+      <summary>Private Wi-Fi addresses (per-network MAC addresses)</summary>
+    </key>
+    <key name="wifi-mac-modes" type="as">
+      <default>[]</default>
+      <summary>Per saved network: "uuid TAB mode", mode = default, stable, random or device</summary>
+    </key>
+    <key name="wifi-networks" type="as">
+      <default>[]</default>
+      <summary>Saved Wi-Fi networks as "uuid TAB name TAB mode" (written by fp6-privacyd)</summary>
+    </key>
+    <!-- Clipboard -->
+    <key name="clipboard-clear-minutes" type="u">
+      <range min="0" max="1440"/>
+      <default>0</default>
+      <summary>Clear the clipboard this many minutes after the last copy (0 = never)</summary>
+    </key>
+    <key name="clipboard-read-notify" type="b">
+      <default>false</default>
+      <summary>Notify when an app reads (pastes) the clipboard</summary>
+    </key>
+  </schema>
+</schemalist>

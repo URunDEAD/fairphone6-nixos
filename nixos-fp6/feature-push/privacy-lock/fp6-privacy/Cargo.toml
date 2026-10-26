@@ -1,0 +1,37 @@
+[package]
+name = "fp6-privacy"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "FP6 Lomiri privacy & lock helpers: in-use indicator, camera monitor, SOS, emergency info, Wi-Fi MAC policy"
+publish = false
+
+[[bin]]
+name = "fp6-privacy-indicator"
+path = "src/bin/indicator.rs"
+
+[[bin]]
+name = "fp6-privacyd"
+path = "src/bin/privacyd.rs"
+
+[[bin]]
+name = "fp6-privacy-system"
+path = "src/bin/system.rs"
+
+[[bin]]
+name = "fp6-privacy-clipboard"
+path = "src/bin/clipboard.rs"
+
+[dependencies]
+gio = "0.20"
+glib = "0.20"
+libc = "0.2"
+serde_json = "1"
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
