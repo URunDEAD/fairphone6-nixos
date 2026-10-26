@@ -1,0 +1,555 @@
+diff --git a/implementations/main.cpp b/implementations/main.cpp
+index f45dedd..c0752fb 100644
+--- a/implementations/main.cpp
++++ b/implementations/main.cpp
+@@ -379,6 +379,23 @@ qcomtee_object* OpenService(qcomtee_object* env, std::uint32_t uid) {
+ // container, it should serve read-only, where an unlink is refused with EROFS
+ // and the store cannot be damaged.
+ bool g_sfsReadOnly = true;
++bool g_allowTemplateRemoval = false;
++bool g_allowEmptyUserGroup = false;
++std::atomic<bool> g_storeMutationActive{false};
++std::atomic<bool> g_explicitRemovalActive{false};
++struct StoreMutationScope {
++    bool removal;
++    explicit StoreMutationScope(bool isRemoval = false) : removal(isRemoval) {
++        g_storeMutationActive.store(true);
++        if (removal) g_explicitRemovalActive.store(true);
++    }
++    StoreMutationScope(const StoreMutationScope&) = delete;
++    StoreMutationScope& operator=(const StoreMutationScope&) = delete;
++    ~StoreMutationScope() {
++        if (removal) g_explicitRemovalActive.store(false);
++        g_storeMutationActive.store(false);
++    }
++};
+ std::string g_sfsRoot = "/var/lib/fingerprintd/sfs";
+ 
+ struct ListenerObject {
+@@ -438,8 +455,8 @@ void ServeGpFile(std::span<std::byte> sb) {
+     }
+     case sfs::Action::Write: {
+         std::println("    gpfile WRITE {} off={} len={}", *full, req->offset, req->length);
+-        if (g_sfsReadOnly) {
+-            std::println("      REFUSED: read-only");
++        if (!fingerprintd::store::MayWriteStore(g_sfsReadOnly, g_storeMutationActive.load())) {
++            std::println("      REFUSED: no explicit writable enrollment/removal transaction");
+             sfs::WriteReply(sb, EROFS, 0);
+             return;
+         }
+@@ -479,8 +496,9 @@ void ServeGpFile(std::span<std::byte> sb) {
+     }
+     case sfs::Action::Unlink:
+         std::println("    gpfile UNLINK {}", *full);
+-        if (g_sfsReadOnly) {
+-            std::println("      REFUSED: read-only (this is what protects an enrolled template)");
++        if (!fingerprintd::store::MayDeleteTemplate(g_sfsReadOnly,
++                g_allowTemplateRemoval, g_explicitRemovalActive.load())) {
++            std::println("      REFUSED: template unlink requires an explicit removal command");
+             sfs::WriteReply(sb, EROFS, 0);
+             return;
+         }
+@@ -489,8 +507,10 @@ void ServeGpFile(std::span<std::byte> sb) {
+     case sfs::Action::Rename: {
+         auto to = sfs::ResolvePath(g_sfsRoot, req->root, req->path2);
+         std::println("    gpfile RENAME {} -> {}", *full, to ? *to : std::string("?"));
+-        if (g_sfsReadOnly || !to) { sfs::WriteReply(sb, EROFS, 0); return; }
+-        sfs::WriteReply(sb, ::rename(full->c_str(), to->c_str()) ? errno : 0, 0);
++        if (!fingerprintd::store::MayWriteStore(g_sfsReadOnly, g_storeMutationActive.load()) || !to) { sfs::WriteReply(sb, EROFS, 0); return; }
++        // Atomic no-replace: a rename must never delete an existing destination.
++        sfs::WriteReply(sb, ::renameat2(AT_FDCWD, full->c_str(), AT_FDCWD, to->c_str(),
++                                      RENAME_NOREPLACE) ? errno : 0, 0);
+         return;
+     }
+     }
+@@ -593,7 +613,7 @@ void ServeRpmb(std::span<std::byte> sb) {
+         return;
+     }
+ 
+-    if (req->op == rp::Op::Write && !g_rpmbWrite) {
++    if (req->op == rp::Op::Write && (!g_rpmbWrite || !g_storeMutationActive.load())) {
+         std::println("    rpmb WRITE refused (advances an irreversible counter)");
+         rp::WriteReply(sb, rp::StatusRefused, 0);
+         return;
+@@ -1318,6 +1338,10 @@ public:
+     // already committed to losing these fingers.
+     int RemoveTemplates(std::uint32_t gid, const std::vector<std::uint32_t>& fids) {
+         namespace ta = fingerprintd::ta;
++        if (!g_allowTemplateRemoval || g_sfsReadOnly || !g_rpmbWrite) {
++            std::println(std::cerr, "remove refused: explicit removal and writable storage are required");
++            return -1;
++        }
+         if (fids.empty()) return 0;
+         if (SetActiveGroup(gid) < 0) {
+             std::println(std::cerr, "remove: group {} would not load, nothing removed", gid);
+@@ -1329,7 +1353,11 @@ public:
+             if (fid == 0) continue;
+             std::vector<std::byte> rm(ta::RemovePayloadSize);
+             ta::BuildRemovePayload(rm, gid, fid);
+-            auto r = SendCommand(app_, ta::Cmd::Remove, rm);
++            CommandResult r;
++            {
++                StoreMutationScope explicitRemoval(/*isRemoval*/ true);
++                r = SendCommand(app_, ta::Cmd::Remove, rm);
++            }
+             if (r.rc == 0) {
+                 std::println("  removed template fid={} from group {}", fid, gid);
+                 removed++;
+@@ -1368,9 +1396,21 @@ public:
+         auto e = SendCommand(app_, ta::Cmd::Enumerate, en);
+         Report(ta::Cmd::Enumerate, e);
+         std::println("  templates loaded: {}{}", e.rc, FidList(e.fids));
++        groupLoad_ = fingerprintd::store::ClassifyGroupReload(
++            {g.invoked, static_cast<std::uint32_t>(g.result), g.rc},
++            {e.invoked, static_cast<std::uint32_t>(e.result), e.rc}, e.fids);
++        if (groupLoad_ == fingerprintd::store::GroupLoad::Failed) {
++            gid_ = 0xFFFFFFFF;
++            templatesLoaded_ = -1;
++            loadedFids_.clear();
++            std::println(std::cerr, "group reload failed; cached identity cleared");
++            return -1;
++        }
+         gid_ = gid;
+-        templatesLoaded_ = e.invoked ? e.rc : -1;
+-        loadedFids_ = e.invoked ? e.fids : std::vector<std::uint32_t>{};
++        templatesLoaded_ = e.rc;
++        loadedFids_ = e.fids;
++        if (groupLoad_ == fingerprintd::store::GroupLoad::MissingEmpty)
++            std::println("group is absent and enumeration is empty; enrollment still needs the explicit new-user guard");
+         return templatesLoaded_;
+     }
+ 
+@@ -1414,7 +1454,7 @@ public:
+         std::string why;
+     };
+ 
+-    EnrolOutcome Enrol(std::uint32_t gid, const std::vector<std::uint32_t>& named, bool tidy,
++    EnrolOutcome Enrol(std::uint32_t gid, const std::vector<std::uint32_t>& named, bool trustedMap, bool mapMissing,
+                        std::atomic<bool>& cancel,
+                        const std::function<void(int, int)>& onStage,
+                        const std::function<void()>& onRetry,
+@@ -1427,25 +1467,15 @@ public:
+             out.why = "store is read-only or RPMB writes disabled";
+             return out;
+         }
+-        // An enrolment adds a template, so this one reloads for real.
++        // Fresh reload and preservation gate BEFORE any enrollment command.
+         SetActiveGroup(gid, /*force*/ true);
+-        // Templates no name accounts for go before the new one comes: they
+-        // can match nothing, and each one is a slot this enrolment may need
+-        // or the duplicate the trustlet would refuse it for. Not in group 0
+-        // (store::GroupIsManaged), and not on the word of a map the daemon
+-        // could not read in full (`tidy`): a removed template is gone for
+-        // good.
+-        auto stray = Unnamed(named);
+-        if (!stray.empty() && fingerprintd::store::GroupIsManaged(gid)) {
+-            if (tidy) {
+-                std::println("enrol: {} template(s) loaded that no finger name accounts for; "
+-                             "removing them first", stray.size());
+-                RemoveTemplates(gid, stray);
+-            } else {
+-                std::println("enrol: {} template(s) loaded that no finger name accounts for, "
+-                             "left in place: the map could not be read in full", stray.size());
+-            }
+-        }
++        auto refusal = fingerprintd::store::CheckEnrollmentReload(
++            gid, trustedMap, mapMissing, named, groupLoad_, loadedFids_,
++            g_allowEmptyUserGroup, g_groupPath == ta::GroupNamespacePath);
++        if (!refusal.empty()) { out.why = refusal; return out; }
++        // No unnamed-template purge and no implicit replacement. Only the
++        // explicit removal API can ever call RemoveTemplates.
++        StoreMutationScope enrollment;
+ 
+         // Stock's opening sequence. AUTHENTICATE is what arms the capture
+         // session; CANCEL and RESET_LOCKOUT bracket it.
+@@ -1541,6 +1571,11 @@ public:
+         }
+         out.completed = true;
+ 
++        if (out.fid == ta::FidPoison || !fingerprintd::store::MayCommitNewTemplate(out.fid, loadedFids_)) {
++            SendCommand(app_, ta::Cmd::Cancel, {});
++            out.why = "enrollment did not allocate a fresh template ID; refusing SAVE_DATA";
++            return out;
++        }
+         SendCommand(app_, ta::Cmd::PostEnroll, {});
+         std::vector<std::byte> sd(0x10, std::byte{0});
+         for (std::size_t k = 0; k < 4; k++)
+@@ -1990,6 +2025,7 @@ private:
+     // What the last real SET_ACTIVE_GROUP reported, so a repeat claim can be
+     // answered without making the trustlet re-read the store. -1 = unknown.
+     int templatesLoaded_ = -1;
++    fingerprintd::store::GroupLoad groupLoad_ = fingerprintd::store::GroupLoad::Failed;
+     std::vector<std::uint32_t> loadedFids_;
+     // Set when a fold succeeded; cleared by the save.
+     bool templateDirty_ = false;
+@@ -2014,6 +2050,7 @@ struct Job {
+                                                    // Claim/Enroll: the fids the map names
+     GDBusMethodInvocation* invocation = nullptr;   // Claim/Remove reply asynchronously
+     bool everything = false;                       // Remove: the unnamed templates too
++    bool mapMissing = false;
+     bool tidy = false;                             // Enroll: the map is trusted (read in
+                                                    // full), so it may say what is unnamed
+     std::uint64_t seq = 0;                         // Enroll/Verify: the operation this job runs
+@@ -2173,7 +2210,7 @@ private:
+                     break;
+                 }
+                 auto o = session_.Enrol(
+-                    j.uid, j.acceptFids, j.tidy, cancel_,
++                    j.uid, j.acceptFids, j.tidy, j.mapMissing, cancel_,
+                     [&](int accepted, int total) {
+                         // Logged as well as signalled. A run whose refusals
+                         // exist only as D-Bus traffic cannot be counted from
+@@ -2514,10 +2551,12 @@ fingerprintd::store::Map LoadMap(std::uint32_t uid, bool quiet = false) {
+     gsize len = 0;
+     GError* err = nullptr;
+     if (!g_file_get_contents(path.c_str(), &contents, &len, &err)) {
+-        bool absent = g_error_matches(err, G_FILE_ERROR, G_FILE_ERROR_NOENT);
++        struct stat st{};
++        bool absent = g_error_matches(err, G_FILE_ERROR, G_FILE_ERROR_NOENT)
++                      && ::lstat(path.c_str(), &st) != 0 && errno == ENOENT;
+         if (!quiet) std::println("map {}: {}", path, err ? err->message : "unknown error");
+         g_clear_error(&err);
+-        return absent ? fingerprintd::store::Map{} : fingerprintd::store::Map::Unreadable();
++        return absent ? fingerprintd::store::Map::Missing() : fingerprintd::store::Map::Unreadable();
+     }
+     std::string text(contents, len);
+     g_free(contents);
+@@ -2957,7 +2996,7 @@ void PostEvent(std::unique_ptr<Event> ev) {
+             if (ev->seq != g_claim.opSeq) {
+                 // From an enrolment the client has since stopped, or a claim
+                 // since dropped: not this operation's result. A template it
+-                // saved is unnamed and goes with the group's next enrolment.
++                // saved is unnamed and blocks later enrollment until reconciled.
+                 if (ev->done && ev->ok && ev->fid != 0)
+                     std::println("enrol: a result of a stopped enrolment arrived (fid {}); it stays unnamed",
+                                  ev->fid);
+@@ -2973,16 +3012,19 @@ void PostEvent(std::unique_ptr<Event> ev) {
+                     // whose finger is missing from the next list and never
+                     // offered.
+                     auto kept = g_claim.fingers;
+-                    g_claim.fingers.Add(*f, ev->fid);
+-                    if (SaveMap(g_claim.uid, g_claim.fingers)) {
++                    auto current = LoadMap(g_claim.uid);
++                    bool unchanged = current.Trusted() && current.Encode() == kept.Encode()
++                                     && current.WasMissing() == kept.WasMissing();
++                    bool added = unchanged && g_claim.fingers.Add(*f, ev->fid);
++                    if (added && SaveMap(g_claim.uid, g_claim.fingers)) {
+                         std::println("enrolled {} for uid {} as fid {}", g_claim.finger, g_claim.uid, ev->fid);
+                     } else {
+                         g_claim.fingers = kept;
+                         status = "enroll-failed";
+                         std::println(std::cerr,
+                                      "enrolled {} for uid {} as fid {}, but its name could not be saved: "
+-                                     "reported as failed; the template is unnamed and goes with the group's "
+-                                     "next enrolment", g_claim.finger, g_claim.uid, ev->fid);
++                                     "reported as failed; the template stays unnamed and is preserved until explicit removal; "
++                                     "no automatic cleanup", g_claim.finger, g_claim.uid, ev->fid);
+                     }
+                 } else {
+                     std::println(std::cerr,
+@@ -3124,6 +3166,10 @@ void HandleDevice(GDBusMethodInvocation* inv, std::string_view method, GVariant*
+     }
+     if (method == "DeleteEnrolledFingers" || method == "DeleteEnrolledFingers2"
+         || method == "DeleteEnrolledFinger") {
++        if (!g_allowTemplateRemoval || g_sfsReadOnly || !g_rpmbWrite) {
++            ReturnError(inv, "PermissionDenied", "template deletion is disabled; explicit user-requested removal must be enabled separately");
++            return;
++        }
+         std::uint32_t uid = 0;
+         std::optional<store::Finger> one;
+         if (method == "DeleteEnrolledFingers") {
+@@ -3214,8 +3260,8 @@ void HandleDevice(GDBusMethodInvocation* inv, std::string_view method, GVariant*
+                 ReturnError(inv, "InvalidFingername", "unknown finger");
+                 return;
+             }
+-            // Nothing changes for an enrolment the store cannot take: the
+-            // worker would refuse it after the name below was already gone.
++            // Refuse before posting any enrollment work. Existing names and
++            // templates remain intact in both this path and the worker.
+             if (g_sfsReadOnly || !g_rpmbWrite) {
+                 ReturnError(inv, "Internal", "the template store is read-only; nothing is enrolled");
+                 return;
+@@ -3235,29 +3281,10 @@ void HandleDevice(GDBusMethodInvocation* inv, std::string_view method, GVariant*
+                 g_dbus_method_invocation_return_value(inv, nullptr);
+                 return;
+             }
+-            // Re-enrolling a finger replaces it, and the trustlet makes that
+-            // an order: with duplicate-finger checking on, a re-enrolment of a
+-            // finger it still holds does not complete (2026-09-04: one attempt
+-            // 0 accepted of 7 presses, another stalled at sample 8 of 20). The
+-            // name goes now and the template follows on the
+-            // worker, as one no name accounts for -- a name kept through a
+-            // cancelled enrolment would offer a finger that can no longer
+-            // match. Both halves under the one rule: a managed group, a map
+-            // the daemon trusts. Otherwise the name stays and the trustlet
+-            // refuses the duplicate, as it did before this release.
+-            auto f = *store::FingerFromName(finger);
+-            bool tidy = g_claim.fingers.Trusted();
+-            if (store::GroupIsManaged(g_claim.uid) && tidy && g_claim.fingers.Has(f)) {
+-                auto kept = g_claim.fingers;
+-                g_claim.fingers.Remove(f);
+-                if (!SaveMap(g_claim.uid, g_claim.fingers)) {
+-                    // The drop did not land: the disk still names the template
+-                    // the worker would remove. Keep both, and say so.
+-                    g_claim.fingers = kept;
+-                    ReturnError(inv, "Internal", "the finger map could not be written; nothing is enrolled or removed");
+-                    return;
+-                }
+-                std::println("enrol: {} is being re-enrolled; its old template goes first", finger);
++            auto refusal = store::CheckEnrollmentName(g_claim.fingers, *store::FingerFromName(finger));
++            if (!refusal.empty()) {
++                ReturnError(inv, "AlreadyEnrolled", std::string(refusal));
++                return;
+             }
+         } else {
+             if (finger != store::AnyFinger && !store::FingerFromName(finger)) {
+@@ -3302,6 +3329,7 @@ void HandleDevice(GDBusMethodInvocation* inv, std::string_view method, GVariant*
+         g_worker->Post(Job{ .kind = enroll ? Job::Kind::Enroll : Job::Kind::Verify,
+                             .uid = g_claim.uid, .finger = finger,
+                             .acceptFids = std::move(accept),
++                            .mapMissing = g_claim.fingers.WasMissing(),
+                             .tidy = g_claim.fingers.Trusted(), .seq = g_claim.opSeq });
+         return;
+     }
+@@ -3417,6 +3445,10 @@ int RunDaemon() {
+ // template is gone, not archived.
+ int RunProbeRemove(std::uint32_t gid, std::uint32_t fid) {
+     namespace ta = fingerprintd::ta;
++    if (!g_allowTemplateRemoval || g_sfsReadOnly || !g_rpmbWrite) {
++        std::println(std::cerr, "probe removal disabled; explicit removal and writable store flags required");
++        return 1;
++    }
+     Session s;
+     if (!s.Start()) return 1;
+     int loaded = s.SetActiveGroup(gid);
+@@ -3477,7 +3509,7 @@ int RunProbe(bool doAuth, bool doEnrol, bool doCalSave, bool doLearnProbe,
+         for (int c = 3; c > 0; c--) { std::println("*** press and LIFT, repeatedly, in {}... ***", c); std::this_thread::sleep_for(std::chrono::seconds(1)); }
+         // The probe has no name map, so every loaded template counts as
+         // named: a diagnostic does not tidy the group it is probing.
+-        auto o = s.Enrol(gid, s.LoadedFids(), /*tidy*/ false, cancel,
++        auto o = s.Enrol(gid, s.LoadedFids(), /*trustedMap*/ false, /*mapMissing*/ false, cancel,
+             [](int a, int t) { std::println("  [{}/{}] accepted -- LIFT, then press again", a, t); },
+             [] { std::println("  press rejected -- LIFT, shift the finger, press again"); },
+             frames);
+@@ -3567,6 +3599,8 @@ int main(int argc, char** argv) {
+         // which destroys an enrolled template. Opt in explicitly.
+         if (a == "--sfs-writable") g_sfsReadOnly = false;
+         if (a == "--rpmb-write") g_rpmbWrite = true;
++        if (a == "--allow-template-removal") g_allowTemplateRemoval = true;
++        if (a == "--allow-empty-user-group=10000") g_allowEmptyUserGroup = true;
+         if (a == "--auth") { doAuth = true; probe = true; }
+         if (a == "--enrol") { doEnrol = true; probe = true; }
+         if (a == "--cal-save") { doCalSave = true; probe = true; g_verbose = true; }
+@@ -3619,7 +3653,9 @@ int main(int argc, char** argv) {
+                  "                                 /etc/fingerprintd/actions.conf, absent = off)\n"
+                  "  --standby-unlock=on|off        unlock the locked session in front by finger,\n"
+                  "                                 via logind (default on)\n"
+-                 "  --sfs-root=DIR --sfs-writable --rpmb-write   storage policy",
++                 "  --sfs-root=DIR --sfs-writable --rpmb-write   storage policy\n"
++                 "  --allow-empty-user-group=10000 first enrollment into a proven empty new group\n"
++                 "  --allow-template-removal       explicit future deletion API opt-in",
+                  fingerprintd::Version);
+     return 1;
+ }
+diff --git a/interfaces/Fingerprintd-Store.cppm b/interfaces/Fingerprintd-Store.cppm
+index 97bfdb7..37f7ef2 100644
+--- a/interfaces/Fingerprintd-Store.cppm
++++ b/interfaces/Fingerprintd-Store.cppm
+@@ -98,16 +98,18 @@ export namespace fingerprintd::store {
+ 
+     class Map {
+     public:
+-        // Enrolling the same finger twice replaces the old id rather than
+-        // accumulating: the trustlet allocated a new template and the old id
+-        // is no longer what a match will report.
++        // Existing names and IDs are immutable here. Re-adding the same pair
++        // is idempotent; replacing either side requires explicit removal.
+         bool Add(Finger f, std::uint32_t fid) {
+             if (fid == 0) return false;          // 0 is the trustlet's "no match"
+             for (Entry& e : entries_) {
+-                if (e.finger == f) { e.fid = fid; return true; }
++                if (e.finger == f) return e.fid == fid; // never replace an existing mapping
+             }
++            if (std::ranges::any_of(entries_, [&](const Entry& e) { return e.fid == fid; }))
++                return false;
+             if (entries_.size() >= MaxFingersPerGroup) return false;
+             entries_.push_back({ f, fid });
++            missing_ = false;
+             return true;
+         }
+ 
+@@ -165,9 +167,9 @@ export namespace fingerprintd::store {
+         // rebuilding promptly, and a rebuild counts from the next enrolment
+         // on, a held claim's included (the map is re-read at every
+         // EnrollStart). The map decides which of a group's templates an
+-        // enrolment or a delete-all keeps -- a template no line names is
+-        // removed by the next one, in a managed group -- so losing the map
+-        // costs the names at once and the unnamed templates at that point.
++        // enrolment keeps. An unnamed template blocks enrollment and is never
++        // implicitly deleted; only a separately enabled explicit removal API
++        // can delete it. Losing the map therefore loses names, not templates.
+         //
+         // The lines Decode could not use are written back unchanged, after
+         // the entries: a save must not turn a map the daemon did not
+@@ -224,6 +226,8 @@ export namespace fingerprintd::store {
+         // file the daemon could not see is not a file it may replace.
+         static Map Unreadable() { Map m; m.readable_ = false; return m; }
+         bool Readable() const { return readable_; }
++        static Map Missing() { Map m; m.missing_ = true; return m; }
++        bool WasMissing() const { return missing_; }
+ 
+         // Whether this object says everything the map on disk says: read in
+         // full, every line its own entry. Only then may it decide which of
+@@ -253,8 +257,71 @@ export namespace fingerprintd::store {
+         std::vector<Entry> shadowed_;
+         std::vector<std::string> unparsed_;
+         bool readable_ = true;
++        bool missing_ = false;
+     };
+ 
++    // Preservation policy used by the real trustlet and D-Bus paths. A negative
++    // SET_ACTIVE_GROUP is never hidden by an unrelated successful enumeration.
++    enum class GroupLoad { Failed, Loaded, MissingEmpty };
++    struct Reply {
++        bool invoked = false;
++        std::uint32_t result = 0;
++        std::int32_t rc = 0;
++    };
++    inline GroupLoad ClassifyGroupReload(Reply selected, Reply enumerated,
++                                        std::span<const std::uint32_t> fids) {
++        if (!selected.invoked || selected.result != 0 || !enumerated.invoked
++            || enumerated.result != 0 || enumerated.rc < 0
++            || enumerated.rc > static_cast<std::int32_t>(MaxFingersPerGroup)
++            || fids.size() != static_cast<std::size_t>(enumerated.rc))
++            return GroupLoad::Failed;
++        for (std::size_t i = 0; i < fids.size(); ++i)
++            if (fids[i] == 0 || std::ranges::find(fids.first(i), fids[i]) != fids.first(i).end())
++                return GroupLoad::Failed;
++        if (selected.rc == 0) return GroupLoad::Loaded;
++        // Exact protocol case: absent namespace/group, followed by a successful
++        // zero enumeration. This is NOT permission to enroll by itself.
++        if (selected.rc == -2 && enumerated.rc == 0 && fids.empty())
++            return GroupLoad::MissingEmpty;
++        return GroupLoad::Failed;
++    }
++    inline std::string_view CheckEnrollmentName(const Map& map, Finger finger) {
++        if (!map.Trusted()) return "finger map is unreadable or incomplete; repair it before enrollment";
++        if (map.Has(finger)) return "finger is already mapped; explicit user-requested removal is required before replacement";
++        if (map.Full()) return "finger map is full; no existing finger was removed";
++        return {};
++    }
++    inline std::string_view CheckEnrollmentReload(Gid gid, bool mapTrusted,
++            bool mapMissing, std::span<const std::uint32_t> named,
++            GroupLoad load, std::span<const std::uint32_t> loaded,
++            bool allowEmptyUserGroup, bool originalNamespace) {
++        if (!mapTrusted) return "finger map is not fully trusted; nothing enrolled or deleted";
++        if (load == GroupLoad::Failed) return "group reload failed; nothing enrolled or deleted";
++        if (!GroupIsManaged(gid)) return "group zero is protected from enrollment";
++        if (load == GroupLoad::MissingEmpty) {
++            if (allowEmptyUserGroup && gid == 10000 && originalNamespace
++                && mapMissing && named.empty() && loaded.empty()) return {};
++            return "empty new group is not authorized: requires uid10000, absent map, original namespace and explicit opt-in";
++        }
++        for (auto fid : loaded)
++            if (!std::ranges::contains(named, fid))
++                return "unnamed template preserved; reconcile its name or request explicit deletion before enrollment";
++        for (auto fid : named)
++            if (!std::ranges::contains(loaded, fid))
++                return "mapped template missing from reloaded group; reconcile state before enrollment";
++        return {};
++    }
++
++    inline bool MayWriteStore(bool readOnly, bool explicitMutation) {
++        return !readOnly && explicitMutation;
++    }
++    inline bool MayDeleteTemplate(bool readOnly, bool deletionEnabled, bool explicitRemoval) {
++        return !readOnly && deletionEnabled && explicitRemoval;
++    }
++    inline bool MayCommitNewTemplate(std::uint32_t fid, std::span<const std::uint32_t> existing) {
++        return fid != 0 && !std::ranges::contains(existing, fid);
++    }
++
+     // Per-user file under the daemon's state directory. Root-only: it is not
+     // secret, but it decides which name an authentication reports.
+     inline std::string PathForUid(std::string_view stateDir, std::uint32_t uid) {
+diff --git a/tests/Store/main.cpp b/tests/Store/main.cpp
+index b9a310b..40e81a4 100644
+--- a/tests/Store/main.cpp
++++ b/tests/Store/main.cpp
+@@ -77,11 +77,11 @@ int main() {
+ 
+         // Re-enrolling replaces: the trustlet allocated a new template and the
+         // old id is not what a match will report any more.
+-        Check(m.Add(Finger::RightIndex, 42), "re-enrol");
++        Check(!m.Add(Finger::RightIndex, 42), "implicit re-enrolment is refused");
+         Check(m.Size() == 1, "no duplicate entry");
+-        Check(!m.Lookup(1296911490).has_value(), "the stale id no longer resolves");
++        Check(m.Lookup(1296911490).has_value(), "existing mapping is preserved");
+         auto g = m.Lookup(42);
+-        Check(g && *g == Finger::RightIndex, "the new id does");
++        Check(!g, "new id did not replace the old mapping");
+ 
+         Check(m.Remove(Finger::RightIndex), "remove");
+         Check(m.Size() == 0 && !m.Has(Finger::RightIndex), "removed");
+@@ -98,7 +98,7 @@ int main() {
+         Check(m.Full() && m.Size() == MaxFingersPerGroup, "five is the limit");
+         Check(!m.Add(Finger::RightThumb, 200), "a sixth finger is refused");
+         // But replacing one already present still works when full.
+-        Check(m.Add(Finger::LeftThumb, 999), "replacing while full is allowed");
++        Check(!m.Add(Finger::LeftThumb, 999), "replacing while full is refused");
+         Check(m.Size() == 5, "still five");
+     }
+ 
+@@ -216,6 +216,52 @@ int main() {
+               == "/var/lib/fingerprintd/fingers-1000.map", "state path");
+     }
+ 
++    // ---- Enrollment preservation: these helpers are used by the real worker.
++    {
++        using L = GroupLoad;
++        Reply ok{true,0,0}, missing{true,0,-2}, error{true,0,-5};
++        std::vector<std::uint32_t> none, one{123}, duplicate{123,123}, zero{0};
++        Check(ClassifyGroupReload(ok,ok,none)==L::Loaded, "successful empty group");
++        Check(ClassifyGroupReload(missing,ok,none)==L::MissingEmpty, "ENOENT is a distinct empty-new-group state");
++        Check(ClassifyGroupReload(error,ok,none)==L::Failed, "enumeration zero never hides unknown reload failure");
++        Check(ClassifyGroupReload({false,0,0},ok,none)==L::Failed, "transport failure");
++        Check(ClassifyGroupReload({true,9,0},ok,none)==L::Failed, "QTEE failure");
++        Check(ClassifyGroupReload(ok,{false,0,0},none)==L::Failed, "enumeration transport failure");
++        Check(ClassifyGroupReload(ok,{true,1,0},none)==L::Failed, "enumeration QTEE failure");
++        Check(ClassifyGroupReload(ok,{true,0,-1},none)==L::Failed, "negative enumeration");
++        Check(ClassifyGroupReload(ok,{true,0,1},none)==L::Failed, "truncated enumeration");
++        Check(ClassifyGroupReload(ok,{true,0,1},zero)==L::Failed, "zero fid is not a template");
++        Check(ClassifyGroupReload(ok,{true,0,2},duplicate)==L::Failed, "duplicate fids refused");
++        Check(ClassifyGroupReload(missing,{true,0,1},one)==L::Failed, "ENOENT plus nonempty is never new");
++        Check(CheckEnrollmentReload(10000,true,true,none,L::MissingEmpty,none,true,true).empty(), "explicit uid10000 absent-map empty group allowed");
++        Check(!CheckEnrollmentReload(10001,true,true,none,L::MissingEmpty,none,true,true).empty(), "other uid refused");
++        Check(!CheckEnrollmentReload(10000,true,false,none,L::MissingEmpty,none,true,true).empty(), "existing empty map is not absent");
++        Check(!CheckEnrollmentReload(10000,true,true,none,L::MissingEmpty,none,false,true).empty(), "new group requires opt-in");
++        Check(!CheckEnrollmentReload(10000,true,true,none,L::MissingEmpty,none,true,false).empty(), "alternate namespace refused");
++        Check(!CheckEnrollmentReload(10000,false,true,none,L::MissingEmpty,none,true,true).empty(), "untrusted map refused");
++        Check(!CheckEnrollmentReload(10000,true,false,none,L::Failed,none,true,true).empty(), "reload failure blocks enrollment");
++        Check(!CheckEnrollmentReload(10000,true,false,none,L::Loaded,one,true,true).empty(), "unnamed template preserved, enrollment blocked");
++        Check(!CheckEnrollmentReload(10000,true,false,one,L::Loaded,none,true,true).empty(), "missing mapped template blocks enrollment");
++        Check(CheckEnrollmentReload(10000,true,false,one,L::Loaded,one,false,true).empty(), "fully reconciled group may add a different finger");
++        Check(!CheckEnrollmentReload(0,true,false,none,L::Loaded,none,true,true).empty(), "group zero protected");
++        Map m; m.Add(Finger::LeftThumb,123); const auto before=m.Encode();
++        Check(!CheckEnrollmentName(m,Finger::LeftThumb).empty(), "mapped finger cannot be replaced");
++        Check(m.Encode()==before, "enrollment refusal does not change mapping");
++        Check(CheckEnrollmentName(m,Finger::RightThumb).empty(), "new named finger allowed");
++        Check(!CheckEnrollmentName(Map::Unreadable(),Finger::RightThumb).empty(), "unreadable map refused");
++        Check(!CheckEnrollmentName(Map::Decode("broken"),Finger::RightThumb).empty(), "partial map refused");
++        Check(!m.Add(Finger::RightThumb,123), "new name cannot alias existing fid");
++        Check(m.Add(Finger::LeftThumb,123), "same mapping is idempotent");
++        Check(Map::Missing().WasMissing() && !Map::Decode("").WasMissing(), "absent differs from present empty map");
++        Check(!MayCommitNewTemplate(0,one) && !MayCommitNewTemplate(123,one), "no zero or old fid committed");
++        Check(MayCommitNewTemplate(124,one), "fresh fid may commit");
++        for (bool ro : {false,true}) for (bool active : {false,true}) {
++            Check(MayWriteStore(ro,active)==(!ro && active), "write requires an explicit transaction and writable mode");
++            for (bool enabled : {false,true})
++                Check(MayDeleteTemplate(ro,enabled,active)==(!ro && enabled && active), "unlink requires explicit user deletion transaction");
++        }
++    }
++
+     if (Failures == 0) std::println("Store: all tests passed");
+     return Failures;
+ }
