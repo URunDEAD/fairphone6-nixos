@@ -19,7 +19,13 @@ old=$(mainpid)
 fresh() { [ "$(state)" = active ] && [ "$(mainpid)" != "$old" ] && [ "$(mainpid)" != 0 ]; }
 echo "[$(date +%T)] restart display-manager (lomiri.service MainPID $old)"
 asroot systemctl restart display-manager
-for i in $(seq 1 30); do [ "$(state)" = inactive ] && break; sleep 1; done
+for i in $(seq 1 15); do [ "$(state)" = inactive ] && break; sleep 1; done
+# The running build's user Lomiri can outlive the display-manager restart
+# (lomiri-session README, problem 2): stop it so the login starts a new one.
+if [ "$(state)" != inactive ]; then
+  echo "[$(date +%T)] lomiri.service still $(state): stopping it"
+  timeout 20 systemctl --user stop lomiri.service || systemctl --user kill -s KILL lomiri.service
+fi
 # greeter up
 for i in $(seq 1 30); do pgrep -u lightdm -x .lomiri-wrapped >/dev/null && break; sleep 1; done
 sleep 8

@@ -8,6 +8,9 @@
 #       preload  app stopped, cache dropped, then `fp6-app-ready preload APP`
 #       resume   app running in the background (another app focused first);
 #                time to Lomiri focus + whether the app was frozen
+#       prelaunch app stopped, another app focused, `fp6-app-ready prelaunch APP`
+#                (hidden launch); checks focus stayed on the other app, then
+#                measures the first open like resume
 # Prints one line per run: APP MODE first_frame_ms focus_ms frozen mem_MiB
 set -u
 out=$1 app=$2; shift 2
@@ -52,19 +55,25 @@ for mode in "$@"; do
       stop_app "$app"; sync; asroot sh -c 'echo 3 > /proc/sys/vm/drop_caches'; sleep 2
       if [ "$mode" = preload ]; then "$APPREADY" preload "$app" >> "$out/preload.log" 2>&1; sleep 6; fi ;;
     warm) stop_app "$app"; sleep 1 ;;
+    prelaunch)
+      stop_app "$app"
+      timeout 25 "$LAL/lomiri-app-launch" "$OTHER" >/dev/null 2>&1; sleep 4
+      "$APPREADY" prelaunch "$app" >> "$out/prelaunch.log" 2>&1
+      sleep 12
+      echo "$app prelaunch: focused after hidden launch: $(cat "$XDG_RUNTIME_DIR/fp6-app-ready/focused" 2>/dev/null)" | tee -a "$out/results.txt" ;;
     resume)
       running "$app" || { timeout 25 "$LAL/lomiri-app-launch" "$app" >/dev/null 2>&1; sleep 12; }
       timeout 25 "$LAL/lomiri-app-launch" "$OTHER" >/dev/null 2>&1; sleep 6 ;;
   esac
   d=$(unit_dir "$app")
   frozen=-
-  if [ "$mode" = resume ] && [ -n "$d" ]; then
+  if { [ "$mode" = resume ] || [ "$mode" = prelaunch ]; } && [ -n "$d" ]; then
     frozen=yes
     for p in $(cat "$d/cgroup.procs"); do grep -q '^State:.*T' /proc/$p/status || frozen=no; done
   fi
   t0=$(date +%s%6N)
   timeout 25 "$LAL/lomiri-app-launch" "$app" >/dev/null 2>&1 &
-  if [ "$mode" = resume ]; then
+  if [ "$mode" = resume ] || [ "$mode" = prelaunch ]; then
     tf=$(wait_line "$t0" focus 10); ff=-
     sleep 3
   else
