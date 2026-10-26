@@ -119,7 +119,15 @@ in {
     systemd.services.fp6-lomiri-powerd = {
       description = "FP6 Lomiri display backend (brightness, auto-brightness, proximity, double-tap)";
       wantedBy = [ "multi-user.target" ];
-      before = [ "display-manager.service" ];
+      # Not Before=display-manager (2026-10-26, boot-speed): that cost ~0.35 s
+      # (its own start) on the greeter's critical chain. It now starts in
+      # parallel with LightDM and owns its bus names ~0.4 s after basic.target.
+      # Lomiri's Powerd plugin pushes its settings (auto-brightness, inactivity
+      # timeouts, double-tap) once, when the greeter's QML creates it. That is
+      # >= 2.5 s after LightDM starts on a warm restart (greeter user manager,
+      # Mir, QML) and ~8 s at boot, so the service is up well before then.
+      # Check: journal "Started FP6 Lomiri display backend" precedes the
+      # greeter log's "Using mirserver qt platform".
       after = [ "dbus.service" "systemd-logind.service" "iio-sensor-proxy.service" "systemd-udev-settle.service" ];
       wants = [ "iio-sensor-proxy.service" ];
       requires = [ "dbus.service" ];
