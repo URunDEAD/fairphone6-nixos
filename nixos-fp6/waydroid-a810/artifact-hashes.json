@@ -1,0 +1,23 @@
+{
+  "libgallium_dri.so": {
+    "sha256": "515eeda39b1bcffeba978c5741668273693772b5daa2eed3878dc6ee0483a03f"
+  },
+  "libgbm_mesa.so": {
+    "sha256": "abe202f8646d8396d7ea35add22d985da6fa528ae59466b776b9aced8513ae61"
+  },
+  "dri_gbm.so": {
+    "sha256": "a4fd90c6d79cbe75a25f1fc1198be251f10c59d20f1c364918664dc4c34e5e94"
+  },
+  "egl/libEGL_mesa.so": {
+    "sha256": "67b1f6ea557b5cff3e69fcd5337f2139c28c1c0f773a3c1d5ad8be496cad1d24"
+  },
+  "egl/libGLESv1_CM_mesa.so": {
+    "sha256": "1c19173e9122eae28e160c1f8ec06357938c445c4992d42952372c84c34c0bd5"
+  },
+  "egl/libGLESv2_mesa.so": {
+    "sha256": "d65cdeeb52e21691e5373db60c9b58fc81acf2f247cdbd16e6925148aa7f9845"
+  },
+  "hw/vulkan.freedreno.so": {
+    "sha256": "0783c6552a466d6730a5e445bdbb6b7f5e8ad2b2fefecefb850306049421bafa"
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "gralloc.gbm.so": [
+    "gbm_bo_create",
+    "gbm_bo_create_with_modifiers2",
+    "gbm_bo_destroy",
+    "gbm_bo_get_fd",
+    "gbm_bo_get_height",
+    "gbm_bo_get_modifier",
+    "gbm_bo_get_stride",
+    "gbm_bo_get_user_data",
+    "gbm_bo_get_width",
+    "gbm_bo_import",
+    "gbm_bo_map",
+    "gbm_bo_set_user_data",
+    "gbm_bo_unmap",
+    "gbm_create_device",
+    "gbm_device_destroy",
+    "gbm_device_get_fd",
+    "gbm_device_get_format_modifier_plane_count"
+  ],
+  "libgbm_mesa_wrapper.so": [
+    "gbm_bo_create",
+    "gbm_bo_create_with_modifiers2",
+    "gbm_bo_destroy",
+    "gbm_bo_get_fd",
+    "gbm_bo_get_modifier",
+    "gbm_bo_get_stride",
+    "gbm_bo_import",
+    "gbm_bo_map",
+    "gbm_bo_unmap",
+    "gbm_create_device",
+    "gbm_device_destroy",
+    "gbm_device_get_format_modifier_plane_count"
+  ],
+  "gralloc.minigbm_gbm_mesa.so": []
+}
