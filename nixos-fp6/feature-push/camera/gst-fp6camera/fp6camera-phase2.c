@@ -33,6 +33,9 @@ enum
   FP6P2_PROP_JOB_TARGET_FRAMES,
   FP6P2_PROP_JOB_RESULT,
   FP6P2_PROP_JOB_ERROR,
+  FP6P2_PROP_PANO_STEP,
+  FP6P2_PROP_PANO_DRIFT,
+  FP6P2_PROP_PANO_DIRECTION,
   FP6P2_PROP_LAST
 };
 
@@ -104,6 +107,10 @@ typedef struct _Fp6Phase2
   GstElement *tl_pipe, *tl_src;
   gint64 tl_next, tl_interval_us;
   gint tl_fps, tl_size;
+  /* panorama (Rust fp6-vision) */
+  struct Fp6vPano *pano;
+  gdouble pano_focal, pano_step, pano_drift;
+  gint pano_dir, pano_max;
 } Fp6Phase2;
 
 static gpointer fp6p2_dng_thread (gpointer data);
@@ -155,6 +162,8 @@ fp6p2_free (Fp6LibcameraSrc * self)
   g_free (p->job_result);
   g_free (p->job_error);
   g_clear_pointer (&p->frames, g_ptr_array_unref);
+  if (p->pano)
+    fp6v_pano_free (p->pano);
   g_mutex_clear (&p->lock);
   g_free (p);
   self->p2 = NULL;
@@ -284,6 +293,15 @@ fp6p2_get_property (Fp6LibcameraSrc * self, guint id, GValue * value)
     case FP6P2_PROP_JOB_ERROR:
       g_value_set_string (value, p->job_error);
       break;
+    case FP6P2_PROP_PANO_STEP:
+      g_value_set_double (value, p->pano_step);
+      break;
+    case FP6P2_PROP_PANO_DRIFT:
+      g_value_set_double (value, p->pano_drift);
+      break;
+    case FP6P2_PROP_PANO_DIRECTION:
+      g_value_set_int (value, p->pano_dir);
+      break;
     default:
       break;
   }
@@ -333,6 +351,14 @@ fp6p2_class_init (GObjectClass * oc)
           "Saved file(s), newline separated", NULL, ro));
   P (FP6P2_PROP_JOB_ERROR, g_param_spec_string ("job-error", "Job error",
           "Why the last job failed", NULL, ro));
+  P (FP6P2_PROP_PANO_STEP, g_param_spec_double ("pano-step", "Panorama step",
+          "Panorama: 0..1 of the way to the next frame", 0, 1, 0, ro));
+  P (FP6P2_PROP_PANO_DRIFT, g_param_spec_double ("pano-drift",
+          "Panorama drift", "Panorama: vertical drift in frame heights "
+          "(keep it near 0)", -10, 10, 0, ro));
+  P (FP6P2_PROP_PANO_DIRECTION, g_param_spec_int ("pano-direction",
+          "Panorama direction", "+1 sweeping right, -1 left, 0 not yet",
+          -1, 1, 0, ro));
 #undef P
 
   /* kind, output path, clockwise display rotation, JPEG quality, params */

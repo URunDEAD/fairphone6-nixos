@@ -23,6 +23,7 @@
  */
 
 #include "fp6-imaging.h"
+#include "fp6-vision.h"
 
 #include <sys/resource.h>
 #include <sys/syscall.h>
@@ -43,6 +44,7 @@ typedef enum
   KIND_NIGHT,
   KIND_TIMELAPSE,
   KIND_BRACKET,
+  KIND_PANORAMA,
 } Fp6JobKind;
 
 static const struct
@@ -54,6 +56,7 @@ static const struct
   {"night", KIND_NIGHT},
   {"timelapse", KIND_TIMELAPSE},
   {"bracket", KIND_BRACKET},
+  {"panorama", KIND_PANORAMA},
 };
 
 typedef struct
@@ -498,6 +501,7 @@ fp6j_worker (gpointer data)
   Fp6Frame *ref;
   GstElement *tl_pipe, *tl_src;
   gint tl_frames;
+  Fp6vPano *pano = NULL;
 
   /* below the viewfinder's threads (inherited by the processing threads) */
   setpriority (PRIO_PROCESS, (id_t) syscall (SYS_gettid), 10);
@@ -569,6 +573,44 @@ fp6j_worker (gpointer data)
       g_free (base);
       break;
     }
+    case KIND_PANORAMA:{
+      /* Rust (fp6-vision): upright output, saved without rotation */
+      Fp6vImage *in = g_new0 (Fp6vImage, frames->len), out = { 0 };
+      gint rc = -1;
+      for (guint i = 0; i < frames->len; i++) {
+        Fp6Frame *f = g_ptr_array_index (frames, i);
+        const GstVideoFormatInfo *fi = f->info.finfo;
+        in[i].w = GST_VIDEO_INFO_WIDTH (&f->info);
+        in[i].h = GST_VIDEO_INFO_HEIGHT (&f->info);
+        in[i].stride = GST_VIDEO_INFO_PLANE_STRIDE (&f->info, 0);
+        in[i].ps = GST_VIDEO_INFO_COMP_PSTRIDE (&f->info, 0);
+        in[i].ro = GST_VIDEO_FORMAT_INFO_POFFSET (fi, GST_VIDEO_COMP_R);
+        in[i].go = GST_VIDEO_FORMAT_INFO_POFFSET (fi, GST_VIDEO_COMP_G);
+        in[i].bo = GST_VIDEO_FORMAT_INFO_POFFSET (fi, GST_VIDEO_COMP_B);
+        in[i].data = f->data;
+      }
+      if (kind == KIND_PANORAMA) {
+        g_mutex_lock (&p->lock);
+        pano = p->pano;
+        p->pano = NULL;
+        g_mutex_unlock (&p->lock);
+        rc = pano && frames->len >= 2 ? fp6v_pano_stitch (pano, in,
+            frames->len, &out, fp6j_progress_cb, self) : -3;
+        if (rc != 0)
+          g_set_error (&err, GST_CORE_ERROR, GST_CORE_ERROR_FAILED, "%s",
+              rc == -3 ? "sweep too short (need 2 frames)" :
+              "panorama frames do not overlap");
+      }
+      if (rc >= 0) {
+        Fp6Image o = { out.w, out.h, out.stride, out.data };
+        if (fp6j_save (self, &o, path, 0, NULL, quality, ref->exp_us,
+                ref->gain, "lomiri-camera-app (fp6 panorama)", &err))
+          result = g_strdup (path);
+      }
+      fp6v_free (&out);
+      g_free (in);
+      break;
+    }
     case KIND_TIMELAPSE:
       if (tl_pipe && fp6j_timelapse_close (self, tl_pipe, tl_src, path,
               tl_frames, &err))
@@ -587,6 +629,8 @@ fp6j_worker (gpointer data)
     g_ptr_array_unref (frames);
   if (tl_pipe)
     gst_object_unref (tl_pipe);
+  if (pano)
+    fp6v_pano_free (pano);
 
   g_mutex_lock (&p->lock);
   if (p->job_cancel) {
@@ -731,6 +775,65 @@ fp6j_step_frame (Fp6LibcameraSrc * self, GstBuffer * buf, gint64 now)
   }
 }
 
+/* panorama: track the sweep on a small luma image, keep keyframes */
+static void
+fp6j_pano_frame (Fp6LibcameraSrc * self, GstBuffer * buf, gint64 now)
+{
+  Fp6Phase2 *p = self->p2;
+  GstVideoFrame vf;
+  const GstVideoFormatInfo *fi = p->job_info.finfo;
+  gint w = GST_VIDEO_INFO_WIDTH (&p->job_info) / 8;
+  gint h = GST_VIDEO_INFO_HEIGHT (&p->job_info) / 8, rc;
+  gint ro = GST_VIDEO_FORMAT_INFO_POFFSET (fi, GST_VIDEO_COMP_R);
+  gint go = GST_VIDEO_FORMAT_INFO_POFFSET (fi, GST_VIDEO_COMP_G);
+  gint bo = GST_VIDEO_FORMAT_INFO_POFFSET (fi, GST_VIDEO_COMP_B);
+  gint ps = GST_VIDEO_INFO_COMP_PSTRIDE (&p->job_info, 0);
+  guint8 *small;
+
+  if (p->job_stop) {
+    if (p->frames->len >= 2)
+      fp6j_finish_capture (self);
+    else
+      fp6j_fail_locked (self, "sweep too short (need 2 frames)");
+    return;
+  }
+  if (!p->pano) {
+    guint16 o = fp6_dng_orientation (p->flip, p->job_rotate);
+    p->pano = fp6v_pano_new (o, p->pano_focal, 8.0, p->pano_max);
+  }
+  if (!gst_video_frame_map (&vf, &p->job_info, buf, GST_MAP_READ))
+    return;
+  /* 1/8 size luma (sampled, every 8th pixel of every 8th row) */
+  small = g_malloc ((gsize) w * h);
+  for (gint y = 0; y < h; y++) {
+    const guint8 *r = (const guint8 *) GST_VIDEO_FRAME_PLANE_DATA (&vf, 0) +
+        (gsize) (y * 8 + 4) * GST_VIDEO_FRAME_PLANE_STRIDE (&vf, 0);
+    for (gint x = 0; x < w; x++) {
+      const guint8 *q = r + (gsize) (x * 8 + 4) * ps;
+      small[(gsize) y * w + x] = (q[ro] * 77 + q[go] * 150 + q[bo] * 29) >> 8;
+    }
+  }
+  gst_video_frame_unmap (&vf);
+  rc = fp6v_pano_feed (p->pano, small, w, h, w);
+  g_free (small);
+  fp6v_pano_status (p->pano, &p->pano_step, &p->pano_drift, &p->pano_dir);
+  if (rc >= 1) {
+    Fp6Frame *f = fp6j_copy_frame (p, buf);
+    if (!f) {
+      fp6j_fail_locked (self, "out of memory");
+      return;
+    }
+    f->exp_us = p->step_exp[0];
+    f->gain = p->step_gain[0];
+    g_ptr_array_add (p->frames, f);
+    p->job_frames = p->frames->len;
+    GST_INFO_OBJECT (self, "panorama keyframe %u (drift %.2f)",
+        p->frames->len, p->pano_drift);
+  }
+  if (rc == 2)
+    fp6j_finish_capture (self);
+}
+
 /* crop sink pad: every processed frame */
 static GstPadProbeReturn
 fp6j_probe (GstPad * pad, GstPadProbeInfo * pi, gpointer user)
@@ -784,6 +887,9 @@ fp6j_probe (GstPad * pad, GstPadProbeInfo * pi, gpointer user)
       break;
     case KIND_TIMELAPSE:
       fp6j_timelapse_frame (self, buf, now);
+      break;
+    case KIND_PANORAMA:
+      fp6j_pano_frame (self, buf, now);
       break;
     default:
       break;
@@ -923,6 +1029,25 @@ fp6j_start (Fp6LibcameraSrc * self, const gchar * kind_name,
       p->n_steps = frames;
       break;
     }
+    case KIND_PANORAMA:{
+      /* exposure, white balance and focus fixed for the whole sweep (seams)
+       * / at the moment of the tap (document) */
+      static const gdouble focal[] = { 2400, 2840, 1500, 2300 };
+      p->step_exp[0] = e0;
+      p->step_gain[0] = g0;
+      p->step_ev[0] = 0;
+      p->n_steps = 0;
+      p->pano_focal = fp6j_param_double (s, "focal", focal[p->sensor]);
+      p->pano_max = CLAMP ((gint) fp6j_param_double (s, "frames", 12), 2, 24);
+      p->pano_step = p->pano_drift = 0;
+      p->pano_dir = 0;
+      if (p->pano) {
+        fp6v_pano_free (p->pano);
+        p->pano = NULL;
+      }
+      p->job_deadline = g_get_monotonic_time () + 180 * G_USEC_PER_SEC;
+      break;
+    }
     case KIND_TIMELAPSE:
       /* automatic exposure throughout; no frames kept in memory */
       p->tl_interval_us = (gint64) (CLAMP (fp6j_param_double (s, "interval",
@@ -941,7 +1066,7 @@ fp6j_start (Fp6LibcameraSrc * self, const gchar * kind_name,
   GST_INFO_OBJECT (self, "job %s: %d steps from %" G_GINT64_FORMAT " us x "
       "%.2f, WB %.3f/%.3f, lens %.1f -> %s", kind_name, p->n_steps, e0, g0,
       p->base_gr, p->base_gb, p->base_lens, path);
-  if (p->n_steps > 0)
+  if (p->n_steps > 0 || kind == KIND_PANORAMA)
     fp6j_apply_step (self, 0);
   g_mutex_unlock (&p->lock);
   if (s)

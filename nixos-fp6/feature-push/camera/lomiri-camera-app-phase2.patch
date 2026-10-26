@@ -1,5 +1,5 @@
 diff --git a/CameraApp/fp6procontrols.cpp b/CameraApp/fp6procontrols.cpp
-index 15d872b..24fc8af 100644
+index 15d872b..af6300b 100644
 --- a/CameraApp/fp6procontrols.cpp
 +++ b/CameraApp/fp6procontrols.cpp
 @@ -10,6 +10,8 @@
@@ -47,7 +47,7 @@ index 15d872b..24fc8af 100644
  
      const gint64 wantExp = qMax<gint64>(0, qint64(m_exposureUs));
      if (exp != wantExp)
-@@ -170,6 +186,70 @@ void Fp6ProControls::poll()
+@@ -170,6 +186,81 @@ void Fp6ProControls::poll()
      m_afState = afState;
      m_hasFocus = hasFocus;
      m_activeLens = QString::fromUtf8(lens ? lens : "");
@@ -92,8 +92,19 @@ index 15d872b..24fc8af 100644
 +        g_object_get(obj, "job-state", &js, "job-progress", &jp, "job-frames", &jf,
 +                     "job-target-frames", &jt, "job-kind", &jk, "job-result", &jr,
 +                     "job-error", &je, NULL);
-+        const bool change = js != m_jobState || jf != m_jobFrames || jt != m_jobTarget
++        bool change = js != m_jobState || jf != m_jobFrames || jt != m_jobTarget
 +            || std::fabs(jp - m_jobProgress) > 0.004;
++        if (g_object_class_find_property(G_OBJECT_GET_CLASS(obj), "pano-step")) {
++            gdouble ps = 0, pd = 0;
++            gint pdir = 0;
++            g_object_get(obj, "pano-step", &ps, "pano-drift", &pd, "pano-direction", &pdir, NULL);
++            change = change || ps != m_panoStep || pd != m_panoDrift || pdir != m_panoDir;
++            m_panoStep = ps;
++            m_panoDrift = pd;
++            m_panoDir = pdir;
++        }
++        /* faster polling while capturing (panorama guidance) */
++        m_timer.setInterval(js == JobCapture ? 100 : 250);
 +        const int old = m_jobState;
 +        m_jobState = js;
 +        m_jobFrames = jf;
@@ -118,7 +129,7 @@ index 15d872b..24fc8af 100644
      Q_EMIT readoutChanged();
  
      if (serial != m_analysisSerial) {
-@@ -301,6 +381,95 @@ ACTION(continueStack, "stack-continue")
+@@ -301,6 +392,95 @@ ACTION(continueStack, "stack-continue")
  ACTION(cancelStack, "stack-cancel")
  #undef ACTION
  
@@ -215,10 +226,10 @@ index 15d872b..24fc8af 100644
  {
      QString t = text.trimmed().toLower().remove(QLatin1Char(' '));
 diff --git a/CameraApp/fp6procontrols.h b/CameraApp/fp6procontrols.h
-index 434a709..e540d77 100644
+index 434a709..d6898d4 100644
 --- a/CameraApp/fp6procontrols.h
 +++ b/CameraApp/fp6procontrols.h
-@@ -62,6 +62,21 @@ class Fp6ProControls : public QObject
+@@ -62,6 +62,25 @@ class Fp6ProControls : public QObject
      Q_PROPERTY(int stackDarkFrames READ stackDarkFrames NOTIFY stackChanged)
      Q_PROPERTY(double stackElapsedMs READ stackElapsedMs NOTIFY stackChanged)
  
@@ -236,11 +247,15 @@ index 434a709..e540d77 100644
 +    Q_PROPERTY(int jobFrames READ jobFrames NOTIFY jobChanged)
 +    Q_PROPERTY(int jobTargetFrames READ jobTargetFrames NOTIFY jobChanged)
 +    Q_PROPERTY(bool jobBusy READ jobBusy NOTIFY jobChanged)
++    /* panorama guidance */
++    Q_PROPERTY(double panoStep READ panoStep NOTIFY jobChanged)
++    Q_PROPERTY(double panoDrift READ panoDrift NOTIFY jobChanged)
++    Q_PROPERTY(int panoDirection READ panoDirection NOTIFY jobChanged)
 +
  public:
      enum StackState { StackIdle = 0, StackSettle, StackLight, StackWaitDark,
                        StackDark, StackSaving, StackDone, StackError };
-@@ -116,6 +131,21 @@ public:
+@@ -116,6 +135,24 @@ public:
      int stackDarkFrames() const { return m_stackDark; }
      double stackElapsedMs() const;
  
@@ -258,11 +273,14 @@ index 434a709..e540d77 100644
 +    int jobFrames() const { return m_jobFrames; }
 +    int jobTargetFrames() const { return m_jobTarget; }
 +    bool jobBusy() const { return m_jobState == JobCapture || m_jobState == JobProcess; }
++    double panoStep() const { return m_panoStep; }
++    double panoDrift() const { return m_panoDrift; }
++    int panoDirection() const { return m_panoDir; }
 +
      Q_INVOKABLE void triggerAutofocus(double x = -1, double y = -1);
      Q_INVOKABLE bool startStack(const QString &directory, double totalUs, int mode,
                                  bool darkFrame, int orientation, int quality = 95);
-@@ -126,6 +156,19 @@ public:
+@@ -126,6 +163,19 @@ public:
      Q_INVOKABLE double parseShutter(const QString &text) const;
      Q_INVOKABLE QString formatShutter(double us) const;
  
@@ -282,7 +300,7 @@ index 434a709..e540d77 100644
      /* overlay image for the "fp6pro" image provider */
      static QImage overlayImage();
  
-@@ -139,6 +182,13 @@ Q_SIGNALS:
+@@ -139,6 +189,13 @@ Q_SIGNALS:
      void stackChanged();
      void stackFinished(const QString &path);
      void stackFailed(const QString &error);
@@ -296,7 +314,7 @@ index 434a709..e540d77 100644
  
  private Q_SLOTS:
      void poll();
-@@ -147,6 +197,7 @@ private:
+@@ -147,6 +204,7 @@ private:
      void *element() const;           /* GObject*, new reference, or nullptr */
      void sync(void *obj);
      void changed();
@@ -304,7 +322,7 @@ index 434a709..e540d77 100644
  
      QTimer m_timer;
      bool m_available = false;
-@@ -175,6 +226,14 @@ private:
+@@ -175,6 +233,16 @@ private:
      int m_stackState = 0, m_stackFrames = 0, m_stackTarget = 0, m_stackDark = 0;
      double m_stackFrameUs = 0;
      qint64 m_stackStartMs = 0;
@@ -316,11 +334,13 @@ index 434a709..e540d77 100644
 +    int m_jobState = 0, m_jobFrames = 0, m_jobTarget = 0;
 +    double m_jobProgress = 0;
 +    QString m_jobKind;
++    double m_panoStep = 0, m_panoDrift = 0;
++    int m_panoDir = 0;
  };
  
  class Fp6OverlayProvider : public QQuickImageProvider
 diff --git a/qml/Viewfinder/ViewFinderOverlay.qml b/qml/Viewfinder/ViewFinderOverlay.qml
-index b765ed6..90700e1 100644
+index b765ed6..b339e56 100644
 --- a/qml/Viewfinder/ViewFinderOverlay.qml
 +++ b/qml/Viewfinder/ViewFinderOverlay.qml
 @@ -89,6 +89,15 @@ Item {
@@ -329,7 +349,7 @@ index b765ed6..90700e1 100644
          property bool proLevel: false
 +        // FP6 phase 2
 +        property bool proRaw: false         // RAW (DNG) next to the JPEG in Pro mode
-+        property string fp6PhotoMode: "photo"   // photo | night (auto, not Pro)
++        property string fp6PhotoMode: "photo"   // photo | night | panorama (auto, not Pro)
 +        property string fp6VideoMode: "video"   // video | timelapse
 +        property real fp6TimelapseInterval: 2   // s between frames
 +        property int fp6TimelapseFps: 30        // playback rate
@@ -348,7 +368,7 @@ index b765ed6..90700e1 100644
      Binding { target: camera.pro; property: "analysis"
          value: !proActive ? 0 : ((settings.proHistogram ? 1 : 0) | (settings.proZebra ? 2 : 0)
                                   | (settings.proPeaking ? 4 : 0)) }
-@@ -153,6 +164,70 @@ Item {
+@@ -153,6 +164,83 @@ Item {
              console.log("Long exposure failed: " + error);
              PopupUtils.open(captureFailedDialogComponent);
          }
@@ -364,11 +384,23 @@ index b765ed6..90700e1 100644
 +        }
 +        onJobFailed: {
 +            console.log(kind + " failed: " + error);
-+            PopupUtils.open(captureFailedDialogComponent);
++            PopupUtils.open(fp6JobFailedDialog, viewFinderOverlay, { "text": error });
 +        }
 +        onRawSaved: console.log("RAW saved as " + path)
 +        onRawFailed: console.log("RAW failed: " + error)
 +        onRestartNeeded: viewFinderOverlay.restartCamera()
++    }
++
++    Component {
++        id: fp6JobFailedDialog
++        Dialog {
++            id: jobFailed
++            title: i18n.tr("Capture failed")
++            Button {
++                text: i18n.tr("OK")
++                onClicked: PopupUtils.close(jobFailed)
++            }
++        }
 +    }
 +
 +    /* FP6 phase 2: the photo-mode capture job a tap of the shutter starts
@@ -380,6 +412,7 @@ index b765ed6..90700e1 100644
 +        if (proActive)
 +            return settings.proBracket > 0 && !proLongExposure ? "bracket" : "";
 +        if (settings.fp6PhotoMode === "night") return "night";
++        if (settings.fp6PhotoMode === "panorama") return "panorama";
 +        if (settings.hdrEnabled) return "hdr";
 +        return "";
 +    }
@@ -419,7 +452,7 @@ index b765ed6..90700e1 100644
      }
  
      function photoDirectory() {
-@@ -332,6 +407,15 @@ Item {
+@@ -332,6 +420,15 @@ Item {
      }
  
      function triggerShoot() {
@@ -435,7 +468,7 @@ index b765ed6..90700e1 100644
          if (proStacking) {
              if (camera.pro.stackState == 3) camera.pro.continueStack();
              else if (camera.pro.stackState != 5) camera.pro.stopStack();
-@@ -615,7 +699,7 @@ Item {
+@@ -615,7 +712,7 @@ Item {
              onOpenedChanged: optionsOverlayLoader.item.closeValueSelector()
              enabled: camera.videoRecorder.recorderState == CameraRecorder.StoppedState
                       && !camera.photoCaptureInProgress && !camera.timedCaptureInProgress
@@ -444,7 +477,7 @@ index b765ed6..90700e1 100644
              opacity: enabled ? 1.0 : 0.3
              property bool ready: optionsOverlayLoader.status == Loader.Ready
  
-@@ -714,7 +798,8 @@ Item {
+@@ -714,7 +811,8 @@ Item {
                      property string label: i18n.tr("HDR")
                      property bool isToggle: true
                      property int selectedIndex: bottomEdge.indexForValue(hdrOptionsModel, settings.hdrEnabled)
@@ -454,7 +487,7 @@ index b765ed6..90700e1 100644
                      property bool visible: camera.captureMode === Camera.CaptureStillImage
                      property bool showInIndicators: true
  
-@@ -1095,7 +1180,19 @@ Item {
+@@ -1095,7 +1193,19 @@ Item {
              // Ensure that the orientation is positive and within range.
              orientation = (orientation + 360) % 360;
  
@@ -475,12 +508,16 @@ index b765ed6..90700e1 100644
                  if (main.contentExportMode) {
                      camera.videoRecorder.outputLocation = StorageLocations.temporaryLocation;
                  } else if (StorageLocations.removableStoragePresent && settings.preferRemovableStorage) {
-@@ -1120,10 +1217,26 @@ Item {
+@@ -1120,10 +1230,30 @@ Item {
                                             viewFinderOverlay.encodingQualityPercent())) {
                      PopupUtils.open(captureFailedDialogComponent);
                  }
 +            } else if (viewFinderOverlay.fp6JobKind() !== "") {
 +                // FP6 phase 2: bracketed / multi-frame capture in the element
++                if (camera.pro.jobState == 1 && camera.pro.jobKind === "panorama") {
++                    camera.pro.stopJob();         // second tap ends the sweep
++                    return;
++                }
 +                if (camera.pro.jobBusy) return;   // one at a time (progress shown)
 +                shootFeedback.start();
 +                var jk = viewFinderOverlay.fp6JobKind();
@@ -502,7 +539,7 @@ index b765ed6..90700e1 100644
                  camera.photoCaptureInProgress = true;
                  camera.imageCapture.setMetadata("Orientation", orientation);
                  camera.imageCapture.setMetadata("Date", new Date());
-@@ -1235,7 +1348,7 @@ Item {
+@@ -1235,7 +1365,7 @@ Item {
              onClicked: controls.changeRecordMode()
              enabled: camera.videoRecorder.recorderState == CameraRecorder.StoppedState && !main.contentExportMode
                       && !camera.photoCaptureInProgress && !camera.timedCaptureInProgress
@@ -511,7 +548,7 @@ index b765ed6..90700e1 100644
          }
  
          ShootButton {
-@@ -1256,7 +1369,8 @@ Item {
+@@ -1256,7 +1386,8 @@ Item {
                  (viewFinderOverlay.proStacking && camera.pro.stackState != 5)
              )
              state: (camera.captureMode == Camera.CaptureVideo) ?
@@ -521,7 +558,7 @@ index b765ed6..90700e1 100644
                     "camera"
              onClicked: {
                  if (burst.count == 0)
-@@ -1320,7 +1434,7 @@ Item {
+@@ -1320,7 +1451,7 @@ Item {
              customRotation: main.staticRotationAngle
              enabled: !camera.switchInProgress && camera.videoRecorder.recorderState == CameraRecorder.StoppedState
                       && !camera.photoCaptureInProgress && !camera.timedCaptureInProgress
@@ -530,7 +567,7 @@ index b765ed6..90700e1 100644
              iconName: "camera-flip"
              onClicked: controls.switchCamera()
          }
-@@ -1388,7 +1502,7 @@ Item {
+@@ -1388,7 +1519,7 @@ Item {
              spacing: units.gu(1)
              visible: camera.position !== Camera.FrontFace && !main.contentExportMode
                       && camera.videoRecorder.recorderState == CameraRecorder.StoppedState
@@ -539,7 +576,7 @@ index b765ed6..90700e1 100644
              enabled: !viewFinderOverlay.proStacking && !camera.switchInProgress
              rotation: main.staticRotationAngle
              Fp6ProChip { value: "0.6×"; selected: camera.pro.ultrawide
-@@ -1397,6 +1511,90 @@ Item {
+@@ -1397,6 +1528,91 @@ Item {
                  onClicked: viewFinderOverlay.switchLens(false) }
          }
  
@@ -558,7 +595,8 @@ index b765ed6..90700e1 100644
 +            enabled: !camera.pro.jobBusy
 +            rotation: main.staticRotationAngle
 +            Repeater {
-+                model: [ { m: "photo", l: i18n.tr("PHOTO") }, { m: "night", l: i18n.tr("NIGHT") } ]
++                model: [ { m: "photo", l: i18n.tr("PHOTO") }, { m: "night", l: i18n.tr("NIGHT") },
++                         { m: "panorama", l: i18n.tr("PANO") } ]
 +                Fp6ProChip {
 +                    value: modelData.l
 +                    selected: settings.fp6PhotoMode === modelData.m
@@ -630,7 +668,7 @@ index b765ed6..90700e1 100644
          // ---- FP6 Pro mode toggle (top right) and panel
          Fp6ProChip {
              id: proToggle
-@@ -1466,6 +1664,20 @@ Item {
+@@ -1466,6 +1682,26 @@ Item {
              visible: viewFinderOverlay.proActive && settings.proLevel
          }
  
@@ -640,6 +678,12 @@ index b765ed6..90700e1 100644
 +            color: "white"; style: Text.Outline; styleColor: "black"
 +            text: i18n.tr("Interval: %1 of %2 · every %3 s · tap to stop")
 +                  .arg(fp6Interval.taken).arg(settings.proIntervalCount).arg(settings.proIntervalS)
++        }
++
++        Fp6PanoGuide {
++            anchors.fill: parent
++            pro: camera.pro
++            visible: camera.pro.jobState == 1 && camera.pro.jobKind === "panorama"
 +        }
 +
 +        Fp6JobFeedback {
@@ -732,6 +776,72 @@ index 0000000..9777f1b
 +            maximumValue: 1
 +            value: pro ? pro.jobProgress : 0
 +        }
++    }
++}
+diff --git a/qml/components/Fp6PanoGuide.qml b/qml/components/Fp6PanoGuide.qml
+new file mode 100644
+index 0000000..45da2e3
+--- /dev/null
++++ b/qml/components/Fp6PanoGuide.qml
+@@ -0,0 +1,60 @@
++/*
++ * FP6 phase 2: panorama sweep guidance. A line across the middle of the
++ * viewfinder and a dot that follows the vertical drift (keep the dot on the
++ * line), an arrow for the sweep direction and the progress to the next
++ * frame. Tap the shutter to finish.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; version 3.
++ */
++import QtQuick 2.12
++import Lomiri.Components 1.3
++
++Item {
++    id: guide
++    property var pro
++    readonly property real drift: pro ? pro.panoDrift : 0
++    readonly property bool off: Math.abs(drift) > 0.06
++
++    Rectangle {
++        id: line
++        anchors.verticalCenter: parent.verticalCenter
++        x: units.gu(4); width: parent.width - units.gu(8); height: units.dp(2)
++        color: Qt.rgba(1, 1, 1, 0.8)
++    }
++    Rectangle {
++        id: dot
++        width: units.gu(3); height: width; radius: width / 2
++        anchors.horizontalCenter: parent.horizontalCenter
++        // drift is in frame heights; exaggerate so small errors show
++        y: parent.height / 2 - height / 2 + Math.max(-1, Math.min(1, guide.drift * 4)) * parent.height * 0.25
++        color: guide.off ? LomiriColors.orange : "white"
++        border.color: "black"; border.width: units.dp(1)
++    }
++    Label {
++        anchors { horizontalCenter: parent.horizontalCenter; bottom: line.top; bottomMargin: units.gu(6) }
++        color: "white"; style: Text.Outline; styleColor: "black"
++        horizontalAlignment: Text.AlignHCenter
++        text: (!pro || pro.panoDirection === 0)
++              ? i18n.tr("Turn slowly to the left or right")
++              : (guide.off ? (guide.drift > 0 ? i18n.tr("Tilt up a little") : i18n.tr("Tilt down a little"))
++                           : i18n.tr("%1 photos · tap the shutter to finish").arg(pro.jobFrames))
++    }
++    // direction arrow and progress to the next frame
++    Label {
++        anchors { verticalCenter: line.verticalCenter
++                  right: pro && pro.panoDirection < 0 ? undefined : parent.right
++                  left: pro && pro.panoDirection < 0 ? parent.left : undefined
++                  margins: units.gu(1) }
++        text: pro && pro.panoDirection < 0 ? "◀" : "▶"
++        color: "white"; style: Text.Outline; styleColor: "black"
++        textSize: Label.Large
++        visible: pro && pro.panoDirection !== 0
++    }
++    Rectangle {
++        anchors { top: line.bottom; topMargin: units.gu(1); left: line.left }
++        width: line.width * (pro ? pro.panoStep : 0); height: units.dp(4)
++        color: LomiriColors.orange
 +    }
 +}
 diff --git a/qml/components/Fp6ProPanel.qml b/qml/components/Fp6ProPanel.qml

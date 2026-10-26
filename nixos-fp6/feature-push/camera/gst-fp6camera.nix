@@ -2,24 +2,28 @@
 # Elements: fp6camerabinsrc (camera selection/orientation/flash) and
 # fp6libcamerasrc (fixed-size libcamerasrc + scaler). Offline self test runs
 # on the native builder with videotestsrc and a temp file as the "LED".
-{ lib, stdenv, pkg-config, gst_all_1, libraw, exiftool, python3 }:
+{ lib, stdenv, pkg-config, gst_all_1, libraw, exiftool, python3, rustc }:
 stdenv.mkDerivation {
   pname = "gst-fp6camera";
   version = "0.1";
   src = ./gst-fp6camera;
   strictDeps = true;
-  nativeBuildInputs = [ pkg-config ];
+  nativeBuildInputs = [ pkg-config rustc ];
   buildInputs = with gst_all_1; [ gstreamer gst-plugins-base gst-plugins-bad ];
 
   buildPhase = ''
     runHook preBuild
     flags="$(pkg-config --cflags gstreamer-1.0 gstreamer-photography-1.0 gstreamer-video-1.0 gstreamer-tag-1.0)"
     libs="$(pkg-config --libs gstreamer-1.0 gstreamer-photography-1.0 gstreamer-video-1.0 gstreamer-tag-1.0) -lgstbasecamerabinsrc-1.0 -lm"
+    # panorama / document scan: Rust (no crates), static library with a C ABI
+    rustc --edition 2021 --crate-type staticlib --crate-name fp6vision -C opt-level=3 \
+      -C panic=abort -C codegen-units=1 -o libfp6vision.a vision/lib.rs
     # image processing (HDR/night/panorama ...): vectorised, separate object
     $CC -c -fPIC -O3 -ffast-math -Wall $(pkg-config --cflags glib-2.0) -o fp6-imaging.o fp6-imaging.c
     $CC -shared -fPIC -O2 -Wall \
       -DFP6CAM_CAMERABIN_PLUGIN='"${gst_all_1.gst-plugins-bad}/lib/gstreamer-1.0/libgstcamerabin.so"'  -Werror=implicit-function-declaration \
-      -Werror=incompatible-pointer-types $flags -o libgstfp6camera.so fp6camera.c fp6-dng.c fp6-imaging.o $libs
+      -Werror=incompatible-pointer-types $flags -o libgstfp6camera.so fp6camera.c fp6-dng.c fp6-imaging.o \
+      libfp6vision.a $libs -lpthread -ldl
     $CC -O2 -Wall $flags $(pkg-config --cflags gstreamer-pbutils-1.0) -o fp6camera-selftest \
       fp6camera-selftest.c $libs $(pkg-config --libs gstreamer-pbutils-1.0)
     # manual controls / long exposure from the command line (live camera)
@@ -78,11 +82,14 @@ stdenv.mkDerivation {
     timeout 60 $out/libexec/fp6camera-selftest
     # phase 2: properties, DNG writer (decoded by dcraw, tags by exiftool)
     for p in raw-active raw-format raw-state raw-capture sensor job-state \
-        job-progress job-result job-start job-stop job-cancel; do
+        job-progress job-result job-start job-stop job-cancel pano-step pano-drift; do
       ${lib.getBin gst_all_1.gstreamer}/bin/gst-inspect-1.0 fp6libcamerasrc | grep -q "$p" \
         || { echo "fp6libcamerasrc lacks $p" >&2; exit 1; }
     done
     $out/bin/fp6-imaging-test selftest $TMPDIR
+    # Rust unit tests (panorama tracking/stitching, page detection)
+    rustc --edition 2021 --test -C opt-level=2 -o $TMPDIR/vision-test ${./gst-fp6camera/vision/lib.rs}
+    $TMPDIR/vision-test
     $out/libexec/fp6-dng-selftest $TMPDIR/t.dng
     raw-identify -v $TMPDIR/t.dng | tee $TMPDIR/dcraw.txt
     grep -qi "filter pattern: *BG/*GR" $TMPDIR/dcraw.txt
