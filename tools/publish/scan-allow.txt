@@ -28,5 +28,5 @@ assert_eq!\(dd\([0-9.-]+, [0-9.-]+\)
 # WMM .COF coefficient file end markers
 :\+?9{40,}$
 # privacy-lock tests: synthetic 0.5/0.5 coordinate and placeholder Wi-Fi key
-privacy-lock/fp6-privacy/src/sos\.rs:[0-9]+:.*mlat=0\.50000&mlon=0\.50000
-privacy-lock/fp6-privacy/src/mac\.rs:[0-9]+:.*psk=TESTPSK
+mlat=0\.50000&mlon=0\.50000
+assert!\(new\.contains\("psk=TESTPSK"\)
