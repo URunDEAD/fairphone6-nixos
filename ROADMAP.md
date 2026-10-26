@@ -68,6 +68,13 @@ Every user-facing feature gets a setting/toggle in System Settings. Status:
 - ⏳ Smart Wi-Fi ↔ mobile switching, data saver
 - ⏳ Bluetooth codecs and quick pairing review
 - ⏳ NFC tag reader/writer app (no payments)
+- ⏳ Research: system authentication API (like iOS LocalAuthentication / Android
+  BiometricPrompt) — apps ask the system to confirm the user (fingerprint via
+  biometryd, or passcode) through one standard system dialog and only get a
+  yes/no; optionally keys that unlock only after authentication, kept in a
+  hardware-backed keystore if the Qualcomm TEE allows it, else a sealed
+  software keystore. Scope: the device owner's own security for native apps;
+  not proving device integrity to other apps, and not bypassing their checks
 - ⏳ Per-app permissions (camera, microphone, location, files) on top of AppArmor
 - ⏳ Encrypted user data
 - ⏳ Work profile / app separation
