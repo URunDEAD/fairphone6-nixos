@@ -74,7 +74,13 @@ Every user-facing feature gets a setting/toggle in System Settings. Status:
 
 ## In progress elsewhere
 
-- 🔧 Camera: fast launch; Phase 2 smaller items (slow motion, stabilisation)
+- 🔧 Camera: fast launch
+- ⏳ Camera: full field of view for main/ultrawide photos (today a 2× centre crop:
+  the soft ISP can't scale — needs a binning/scaling path or full-size stream)
+- ⏳ Hardware video encoder (iris) — enables faster timelapse, screen recording,
+  slow motion (ultrawide 120 fps mode) and electronic stabilisation (gyro)
+- ✅ Camera Phase 2: RAW/DNG, HDR, night mode, timelapse, bracketing,
+  intervalometer, panorama (Rust), front/ultrawide colour calibration, mirror selfie
 - 🔧 Keep apps ready (prelaunch, preload, zram, OOM policy)
 - 🔧 Sensor utility apps (Tools folder), batch 2 next
 - 🔧 Screenshots and screen recording
