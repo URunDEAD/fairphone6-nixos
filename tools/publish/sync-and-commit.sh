@@ -81,7 +81,19 @@ fi
 
 # ---- (b) export + scan + public commit ----
 "$tools/export-public.sh" --src "$workspace" --dst "$public"
-git -C "$public" add -A
+# The export mirrors the whole live workspace, including other work still in
+# progress. With PATHs, stage only those (same relative paths) and drop the
+# rest of the exported changes, so one fix stays one commit.
+if [ "${#paths[@]}" -gt 0 ]; then
+  for p in "${paths[@]}"; do
+    [ -e "$public/$p" ] || git -C "$public" ls-files --error-unmatch -- "$p" >/dev/null 2>&1 || continue
+    git -C "$public" add -A -- "$p"
+  done
+  git -C "$public" stash push --keep-index --include-untracked -q -m "fp6 unrelated export" >/dev/null 2>&1 \
+    && git -C "$public" stash drop -q >/dev/null 2>&1 || true
+else
+  git -C "$public" add -A
+fi
 if git -C "$public" diff --cached --quiet; then
   echo "public: no exported changes"
 else
