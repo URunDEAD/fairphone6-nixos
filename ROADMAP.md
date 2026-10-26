@@ -52,6 +52,12 @@ Every user-facing feature gets a setting/toggle in System Settings. Status:
 - ❓ VoLTE (implemented; waiting for Orange provisioning), then Wi-Fi calling
 - ⏳ KDE Connect integration (notifications, clipboard, files, remote input)
 - ⏳ Nearby file sharing
+- ⏳ Research: CallKit-style integration for internet calls — third-party
+  VoIP/messenger calls (native Linux apps via a D-Bus API, and Waydroid apps
+  such as WhatsApp/Signal via Android's ConnectionService) get the same
+  incoming-call screen over the lock screen, ringtone/DND rules, in-call
+  audio routing, proximity handling and call history as cellular calls
+  (Lomiri telephony-service / Telepathy as the common layer)
 - ⏳ Smart Wi-Fi ↔ mobile switching, data saver
 - ⏳ Bluetooth codecs and quick pairing review
 - ⏳ NFC tag reader/writer app (no payments)
