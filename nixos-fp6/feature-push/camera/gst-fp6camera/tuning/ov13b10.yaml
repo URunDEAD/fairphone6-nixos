@@ -1,10 +1,18 @@
 # SPDX-License-Identifier: CC0-1.0
-# FP6 wide camera (OmniVision OV13B10) - minimal softISP tuning.
+# FP6 wide camera (OmniVision OV13B10) - softISP tuning.
 # blackLevel: OV13B10 BLC target is 0x40 at 10 bit (64 -> 4096 on the 16-bit
 # scale). Without a fixed value the softISP only ever lowers its estimate from
 # 16/256 in dark scenes, lifting the noise floor (flat, washed blacks).
-# No colour chart data yet: no CCM, gray-world AWB.
 # Af: the module has a dw9714 VCM (lens control exposed by the driver).
+#
+# Awb whitePoints and Ccm (camera phase 2): read out of the stock vendor
+# tuning blob com.qti.tuned.tsp_ov13b10_fp6.bin (vendor_a.img, read with
+# debugfs, never mounted) the same way as imx896.yaml: the 10-point AWB
+# reference gain table (7 on-locus points kept, same CT labels as the
+# IMX896 table) and the bright-zone cc13 CCMs, one per CCT region
+# (2750-2950, 3900-4100, 4900-5100, 6400-6600 K -> nodes at the midpoints);
+# rows sum to 1. Same provenance note as imx896.yaml (numeric calibration
+# data of the vendor blob; a colour-chart calibration would replace it).
 %YAML 1.1
 ---
 version: 1
@@ -12,6 +20,34 @@ algorithms:
   - BlackLevel:
       blackLevel: 4096
   - Awb:
+      whitePoints:
+        - { ct: 1900, gains: [ 0.6646, 3.2713 ] }
+        - { ct: 2300, gains: [ 0.8589, 2.5183 ] }
+        - { ct: 2856, gains: [ 1.0751, 2.1743 ] }
+        - { ct: 5000, gains: [ 1.8262, 1.5663 ] }
+        - { ct: 6504, gains: [ 1.9992, 1.4252 ] }
+        - { ct: 7504, gains: [ 1.9652, 1.1881 ] }
+        - { ct: 9500, gains: [ 2.7270, 0.9697 ] }
+      clampMargin: 0.35
+      damping: 0.8
+  - Ccm:
+      ccms:
+        - ct: 2850
+          ccm: [ 1.7705, -0.9246,  0.1541,
+                -0.1767,  1.1485,  0.0282,
+                -0.1775, -1.0638,  2.2413 ]
+        - ct: 4000
+          ccm: [ 1.7245, -0.7111, -0.0134,
+                -0.2077,  1.5454, -0.3377,
+                -0.2252, -1.2324,  2.4576 ]
+        - ct: 5000
+          ccm: [ 1.8546, -0.7611, -0.0935,
+                -0.1763,  1.4713, -0.2950,
+                -0.1424, -0.8835,  2.0259 ]
+        - ct: 6500
+          ccm: [ 1.8626, -0.7911, -0.0715,
+                -0.1593,  1.5187, -0.3594,
+                -0.1084, -0.8925,  2.0009 ]
   - Adjust:
   - Agc:
   - Af:

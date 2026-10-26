@@ -1,8 +1,17 @@
 # SPDX-License-Identifier: CC0-1.0
-# FP6 front camera (Samsung S5KKD1, fp6-s5kkd1 driver) - minimal softISP tuning.
+# FP6 front camera (Samsung S5KKD1, fp6-s5kkd1 driver) - softISP tuning.
 # blackLevel: 10-bit pedestal 64 (Samsung default) -> 4096 on the 16-bit
 # scale; replaces the downward-only auto estimate that flattened low-light
-# frames. Fixed focus, no lens. No colour chart data yet: no CCM.
+# frames. Fixed focus, no lens.
+#
+# Awb whitePoints and Ccm (camera phase 2): read out of the stock vendor
+# tuning blob com.qti.tuned.tsp_s5kkd1_fp6.bin (vendor_a.img, read with
+# debugfs, never mounted) like imx896.yaml: the AWB reference gains (7
+# on-locus points, IMX896 CT labels) and the bright-zone cc13 CCMs of the
+# CCT regions 1-2500, 2700-3400, 3800-4300 and 4800-10000 K (nodes 2300,
+# 3050, 4000, 6500); rows sum to 1. The gains are in the sensor's real
+# (GBRG) colour order, i.e. they assume the fixed fp6-s5kkd1 driver
+# (camera phase 0, swap-rb off). Provenance as in imx896.yaml.
 %YAML 1.1
 ---
 version: 1
@@ -10,6 +19,34 @@ algorithms:
   - BlackLevel:
       blackLevel: 4096
   - Awb:
+      whitePoints:
+        - { ct: 1900, gains: [ 0.7450, 2.4732 ] }
+        - { ct: 2300, gains: [ 0.9060, 2.2529 ] }
+        - { ct: 2856, gains: [ 1.0641, 2.1229 ] }
+        - { ct: 5000, gains: [ 1.4811, 1.5649 ] }
+        - { ct: 6504, gains: [ 1.6334, 1.4425 ] }
+        - { ct: 7504, gains: [ 1.7084, 1.3349 ] }
+        - { ct: 9500, gains: [ 2.5218, 1.0966 ] }
+      clampMargin: 0.35
+      damping: 0.8
+  - Ccm:
+      ccms:
+        - ct: 2300
+          ccm: [ 2.0893, -1.1265,  0.0372,
+                -0.1863,  1.1897, -0.0034,
+                -0.2248, -0.9986,  2.2234 ]
+        - ct: 3050
+          ccm: [ 1.9608, -0.9711,  0.0103,
+                -0.2481,  1.3030, -0.0549,
+                -0.2083, -0.8267,  2.0350 ]
+        - ct: 4000
+          ccm: [ 2.2459, -1.2690,  0.0231,
+                -0.2362,  1.3365, -0.1003,
+                -0.1452, -0.7450,  1.8902 ]
+        - ct: 6500
+          ccm: [ 2.1181, -0.9128, -0.2053,
+                -0.2871,  1.6240, -0.3369,
+                -0.0970, -0.7710,  1.8680 ]
   - Adjust:
   - Agc:
 ...
