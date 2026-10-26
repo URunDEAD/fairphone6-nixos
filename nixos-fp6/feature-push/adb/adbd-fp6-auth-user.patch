@@ -1,0 +1,192 @@
+FP6 stage-2 adbd hardening, on top of the mobile-nixos adbd patches
+(ubports android-tools-pkg 128a2506 + 0001..0006).
+
+* RSA key authorization is always on (there is no ro.adb.secure property
+  on NixOS). Keys: /etc/adbd/adb_keys (declarative) and
+  /var/lib/adbd/adb_keys (approved on the phone).
+* adbd drops to the account in $ADBD_USER (must be non-root) before it
+  touches USB: setgid/initgroups/setuid, no kept capabilities, verified
+  that setuid(0) fails. adb shell/push/pull therefore run as that user.
+* The authorization ("framework") socket is /run/adbd/adbd, mode 0600,
+  owned by $ADBD_USER, for the on-phone confirmation prompt.
+* USB FunctionFS only: no TCP fallback listener on port 5555 and no
+  service.adb.tcp.port / persist.adb.tcp.port handling.
+* umask 022 instead of 000 for adbd and the shells it spawns; HOME,
+  USER, LOGNAME and SHELL of $ADBD_USER for the shells.
+* adb push keeps the host file mode minus group/other write (Android
+  widened the user bits to group/other).
+
+--- a/core/adb/adb.c
++++ b/core/adb/adb.c
+@@ -1262,8 +1262,25 @@
+     }
+ }
+ 
++/* FP6: adbd always drops to the unprivileged account named by $ADBD_USER. */
++static struct passwd *fp6_adbd_account(void) {
++    const char *name = getenv("ADBD_USER");
++    struct passwd *pw;
++    if (name == NULL || name[0] == '\0') {
++        fprintf(stderr, "adbd: ADBD_USER is not set\n");
++        exit(1);
++    }
++    pw = getpwnam(name);
++    if (pw == NULL || pw->pw_uid == 0 || pw->pw_gid == 0) {
++        fprintf(stderr, "adbd: ADBD_USER must name an existing non-root account\n");
++        exit(1);
++    }
++    return pw;
++}
++
+ static int should_drop_privileges() {
+ #ifndef ALLOW_ADBD_ROOT
++    return 1;
+ #else /* ALLOW_ADBD_ROOT */
+     int secure = 0;
+     char value[PROPERTY_VALUE_MAX];
+@@ -1300,7 +1317,7 @@
+     int port;
+     char value[PROPERTY_VALUE_MAX];
+ 
+-    umask(000);
++    umask(022);
+ #endif
+ 
+     atexit(adb_cleanup);
+@@ -1330,10 +1347,9 @@
+         exit(1);
+     }
+ #else
+-    property_get("ro.adb.secure", value, "0");
+-    auth_enabled = !strcmp(value, "1");
+-    if (auth_enabled)
+-        adb_auth_init();
++    /* FP6: RSA key authorization is mandatory. */
++    auth_enabled = 1;
++    adb_auth_init();
+ 
+     // Our external storage path may be different than apps, since
+     // we aren't able to bind mount after dropping root.
+@@ -1364,26 +1380,37 @@
+         exit(1);
+     }
+ */
+-    // initialize all default groups for the UBUNTU_ID_ROOT user
+-    struct passwd *pw = getpwuid(UBUNTU_ID_ROOT);
+-    initgroups(pw->pw_name, pw->pw_gid);
++    // FP6: supplementary groups of the ADBD_USER account
++    struct passwd *pw = fp6_adbd_account();
++    uid_t fp6_uid = pw->pw_uid;
++    gid_t fp6_gid = pw->pw_gid;
++    if (initgroups(pw->pw_name, pw->pw_gid) != 0) {
++        exit(1);
++    }
+ 
+     /* don't listen on a port (default 5037) if running in secure mode */
+     /* don't run as root if we are running in secure mode */
+     if (should_drop_privileges()) {
+         // do not drop capabilities, we are already almost ready, just set CAP_DAC_OVERRIDE
+         // drop_capabilities_bounding_set_if_needed();
+-        if (prctl(PR_SET_KEEPCAPS, CAP_DAC_OVERRIDE, 0, 0, 0) != 0) {
++        /* FP6: switch to ADBD_USER for good; no capabilities are kept */
++        if (setgid(fp6_gid) != 0) {
+             exit(1);
+         }
+-
+-        /* then switch user and group to "shell" */
+-        if (setgid(UBUNTU_ID_ROOT) != 0) {
++        if (setuid(fp6_uid) != 0) {
+             exit(1);
+         }
+-        if (setuid(UBUNTU_ID_ROOT) != 0) {
++        if (setuid(0) != -1 || getuid() != fp6_uid || geteuid() != fp6_uid) {
+             exit(1);
+         }
++        /* login environment for shells (systemd passes none of these) */
++        pw = getpwuid(fp6_uid);
++        if (pw != NULL) {
++            setenv("HOME", pw->pw_dir, 1);
++            setenv("USER", pw->pw_name, 1);
++            setenv("LOGNAME", pw->pw_name, 1);
++            setenv("SHELL", pw->pw_shell, 1);
++        }
+ 
+         D("Local port disabled\n");
+     } else {
+@@ -1407,20 +1434,11 @@
+         usb = 1;
+     }
+ 
+-    // If one of these properties is set, also listen on that port
+-    // If one of the properties isn't set and we couldn't listen on usb,
+-    // listen on the default port.
+-    property_get("service.adb.tcp.port", value, "");
+-    if (!value[0]) {
+-        property_get("persist.adb.tcp.port", value, "");
+-    }
+-    if (sscanf(value, "%d", &port) == 1 && port > 0) {
+-        printf("using port=%d\n", port);
+-        // listen on TCP port specified by service.adb.tcp.port property
+-        local_init(port);
+-    } else if (!usb) {
+-        // listen on default port
+-        local_init(DEFAULT_ADB_LOCAL_TRANSPORT_PORT);
++    // FP6: USB FunctionFS only; adb over TCP is not offered.
++    (void)port;
++    if (!usb) {
++        fprintf(stderr, "adbd: no USB FunctionFS endpoint\n");
++        exit(1);
+     }
+ 
+     D("adb_main(): pre init_jdwp()\n");
+@@ -1728,7 +1746,11 @@
+         }
+     }
+     // create adb socket here, usually this is done by Android init
+-    ubuntu_create_android_control_socket("adbd", SOCK_STREAM, 0660, UBUNTU_ID_ROOT, UBUNTU_ID_ROOT);
++    struct passwd *fp6_pw = fp6_adbd_account();
++    if (ubuntu_create_android_control_socket("adbd", SOCK_STREAM, 0600, fp6_pw->pw_uid, fp6_pw->pw_gid) < 0) {
++        fprintf(stderr, "adbd: cannot create the authorization socket\n");
++        exit(1);
++    }
+ 
+     start_device_log();
+     D("Handling main()\n");
+--- a/core/adb/adb_auth_client.c
++++ b/core/adb/adb_auth_client.c
+@@ -36,8 +36,8 @@
+ };
+ 
+ static char *key_paths[] = {
+-    "/adb_keys",
+-    "/data/misc/adb/adb_keys",
++    "/etc/adbd/adb_keys",
++    "/var/lib/adbd/adb_keys",
+     NULL
+ };
+ 
+--- a/core/adb/file_sync_service.c
++++ b/core/adb/file_sync_service.c
+@@ -366,9 +366,8 @@
+         gid_t gid = -1;
+         uint64_t cap = 0;
+ 
+-        /* copy user permission bits to "group" and "other" permissions */
+-        mode |= ((mode >> 3) & 0070);
+-        mode |= ((mode >> 3) & 0007);
++        /* FP6: no group/other write for pushed files (was: copy user bits to group/other) */
++        mode &= ~0022;
+ 
+         tmp = path;
+         if(*tmp == '/') {
+--- a/core/include/cutils/sockets.h
++++ b/core/include/cutils/sockets.h
+@@ -30,7 +30,7 @@
+ #endif
+ 
+ #define ANDROID_SOCKET_ENV_PREFIX	"ANDROID_SOCKET_"
+-#define ANDROID_SOCKET_DIR		"/dev/socket"
++#define ANDROID_SOCKET_DIR		"/run/adbd"
+ 
+ #ifdef __cplusplus
+ extern "C" {

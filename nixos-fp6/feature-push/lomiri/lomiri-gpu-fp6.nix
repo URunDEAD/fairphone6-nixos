@@ -175,11 +175,17 @@ in {
         message = "The Lomiri target replaces the postmarketOS/GNOME app set.";
       }
       {
-        assertion = config.services.openssh.enable && config.mobile.adbd.enable
+        # adbd: either mobile-nixos' adbd, or the Developer-mode-gated adbd-fp6
+        # (feature-push/adb/adb-fp6.nix: off by default, RSA auth, user shell).
+        # SSH and NCM USB networking stay mandatory either way; stage-1 USB
+        # networking must not depend on ADB.
+        assertion = config.services.openssh.enable
+          && (config.mobile.adbd.enable || (config.hardware.fairphone6.adb.enable or false))
+          && config.mobile.boot.stage-1.networking.enable
           && config.services.dnsmasq.enable
           && builtins.elem { address = "172.16.42.1"; prefixLength = 24; }
             config.networking.interfaces.usb0.ipv4.addresses;
-        message = "The Lomiri target must keep SSH, adbd and USB networking unchanged.";
+        message = "The Lomiri target must keep SSH and USB networking, and an adbd (mobile-nixos, or Developer-mode adbd-fp6).";
       }
     ];
   };

@@ -43,6 +43,7 @@ let
       ./apps/maps-fp6.nix
       ./netbird/netbird-fp6.nix
       ./apparmor/apparmor-fp6.nix
+      ./adb/adb-fp6.nix
       ({ lib, options, ... }: {
         # fp6-lomiri-powerd replaces the manual-only brightness bridge.
         # lomiri-gpu-fp6.nix restates it at mkOverride 10.

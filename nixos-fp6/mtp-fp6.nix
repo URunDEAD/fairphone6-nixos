@@ -47,9 +47,9 @@ let
             umount "$endpoints" || status=1
           fi
           rmdir "$endpoints" "$function_dir" 2>/dev/null || status=1
-          # Keep the existing stage-1 NCM and ADB functions on every exit.
+          # Keep the existing NCM (and ADB, if Developer mode is on) functions on every exit.
           printf '%s\n' "$controller" > "$gadget/UDC" || status=1
-          echo 'FP6 MTP: original NCM/ADB gadget restored'
+          echo 'FP6 MTP: original gadget restored'
         fi
         exit "$status"
       }
@@ -60,7 +60,10 @@ let
       [[ "$(cat "$gadget/idVendor")" == 0x18d1 ]] || fail 'unexpected USB vendor'
       [[ "$(cat "$gadget/idProduct")" == 0x4ee3 ]] || fail 'unexpected USB product'
       [[ "$(readlink -f "$gadget/configs/c.1/rndis")" == "$gadget/functions/ncm.usb0" ]] || fail 'NCM configuration changed'
-      [[ "$(readlink -f "$gadget/configs/c.1/adb")" == "$gadget/functions/ffs.adb" ]] || fail 'ADB configuration changed'
+      # ADB is optional (Developer mode, feature-push/adb/adb-fp6.nix); if present it must be ffs.adb.
+      if [[ -L "$gadget/configs/c.1/adb" ]]; then
+        [[ "$(readlink -f "$gadget/configs/c.1/adb")" == "$gadget/functions/ffs.adb" ]] || fail 'ADB configuration changed'
+      fi
       [[ ! -e "$function_dir" && ! -L "$function_link" && ! -e "$endpoints" ]] || fail 'MTP resources already exist'
       controller=$(cat "$gadget/UDC")
       [[ -n "$controller" && -d "/sys/class/udc/$controller" ]] || fail 'USB controller is not bound'
@@ -86,7 +89,7 @@ let
       done
       [[ "$ready" == 1 ]] || fail 'FunctionFS descriptors did not become ready'
       printf '%s\n' "$controller" > "$gadget/UDC"
-      echo 'FP6 MTP: NCM, ADB and MTP endpoints bound'
+      echo 'FP6 MTP: MTP endpoints bound next to the existing functions'
       wait "$mtp_pid"
     '';
   };
@@ -106,7 +109,7 @@ in {
     # unchanged; unready FunctionFS endpoints would prevent enumeration.
     systemd.services.fp6-mtp = {
       description = "FP6 USB MTP file transfer";
-      after = [ "adbd.service" "systemd-tmpfiles-setup.service" ];
+      after = [ "adbd.service" "fp6-adbd.service" "systemd-tmpfiles-setup.service" ];
       serviceConfig = {
         ExecStart = lib.getExe runMtp;
         Type = "simple";
