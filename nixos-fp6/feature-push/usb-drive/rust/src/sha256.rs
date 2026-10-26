@@ -96,7 +96,7 @@ impl Sha256 {
         let mut pad = vec![0x80u8];
         let rem = (self.total + 1) % 64;
         let zeros = if rem <= 56 { 56 - rem } else { 120 - rem };
-        pad.extend(std::iter::repeat(0).take(zeros as usize));
+        pad.extend(std::iter::repeat_n(0, zeros as usize));
         pad.extend_from_slice(&bits.to_be_bytes());
         let total = self.total;
         self.update(&pad);

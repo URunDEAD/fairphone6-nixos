@@ -25,6 +25,9 @@ pub extern "C" fn fp6_usbdrive_new() -> *mut Handle {
 }
 
 /// Runs a command (name, JSON object argument); returns JSON.
+///
+/// # Safety
+/// `h` from fp6_usbdrive_new; `name`/`arg` NUL-terminated or NULL.
 #[no_mangle]
 pub unsafe extern "C" fn fp6_usbdrive_command(h: *mut Handle, name: *const c_char, arg: *const c_char) -> *mut c_char {
     let Some(h) = h.as_ref() else { return to_c("{}".into()) };
@@ -34,6 +37,8 @@ pub unsafe extern "C" fn fp6_usbdrive_command(h: *mut Handle, name: *const c_cha
     to_c(r.to_string())
 }
 
+/// # Safety
+/// `h` from fp6_usbdrive_new, not used afterwards.
 #[no_mangle]
 pub unsafe extern "C" fn fp6_usbdrive_free(h: *mut Handle) {
     if !h.is_null() {
@@ -41,6 +46,8 @@ pub unsafe extern "C" fn fp6_usbdrive_free(h: *mut Handle) {
     }
 }
 
+/// # Safety
+/// `s` returned by fp6_usbdrive_command, freed once.
 #[no_mangle]
 pub unsafe extern "C" fn fp6_usbdrive_string_free(s: *mut c_char) {
     if !s.is_null() {

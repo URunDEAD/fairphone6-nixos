@@ -42,7 +42,7 @@ pub fn mode_text(m: &str) -> &'static str {
 fn lines(st: &Value) -> Vec<String> {
     let mut v = vec![];
     let name = st["name"].as_str().unwrap_or("image");
-    v.push(format!("{name}"));
+    v.push(name.to_string());
     let mut m = mode_text(st["mode"].as_str().unwrap_or("")).to_string();
     if st["exclusive"] == true {
         m.push_str(" · exclusive");
@@ -224,7 +224,8 @@ fn main() {
                 let a = agent.clone();
                 move |_, _| a.borrow_mut().update(serde_json::json!({"hosting": false}))
             });
-        std::mem::forget(w);
+        // Keep watching for the life of the process.
+        let _ = w;
     }
     // Rate/byte counters between signals.
     {

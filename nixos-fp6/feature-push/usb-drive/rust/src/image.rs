@@ -257,9 +257,7 @@ pub fn detect_file(f: &mut File) -> std::io::Result<ImageInfo> {
             if id != b"BEA01" {
                 info.udf = true;
             }
-        } else if id == b"TEA01" {
-            break;
-        } else if !info.iso9660 && !info.udf {
+        } else if id == b"TEA01" || (!info.iso9660 && !info.udf) {
             break;
         }
     }

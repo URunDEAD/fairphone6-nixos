@@ -617,10 +617,10 @@ pub fn resolve(e: &Entry) -> Result<(String, String, String), String> {
 
 fn content_length(url: &str) -> Option<u64> {
     let o = curl_base().args(["-I", "--max-time", "60"]).arg(url).output().ok()?;
-    String::from_utf8_lossy(&o.stdout).lines().filter_map(|l| {
+    String::from_utf8_lossy(&o.stdout).lines().rev().find_map(|l| {
         let (k, v) = l.split_once(':')?;
         k.trim().eq_ignore_ascii_case("content-length").then(|| v.trim().parse::<u64>().ok()).flatten()
-    }).last()
+    })
 }
 
 fn download(e: &Entry, dir: &Path, job: &Job) -> Result<PathBuf, String> {
