@@ -30,7 +30,8 @@ ItemPage {
             objectName: "fp6LockGraceSelector"
             expanded: true
             model: root.values.map(root.label)
-            selectedIndex: Math.max(0, root.values.indexOf(root.settings ? (root.settings.lockGraceSeconds || 0) : 0))
+            // ItemSelector resets selectedIndex when its model is set: bind afterwards.
+            Component.onCompleted: selectedIndex = Qt.binding(function () { return Math.max(0, root.values.indexOf(root.settings ? (root.settings.lockGraceSeconds || 0) : 0)); })
             onDelegateClicked: root.settings.lockGraceSeconds = root.values[index]
         }
         ListItems.Caption {

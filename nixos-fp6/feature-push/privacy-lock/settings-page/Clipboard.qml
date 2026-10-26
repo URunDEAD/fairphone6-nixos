@@ -33,7 +33,8 @@ ItemPage {
                 model: root.values.map(function (v) {
                     return v === 0 ? i18n.tr("Never") : i18n.tr("%1 minute after copying", "%1 minutes after copying", v).arg(v);
                 })
-                selectedIndex: Math.max(0, root.values.indexOf(root.settings ? (root.settings.clipboardClearMinutes || 0) : 0))
+                // ItemSelector resets selectedIndex when its model is set: bind afterwards.
+                Component.onCompleted: selectedIndex = Qt.binding(function () { return Math.max(0, root.values.indexOf(root.settings ? (root.settings.clipboardClearMinutes || 0) : 0)); })
                 onDelegateClicked: root.settings.clipboardClearMinutes = root.values[index]
             }
 

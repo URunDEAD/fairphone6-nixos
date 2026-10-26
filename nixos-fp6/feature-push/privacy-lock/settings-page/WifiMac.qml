@@ -70,7 +70,8 @@ ItemPage {
                 delegate: ListItems.ItemSelector {
                     text: modelData.name
                     model: [root.modeNames[1], root.modeNames[2], root.modeNames[3]]
-                    selectedIndex: modelData.mode === "random" ? 1 : modelData.mode === "device" ? 2 : 0
+                    // ItemSelector resets selectedIndex when its model is set: bind afterwards.
+                    Component.onCompleted: selectedIndex = Qt.binding(function () { return modelData.mode === "random" ? 1 : modelData.mode === "device" ? 2 : 0; })
                     onDelegateClicked: root.setMode(modelData.uuid, ["stable", "random", "device"][index])
                 }
             }

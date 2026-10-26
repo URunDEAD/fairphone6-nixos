@@ -96,13 +96,15 @@ ItemPage {
             ListItems.ItemSelector {
                 text: i18n.tr("Presses")
                 model: root.pressValues.map(function (v) { return i18n.tr("%1 presses").arg(v); })
-                selectedIndex: Math.max(0, root.pressValues.indexOf(root.settings ? root.settings.sosPresses : 5))
+                // ItemSelector resets selectedIndex when its model is set: bind afterwards.
+                Component.onCompleted: selectedIndex = Qt.binding(function () { return Math.max(0, root.pressValues.indexOf(root.settings ? root.settings.sosPresses : 5)); })
                 onDelegateClicked: root.settings.sosPresses = root.pressValues[index]
             }
             ListItems.ItemSelector {
                 text: i18n.tr("Countdown")
                 model: root.countdownValues.map(function (v) { return i18n.tr("%1 seconds").arg(v); })
-                selectedIndex: Math.max(0, root.countdownValues.indexOf(root.settings ? root.settings.sosCountdown : 5))
+                // ItemSelector resets selectedIndex when its model is set: bind afterwards.
+                Component.onCompleted: selectedIndex = Qt.binding(function () { return Math.max(0, root.countdownValues.indexOf(root.settings ? root.settings.sosCountdown : 5)); })
                 onDelegateClicked: root.settings.sosCountdown = root.countdownValues[index]
             }
 
