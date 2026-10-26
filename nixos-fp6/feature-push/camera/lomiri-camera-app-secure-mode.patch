@@ -1,0 +1,205 @@
+diff --git a/cameraapplication.cpp b/cameraapplication.cpp
+index 6a82b38..cbdb015 100644
+--- a/cameraapplication.cpp
++++ b/cameraapplication.cpp
+@@ -167,6 +167,16 @@ bool CameraApplication::setup()
+     return true;
+ }
+ 
++bool CameraApplication::fp6Secure() const
++{
++    // Secure mode: the photo roll shows only this run's photos and videos,
++    // nothing is shared/exported through content-hub, and no button opens
++    // another app (gallery, media player, settings, links).
++    static const bool secure = QCoreApplication::arguments().contains(QStringLiteral("--secure"))
++        || qgetenv("FP6_CAMERA_SECURE") == "1";
++    return secure;
++}
++
+ bool CameraApplication::fp6Trace() const
+ {
+     return fp6TraceOn();
+diff --git a/cameraapplication.h b/cameraapplication.h
+index 6c06cfe..4cfb4d3 100644
+--- a/cameraapplication.h
++++ b/cameraapplication.h
+@@ -32,6 +32,8 @@ class CameraApplication : public QGuiApplication
+     Q_PROPERTY(bool desktopMode READ isDesktopMode CONSTANT)
+     // FP6 fast launch: timing marks on stderr with FP6_CAMERA_TRACE set
+     Q_PROPERTY(bool fp6Trace READ fp6Trace CONSTANT)
++    // FP6 secure mode (camera from the lock screen): --secure or FP6_CAMERA_SECURE=1
++    Q_PROPERTY(bool fp6Secure READ fp6Secure CONSTANT)
+ 
+ public:
+     CameraApplication(int &argc, char **argv);
+@@ -39,6 +41,7 @@ public:
+     bool setup();
+     bool isDesktopMode() const;
+     bool fp6Trace() const;
++    bool fp6Secure() const;
+     Q_INVOKABLE void fp6Mark(const QString &what) const;
+     // started by the phone's "Keep apps ready" prelaunch, not by the user
+     Q_INVOKABLE bool fp6StartedHidden() const;
+diff --git a/qml/Viewfinder/ViewFinderOverlay.qml b/qml/Viewfinder/ViewFinderOverlay.qml
+index 90700e1..ad34a43 100644
+--- a/qml/Viewfinder/ViewFinderOverlay.qml
++++ b/qml/Viewfinder/ViewFinderOverlay.qml
+@@ -1830,6 +1830,7 @@ Item {
+             text: i18n.tr("Camera app doesn't have permission to access the camera hardware or another error occurred.\n\nIf granting permission does not resolve this problem, reboot your device.")
+             Button {
+                 text: i18n.tr("Edit Permissions")
++                visible: !application.fp6Secure     // FP6 secure mode: no Settings app
+                 color: theme.palette.normal.focus
+                 onClicked: {
+                     Qt.openUrlExternally("settings:///system/security-privacy?service=camera");
+diff --git a/qml/camera-app.qml b/qml/camera-app.qml
+index add0fb4..0225aca 100644
+--- a/qml/camera-app.qml
++++ b/qml/camera-app.qml
+@@ -433,6 +433,10 @@ Window {
+     Connections {
+         target: ContentHub
+         onExportRequested: {
++            if (application.fp6Secure) {        // FP6 secure mode: no content-hub export
++                transfer.state = ContentTransfer.Aborted;
++                return;
++            }
+             viewSwitcher.switchToViewFinder();
+ 
+             if (transfer.contentType === ContentType.Videos) {
+diff --git a/qml/components/AdvancedOptions.qml b/qml/components/AdvancedOptions.qml
+index 42a82ff..154727e 100644
+--- a/qml/components/AdvancedOptions.qml
++++ b/qml/components/AdvancedOptions.qml
+@@ -30,6 +30,7 @@ Page {
+             Action {
+                 iconName: "info"
+                 text: i18n.tr("About")
++                visible: !application.fp6Secure     // FP6 secure mode
+                 onTriggered: {
+                     galleryPageStack.push(infoPageComponent)
+                 }
+@@ -393,7 +394,7 @@ Page {
+             OptionSelector {
+                 id: fastLaunchSelector
+                 property var appReady: main.fp6AppReady
+-                visible: !!appReady && appReady.available
++                visible: !!appReady && appReady.available && !application.fp6Secure
+                 width: parent.width
+                 expanded: true
+                 model: [i18n.tr("Off"), i18n.tr("Preload"), i18n.tr("Keep ready")]
+diff --git a/qml/components/GalleryView.qml b/qml/components/GalleryView.qml
+index d2fed85..39cdd3e 100644
+--- a/qml/components/GalleryView.qml
++++ b/qml/components/GalleryView.qml
+@@ -32,7 +32,9 @@ Item {
+     property bool userSelectionMode: false
+     property Item currentView: state == "GRID" ? photogridView : slideshowView
+     property var model: FoldersModel {
+-        folders: [StorageLocations.picturesLocation, StorageLocations.videosLocation,
++        // FP6 secure mode: no folders, only what this run captured (prependFile)
++        folders: application.fp6Secure ? []
++               : [StorageLocations.picturesLocation, StorageLocations.videosLocation,
+                   StorageLocations.removableStoragePicturesLocation,
+                   StorageLocations.removableStorageVideosLocation]
+         typeFilters: !main.contentExportMode ? [ "image", "video" ]
+diff --git a/qml/components/GalleryViewHeader.qml b/qml/components/GalleryViewHeader.qml
+index 5daafab..f9bc5bb 100644
+--- a/qml/components/GalleryViewHeader.qml
++++ b/qml/components/GalleryViewHeader.qml
+@@ -106,6 +106,7 @@ Item {
+ 			iconColor: theme.palette.normal.backgroundText
+             onClicked:  { Qt.openUrlExternally("appid://gallery.ubports/gallery/current-user-version") }
+             visible: !main.contentExportMode && !userSelectionMode && !editMode
++                     && !application.fp6Secure     // FP6 secure mode: no other app
+         }
+         //-------------------------------------------------------------------------
+ 
+diff --git a/qml/components/GalleryViewLoader.qml b/qml/components/GalleryViewLoader.qml
+index 01dba35..09cac23 100644
+--- a/qml/components/GalleryViewLoader.qml
++++ b/qml/components/GalleryViewLoader.qml
+@@ -31,8 +31,12 @@ Loader {
+         if (loader.item) loader.item.showLastPhotoTaken();
+     }
+ 
++    // captured before the gallery loaded: added once it is there (secure
++    // mode has no folder scan that would find them)
++    property var fp6Pending: []
+     function prependMediaToModel(filePath) {
+         if (loader.item) loader.item.prependMediaToModel(filePath);
++        else fp6Pending.push(filePath);
+     }
+ 
+     function precacheThumbnail(filePath) {
+@@ -48,6 +52,9 @@ Loader {
+ 
+     onLoaded: {
+         application.fp6Mark("gallery-ready");
++        for (var i = 0; i < fp6Pending.length; i++)
++            loader.item.prependMediaToModel(fp6Pending[i]);
++        fp6Pending = [];
+         loader.item.inView = Qt.binding(function() { return loader.inView });
+         loader.item.exit.connect(exit);
+     }
+diff --git a/qml/components/PhotogridView.qml b/qml/components/PhotogridView.qml
+index 933eb29..19459fe 100644
+--- a/qml/components/PhotogridView.qml
++++ b/qml/components/PhotogridView.qml
+@@ -42,6 +42,7 @@ FocusScope {
+         Action {
+             text: i18n.tr("Share")
+             iconName: "share"
++            visible: !application.fp6Secure     // FP6 secure mode
+             enabled: model.selectedFiles.length > 0
+             onTriggered: {
+                 // Display a warning message if we are attempting to share mixed
+@@ -79,6 +80,7 @@ FocusScope {
+                 text: i18n.tr("About")
+                 objectName: "openAboutPage"
+                 iconName: "info"
++                visible: !application.fp6Secure     // FP6 secure mode: links open a browser
+                 onTriggered: {
+                     galleryPageStack.clear();
+                     galleryPageStack.push(infoPageComponent);
+diff --git a/qml/components/SlideshowView.qml b/qml/components/SlideshowView.qml
+index 86ae705..aef1c6a 100644
+--- a/qml/components/SlideshowView.qml
++++ b/qml/components/SlideshowView.qml
+@@ -53,6 +53,7 @@ FocusScope {
+         Action {
+             text: i18n.tr("Share")
+             iconName: "share"
++            visible: !application.fp6Secure     // FP6 secure mode
+             onTriggered: {
+                 var dialog = PopupUtils.open(sharePopoverComponent)
+                 dialog.parent = slideshowView
+@@ -86,6 +87,7 @@ FocusScope {
+             text: i18n.tr("About")
+             objectName: "openAboutPage"
+             iconName: "info"
++            visible: !application.fp6Secure     // FP6 secure mode: links open a browser
+             onTriggered: {
+                 galleryPageStack.clear();
+                 galleryPageStack.push(infoPageComponent);
+@@ -327,7 +329,7 @@ FocusScope {
+                         onClicked: {
+                             // For videos, we check for a tap in the center
+                             // on the play button icon
+-                            if (media.isVideo
++                            if (media.isVideo && !application.fp6Secure   // FP6 secure mode
+                                 && mouse.x > width / 2 - units.gu(5)
+                                 && mouse.x < width / 2 + units.gu(5)
+                                 && mouse.y > height / 2 - units.gu(5)
+diff --git a/qml/components/VideoReview.qml b/qml/components/VideoReview.qml
+index 65c394b..855aebd 100644
+--- a/qml/components/VideoReview.qml
++++ b/qml/components/VideoReview.qml
+@@ -55,6 +55,7 @@ Item {
+             anchors.centerIn: parent
+             width: units.gu(10)
+             height: units.gu(10)
++            enabled: !application.fp6Secure     // FP6 secure mode: no media player
+             onClicked: Qt.openUrlExternally("video://%1".arg(videoPath));
+         }
+     }

@@ -50,6 +50,10 @@ in
     # Fast launch (fp6-app-ready lists), FP6_CAMERA_TRACE timing marks.
     # results/feature-push-20261024/camera/fast-launch/README.md
     ./lomiri-camera-app-fast-launch.patch
+    # secure-mode: `lomiri-camera-app --secure` or FP6_CAMERA_SECURE=1 (camera
+    # from the lock screen): photo roll = this run only, no share/export, no
+    # button that opens another app.
+    ./lomiri-camera-app-secure-mode.patch
   ];
   nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ pkg-config ];
   buildInputs = old.buildInputs ++ [ gstFp6Camera libcamera gst_all_1.gst-libav glib ];
