@@ -15,22 +15,28 @@ A=/tmp/fp6-phase2-app.pid
 busy() { pgrep -x "gst-launch-1.0|cam|qcam|fp6-capture|fp6-long-exposu|lomiri-camera-a|.lomiri-camera-|fp6camera-selft" >/dev/null; }
 case $1 in
 start)
-  busy && { echo "camera busy"; exit 3; }
   rm -f $P
   setsid -f flock -w 900 /run/user/10000/fp6-gui.lock sh -c "echo \$\$ > $P; exec sleep 600" </dev/null >/dev/null 2>&1
   for i in $(seq 1 900); do [ -s $P ] && break; sleep 1; done
   [ -s $P ] || { echo "no GUI lock"; exit 4; }
+  # with the lock held, wait (up to 5 min) until nobody uses the camera
+  for i in $(seq 1 60); do busy || break; sleep 5; done
+  busy && { echo "camera busy"; kill $(cat $P); rm -f $P; exit 3; }
   if ! loginctl list-sessions --no-legend | grep -q "user *seat0 .* user "; then
     [ -n "$FP6_PW" ] || { echo "not logged in"; kill $(cat $P); exit 5; }
     echo "$FP6_PW" | sudo -S -p '' python3 /tmp/phone-type.py "$FP6_PW" >/dev/null 2>&1
-    sleep 8
   fi
+  # the session's environment appears a few seconds after the login
+  for i in $(seq 1 40); do
+    systemctl --user show-environment 2>/dev/null | grep -q '^WAYLAND_DISPLAY=.' && break
+    sleep 1
+  done
   touch $M
   [ -f $C.phase2bak ] || cp -p $C $C.phase2bak
   : > /tmp/fp6-phase2-app.log
   # the environment lomiri-app-launch gives apps (systemd user manager)
   systemctl --user show-environment > /tmp/fp6-phase2-env
-  grep -q '^WAYLAND_DISPLAY=.' /tmp/fp6-phase2-env || { echo "no wayland session"; exit 6; }
+  grep -q '^WAYLAND_DISPLAY=.' /tmp/fp6-phase2-env || { echo "no wayland session"; kill $(cat $P); rm -f $P $M; exit 6; }
   ( cd $HOME; exec bash -c "set -a; . /tmp/fp6-phase2-env; set +a; export APP_ID=lomiri-camera-app;
     setsid -f sh -c 'echo \$\$ > $A; exec $2/bin/lomiri-camera-app >>/tmp/fp6-phase2-app.log 2>&1' </dev/null" )
   sleep 7; pgrep -af "[/]bin/lomiri-camera-app" | cut -c1-150
