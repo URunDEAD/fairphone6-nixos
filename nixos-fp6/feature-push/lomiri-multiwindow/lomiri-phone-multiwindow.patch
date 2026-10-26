@@ -729,10 +729,10 @@ index 72c9830..ae6d15f 100644
              dragDelegate.surface = null;
              d.moving = false
 diff --git a/qml/Stage/Stage.qml b/qml/Stage/Stage.qml
-index 1c1c9f7..6708235 100644
+index 1c1c9f7..8623f0a 100644
 --- a/qml/Stage/Stage.qml
 +++ b/qml/Stage/Stage.qml
-@@ -1104,7 +1104,17 @@ FocusScope {
+@@ -1104,7 +1104,39 @@ FocusScope {
                  Binding {
                      target: model.window; property: "requestedPosition"
                      value: Qt.point(screenOffsetX, screenOffsetY)
@@ -744,6 +744,28 @@ index 1c1c9f7..6708235 100644
 +                // needs the real position for touch focus and popup placement.
 +                readonly property int multiWindowRole: multiWindow.roleFor(model.window.id)
 +                readonly property rect multiWindowRect: multiWindow.rectFor(multiWindowRole)
++                // Mir re-places Mir-maximized windows to the full application zone when
++                // the zone is recomputed (rotation, output or OSK changes) and Lomiri only
++                // re-sends a size when the requested size changes: re-assert it.
++                Connections {
++                    target: appDelegate.multiWindowRole != 0 && root.state == "staged" ? appDelegate.surface : null
++                    ignoreUnknownSignals: true
++                    function onSizeChanged() { multiWindowSizeTimer.restart(); }
++                }
++                Timer {
++                    id: multiWindowSizeTimer
++                    interval: 100
++                    onTriggered: {
++                        var s = appDelegate.surface;
++                        if (!s || !s.live || appDelegate.multiWindowRole == 0 || root.state != "staged"
++                                || decoratedWindow.counterRotate) return;
++                        var win = appDelegate.Window.window;
++                        var sc = win && win.screen && win.screen.scale > 0 ? win.screen.scale : 1;
++                        var w = Math.max(1, Math.round(appDelegate.requestedWidth / sc));
++                        var h = Math.max(1, Math.round(appDelegate.requestedHeight / sc));
++                        if (s.size.width > w + 1 || s.size.height > h + 1) s.resize(Qt.size(w, h));
++                    }
++                }
 +                Binding {
 +                    target: model.window; property: "requestedPosition"
 +                    value: Qt.point(appDelegate.multiWindowRect.x + screenOffsetX, appDelegate.multiWindowRect.y + screenOffsetY)
@@ -751,7 +773,7 @@ index 1c1c9f7..6708235 100644
                      restoreMode: Binding.RestoreBinding
                  }
  
-@@ -1720,6 +1730,49 @@ FocusScope {
+@@ -1720,6 +1752,49 @@ FocusScope {
                              sourceItem: windowedRightEdgeMaths.opacityMask < 1 ? decoratedWindow : null
                          }
                      },
@@ -801,7 +823,7 @@ index 1c1c9f7..6708235 100644
                      State {
                          name: "staged"; when: root.state == "staged"
                          PropertyChanges {
-@@ -1952,7 +2005,7 @@ FocusScope {
+@@ -1952,7 +2027,7 @@ FocusScope {
                      },
  
                      Transition {
@@ -810,7 +832,7 @@ index 1c1c9f7..6708235 100644
                          to: "spread"
                          // DecoratedWindow wants the scaleToPreviewSize set before enabling scaleToPreview
                          PropertyAction { target: appDelegate; properties: "z,visible" }
-@@ -1961,6 +2014,10 @@ FocusScope {
+@@ -1961,6 +2036,10 @@ FocusScope {
                          LomiriNumberAnimation { target: decoratedWindow; properties: "width,height,itemScale,angle,scaleToPreviewProgress"; duration: priv.animationDuration }
                          LomiriNumberAnimation { target: windowInfoItem; properties: "opacity"; duration: priv.animationDuration }
                      },
@@ -821,7 +843,7 @@ index 1c1c9f7..6708235 100644
                      Transition {
                          from: "normal,staged"; to: "stagedWithSideStage"
                          LomiriNumberAnimation { target: appDelegate; properties: "x,y,requestedWidth,requestedHeight"; duration: priv.animationDuration }
-@@ -2170,7 +2227,7 @@ FocusScope {
+@@ -2170,7 +2249,7 @@ FocusScope {
                  }
                  StagedFullscreenPolicy {
                      id: stagedFullscreenPolicy
@@ -830,7 +852,7 @@ index 1c1c9f7..6708235 100644
                      surface: model.window.surface
                  }
  
-@@ -2193,6 +2250,7 @@ FocusScope {
+@@ -2193,6 +2272,7 @@ FocusScope {
                          priv.closingIndex = index
                          appDelegate.close();
                      }
@@ -838,7 +860,7 @@ index 1c1c9f7..6708235 100644
                  }
  
                  WindowInfoItem {
-@@ -2302,6 +2360,20 @@ FocusScope {
+@@ -2302,6 +2382,20 @@ FocusScope {
                  }
              }
          }
