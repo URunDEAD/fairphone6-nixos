@@ -1,0 +1,21 @@
+--- a/src/LomiriToolkit/asyncloader.cpp
++++ b/src/LomiriToolkit/asyncloader.cpp
+@@ -53,6 +53,9 @@
+ AsyncLoader::~AsyncLoader()
+ {
+     reset();
++    Q_D(AsyncLoader);
++    // Compiling cannot be reset, but destruction must release its connection.
++    d->detachComponent();
+ }
+ 
+ // incubator methods
+@@ -190,7 +193,7 @@
+         };
+ 
+         d->componentHandler.reset(new QMetaObject::Connection);
+-        *(d->componentHandler) = QObject::connect(d->component, &QQmlComponent::statusChanged, callback);
++        *(d->componentHandler) = QObject::connect(d->component, &QQmlComponent::statusChanged, this, callback);
+     } else {
+         d->onComponentStatusChanged(d->component->status());
+     }

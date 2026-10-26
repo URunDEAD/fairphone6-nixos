@@ -1,0 +1,35 @@
+From: FP6 source integration
+Subject: [PATCH] contacts: port telephone attribute lookup to EDS 3.60
+
+EDS 3.60 removed e_contact_get_attributes(). Its replacement returns borrowed
+attributes; copy each accepted attribute to preserve independent ownership
+provided by the old API. Keep the returned container typed as GList.
+
+--- a/src/vvmplayer-contact-provider.c
++++ b/src/vvmplayer-contact-provider.c
+@@ -110,10 +110,11 @@
+   g_assert (VVM_IS_EDS (self));
+   g_assert (E_IS_CONTACT (contact));
+ 
+-  /* Only container should be freed, attribute is freed in VvmContact */
+-  attributes = e_contact_get_attributes (contact, field_id);
+-
+-  for (GSList *l = (GSList *)attributes; l != NULL; l = l->next)
++  /* EDS 3.60 returns a new container with borrowed attributes. */
++  attributes = e_vcard_get_attributes_by_name (E_VCARD (contact),
++                                               e_contact_vcard_attribute (field_id));
++
++  for (GList *l = attributes; l != NULL; l = l->next)
+     {
+       g_autofree char *value = NULL;
+ 
+@@ -121,7 +122,8 @@
+ 
+       if (value && *value)
+         g_ptr_array_add (self->contacts_array,
+-                         vvm_contact_new (contact, l->data));
++                         vvm_contact_new (contact,
++                                          e_vcard_attribute_copy (l->data)));
+     }
+ }
+ 

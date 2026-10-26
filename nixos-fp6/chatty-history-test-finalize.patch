@@ -1,0 +1,114 @@
+--- a/tests/history.c
++++ b/tests/history.c
+@@ -26,6 +26,28 @@
+ #include "chatty-message.h"
+ #include "chatty-contact.h"
+ #include "chatty-settings.h"
++
++/* GTask callbacks may run before the worker drops its last reference. */
++static void
++assert_finalize_async (gpointer object)
++{
++  GWeakRef weak;
++  gint64 deadline = g_get_monotonic_time () + 2 * G_TIME_SPAN_SECOND;
++  g_weak_ref_init (&weak, object);
++  g_object_unref (object);
++  do {
++    GObject *remaining = g_weak_ref_get (&weak);
++    if (!remaining) {
++      g_weak_ref_clear (&weak);
++      return;
++    }
++    g_object_unref (remaining);
++    while (g_main_context_iteration (NULL, FALSE));
++    g_usleep (1000);
++  } while (g_get_monotonic_time () < deadline);
++  g_weak_ref_clear (&weak);
++  g_error ("Object retained after asynchronous history completion");
++}
+ 
+ typedef struct Message {
+   ChattyChat *chat;
+@@ -499,7 +521,7 @@
+   g_assert_true (g_file_test (file_name, G_FILE_TEST_IS_REGULAR));
+   g_assert_false (chatty_history_is_closed (history));
+   g_assert_true (status);
+-  g_assert_finalize_object (task);
++  assert_finalize_async (task);
+ 
+   task = g_task_new (NULL, NULL, on_done_quit_loop, loop);
+   chatty_history_close_async (history, finish_bool_cb, task);
+@@ -509,8 +531,8 @@
+   status = g_task_propagate_boolean (task, NULL);
+   g_assert_true (chatty_history_is_closed (history));
+   g_assert_true (status);
+-  g_assert_finalize_object (task);
+-  g_assert_finalize_object (history);
++  assert_finalize_async (task);
++  assert_finalize_async (history);
+ 
+   g_remove (file_name);
+   g_assert_false (g_file_test (file_name, G_FILE_TEST_EXISTS));
+@@ -522,7 +544,7 @@
+ 
+   chatty_history_close (history);
+   g_assert_true (chatty_history_is_closed (history));
+-  g_assert_finalize_object (history);
++  assert_finalize_async (history);
+ }
+ 
+ static void
+@@ -567,7 +589,7 @@
+   g_main_loop_run (loop);
+ 
+   msg_array = g_task_propagate_pointer (task, NULL);
+-  g_assert_finalize_object (task);
++  assert_finalize_async (task);
+   g_assert_nonnull (msg_array);
+   g_assert_cmpint (test_msg_array->len, ==, msg_array->len);
+ 
+@@ -667,7 +689,7 @@
+ 
+   success = g_task_propagate_boolean (task, NULL);
+   g_assert_true (success);
+-  g_assert_finalize_object (task);
++  assert_finalize_async (task);
+ 
+   if (status != CHATTY_STATUS_DRAFT)
+     g_ptr_array_add (msg_array, message);
+@@ -682,7 +704,7 @@
+ 
+   old_msg_array = g_task_propagate_pointer (task, NULL);
+   g_assert_null (old_msg_array);
+-  g_assert_finalize_object (task);
++  assert_finalize_async (task);
+ 
+   if (msg_array->len > 2) {
+     message = msg_array->pdata[msg_array->len - 2];
+@@ -700,7 +722,7 @@
+     for (guint i = 0; i < msg_array->len - 2; i++)
+       compare_chat_message (msg_array->pdata[i], old_msg_array->pdata[i]);
+ 
+-    g_assert_finalize_object (task);
++    assert_finalize_async (task);
+     g_ptr_array_unref (old_msg_array);
+   }
+ 
+@@ -714,7 +736,7 @@
+ 
+     draft = g_task_propagate_pointer (task, NULL);
+     g_assert_cmpstr (draft, ==, what);
+-    g_assert_finalize_object (task);
++    assert_finalize_async (task);
+   }
+ }
+ 
+@@ -780,7 +802,7 @@
+ 
+   while (!chatty_history_is_closed (history));
+ 
+-  g_assert_finalize_object (chat);
++  assert_finalize_async (chat);
+   g_ptr_array_unref (msg_array);
+ }
+ 

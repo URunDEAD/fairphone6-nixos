@@ -1,0 +1,1084 @@
+--- a/meson.build
++++ b/meson.build
+@@ -25,6 +25,13 @@
+ 
+ libspell_dep = dependency('libspelling-1', required: false)
+ 
++libcmatrix_dep = dependency('libcmatrix',
++  version: '>= 0.0.2',
++  required: get_option('matrix'),
++  fallback: ['libcmatrix', 'libcmatrix_dep'],
++  default_options: ['build-examples=false', 'gtk_doc=false'])
++matrix_enabled = libcmatrix_dep.found()
++
+ app_id = 'sm.puri.Chatty'
+ if get_option('profile') == 'devel'
+   app_id = app_id + '.Devel'
+@@ -32,6 +39,7 @@
+ 
+ config_h = configuration_data()
+ config_h.set10('HAVE_EXPLICIT_BZERO', cc.has_function('explicit_bzero'))
++config_h.set('MATRIX_ENABLED', matrix_enabled)
+ config_h.set('PURPLE_ENABLED', purple_dep.found())
+ config_h.set('LIBSPELL_ENABLED', libspell_dep.found())
+ config_h.set_quoted('GETTEXT_PACKAGE', 'purism-chatty')
+@@ -120,13 +128,7 @@
+ libebook_dep = dependency('libebook-contacts-1.2')
+ libm_dep = cc.find_library('m')
+ 
+-libcmatrix_dep = dependency('libcmatrix',
+-  version: '>= 0.0.2',
+-  fallback: ['libcmatrix', 'libcmatrix_dep'],
+-  default_options: [
+-    'build-examples=false',
+-    'gtk_doc=false',
+-  ])
++
+ 
+ subdir('completion')
+ subdir('data')
+@@ -151,6 +153,7 @@
+         section: 'Toolchain')
+ 
+ summary({'Build type': get_option('buildtype'),
++         'Matrix': matrix_enabled,
+          'libpurple': purple_dep.found(),
+          'libspelling': libspell_dep.found(),
+          'Documentation:': get_option('gtk_doc'),
+--- a/meson_options.txt
++++ b/meson_options.txt
+@@ -9,3 +9,6 @@
+ option('gtk_doc', type: 'boolean', value: false,
+        description: 'Whether to generate the API reference for Chatty')
+ 
++
++option('matrix', type: 'feature', value: 'enabled',
++       description: 'Enable Matrix through libcmatrix')
+--- a/src/chatty-application.c
++++ b/src/chatty-application.c
+@@ -28,8 +28,10 @@
+ # include "version.h"
+ #endif
+ 
++#ifdef MATRIX_ENABLED
+ #define CMATRIX_USE_EXPERIMENTAL_API
+ #include <cmatrix.h>
++#endif
+ #include <glib/gi18n.h>
+ #include <adwaita.h>
+ 
+@@ -383,7 +385,9 @@
+ 
+   g_info ("%s %s, git version: %s", PACKAGE_NAME, PACKAGE_VERSION, CHATTY_GIT_VERSION);
+ 
++#ifdef MATRIX_ENABLED
+   cm_init (TRUE);
++#endif
+ 
+   g_set_application_name (_("Chats"));
+ 
+--- a/src/chatty-file-item.c
++++ b/src/chatty-file-item.c
+@@ -141,9 +141,11 @@
+ 
+   gtk_label_set_text (GTK_LABEL (self->file_title), _("Contact"));
+ 
++#ifdef MATRIX_ENABLED
+   if (chatty_message_get_cm_event (self->message))
+     vcard = g_file_new_build_filename (chatty_file_get_path (self->file), NULL);
+   else
++#endif
+     vcard = g_file_new_build_filename (g_get_user_data_dir (), "chatty", chatty_file_get_path (self->file), NULL);
+ 
+    contact_title = chatty_utils_vcard_get_contact_title (vcard);
+@@ -163,9 +165,11 @@
+   g_autoptr(GFile) vcal = NULL;
+   g_autofree char *event_title = NULL;
+ 
++#ifdef MATRIX_ENABLED
+   if (chatty_message_get_cm_event (self->message))
+     vcal = g_file_new_build_filename (chatty_file_get_path (self->file), NULL);
+   else
++#endif
+     vcal = g_file_new_build_filename (g_get_user_data_dir (), "chatty", chatty_file_get_path (self->file), NULL);
+ 
+   event_title = chatty_utils_vcal_get_event_title (vcal);
+--- a/src/chatty-file.c
++++ b/src/chatty-file.c
+@@ -14,8 +14,10 @@
+ # include "config.h"
+ #endif
+ 
++#ifdef MATRIX_ENABLED
+ #define CMATRIX_USE_EXPERIMENTAL_API
+ #include <cmatrix.h>
++#endif
+ 
+ #include "chatty-enums.h"
+ #include "chatty-file.h"
+@@ -33,7 +35,9 @@
+ {
+   GObject             parent_instance;
+ 
++#ifdef MATRIX_ENABLED
+   CmRoomMessageEvent *cm_event;
++#endif
+   GInputStream       *stream;
+   GFile              *file;
+   char               *file_name;
+@@ -67,7 +71,9 @@
+ 
+   g_clear_object (&self->file);
+   g_clear_object (&self->stream);
++#ifdef MATRIX_ENABLED
+   g_clear_object (&self->cm_event);
++#endif
+ 
+   g_clear_pointer (&self->file_name, g_free);
+   g_clear_pointer (&self->mime_type, g_free);
+@@ -97,6 +103,7 @@
+ {
+ }
+ 
++#ifdef MATRIX_ENABLED
+ ChattyFile *
+ chatty_file_new_for_cm_event (gpointer cm_event)
+ {
+@@ -109,6 +116,7 @@
+ 
+   return self;
+ }
++#endif
+ 
+ ChattyFile *
+ chatty_file_new_for_path (const char *path)
+@@ -207,8 +215,10 @@
+ {
+   g_return_val_if_fail (CHATTY_IS_FILE (self), NULL);
+ 
++#ifdef MATRIX_ENABLED
+   if (self->cm_event)
+     return cm_room_message_event_get_file_path (self->cm_event);
++#endif
+ 
+   return self->path;
+ }
+@@ -250,6 +260,7 @@
+   return self->status;
+ }
+ 
++#ifdef MATRIX_ENABLED
+ static void
+ file_get_file_stream_cb (GObject      *object,
+                          GAsyncResult *result,
+@@ -281,6 +292,7 @@
+   else
+     g_task_return_pointer (task, g_object_ref (self->stream), g_object_unref);
+ }
++#endif
+ 
+ void
+ chatty_file_get_stream_async (ChattyFile          *self,
+@@ -315,13 +327,16 @@
+ 
+   chatty_file_set_status (self, CHATTY_FILE_DOWNLOADING);
+ 
++#ifdef MATRIX_ENABLED
+   if (self->cm_event) {
+     cm_room_message_event_get_file_async (self->cm_event,
+                                           cancellable,
+                                           NULL, NULL,
+                                           file_get_file_stream_cb,
+                                           g_steal_pointer (&task));
+-  } else {
++  } else
++#endif
++  {
+     GError *error = NULL;
+ 
+     if (!self->file) {
+--- a/src/chatty-file.h
++++ b/src/chatty-file.h
+@@ -22,7 +22,9 @@
+ G_DECLARE_FINAL_TYPE (ChattyFile, chatty_file, CHATTY, FILE, GObject)
+ 
+ 
++#ifdef MATRIX_ENABLED
+ ChattyFile       *chatty_file_new_for_cm_event   (gpointer             cm_event);
++#endif
+ ChattyFile       *chatty_file_new_for_path       (const char          *path);
+ ChattyFile       *chatty_file_new_full           (const char          *file_name,
+                                                   const char          *url,
+--- a/src/chatty-main-view.c
++++ b/src/chatty-main-view.c
+@@ -180,7 +180,9 @@
+   gtk_widget_class_bind_template_child (widget_class, ChattyMainView, main_stack);
+   gtk_widget_class_bind_template_child (widget_class, ChattyMainView, chat_page);
+   gtk_widget_class_bind_template_child (widget_class, ChattyMainView, invite_page);
++#ifdef MATRIX_ENABLED
+   gtk_widget_class_bind_template_child (widget_class, ChattyMainView, verification_page);
++#endif
+   gtk_widget_class_bind_template_child (widget_class, ChattyMainView, empty_page);
+ 
+   gtk_widget_class_bind_template_child (widget_class, ChattyMainView, menu_popover);
+@@ -196,7 +198,9 @@
+   gtk_widget_class_bind_template_callback (widget_class, main_view_notification_closed_cb);
+ 
+   g_type_ensure (CHATTY_TYPE_CHAT_PAGE);
++#ifdef MATRIX_ENABLED
+   g_type_ensure (CHATTY_TYPE_VERIFICATION_PAGE);
++#endif
+ }
+ 
+ static void
+@@ -284,7 +288,9 @@
+                                                        self, G_CONNECT_SWAPPED);
+   }
+ 
++#ifdef MATRIX_ENABLED
+   chatty_verification_page_set_item (CHATTY_VERIFICATION_PAGE (self->verification_page), item);
++#endif
+ 
+   if (!item || (CHATTY_IS_CHAT (item) && !CHATTY_IS_MA_KEY_CHAT (item)))
+     chatty_chat_page_set_chat (CHATTY_CHAT_PAGE (self->chat_page), (ChattyChat *)item);
+@@ -300,9 +306,11 @@
+     if (state == CHATTY_CHAT_INVITED) {
+       gtk_stack_set_visible_child (GTK_STACK (self->main_stack), self->invite_page);
+       gtk_widget_set_visible (self->back_button, TRUE);
++#ifdef MATRIX_ENABLED
+     } else if (state == CHATTY_CHAT_VERIFICATION) {
+       gtk_stack_set_visible_child (GTK_STACK (self->main_stack), self->verification_page);
+       gtk_widget_set_visible (self->back_button, TRUE);
++#endif
+     } else {
+       gtk_stack_set_visible_child (GTK_STACK (self->main_stack), self->chat_page);
+       gtk_widget_set_visible (self->back_button, TRUE);
+--- a/src/chatty-manager.c
++++ b/src/chatty-manager.c
+@@ -16,8 +16,10 @@
+ 
+ #include <glib/gi18n.h>
+ #include <adwaita.h>
++#ifdef MATRIX_ENABLED
+ #define CMATRIX_USE_EXPERIMENTAL_API
+ #include "cmatrix.h"
++#endif
+ 
+ #include "chatty-settings.h"
+ #include "chatty-contact-provider.h"
+@@ -53,7 +55,9 @@
+   GtkFilterListModel  *filtered_chat_list;
+   GtkSortListModel    *sorted_chat_list;
+ 
++#ifdef MATRIX_ENABLED
+   ChattyMatrix    *matrix;
++#endif
+ #ifdef PURPLE_ENABLED
+   ChattyPurple    *purple;
+ #endif
+@@ -203,7 +207,9 @@
+   ChattyManager *self = (ChattyManager *)object;
+ 
+   g_clear_object (&self->history);
++#ifdef MATRIX_ENABLED
+   g_clear_object (&self->matrix);
++#endif
+ 
+   G_OBJECT_CLASS (chatty_manager_parent_class)->finalize (object);
+ }
+@@ -376,6 +382,7 @@
+ 
+   chatty_mm_account_load_async (self->mm_account, NULL, NULL);
+ 
++#ifdef MATRIX_ENABLED
+   /* Matrix Setup */
+   self->matrix = chatty_matrix_new (self->disable_auto_login);
+   manager_add_to_flat_model (self->accounts,
+@@ -383,6 +390,7 @@
+   manager_add_to_flat_model (self->chat_list,
+                              chatty_matrix_get_chat_list (self->matrix));
+   chatty_matrix_load (self->matrix);
++#endif
+ 
+   accounts = g_list_store_new (CHATTY_TYPE_ACCOUNT);
+   g_list_store_append (accounts, self->mm_account);
+@@ -475,7 +483,7 @@
+                            gpointer      user_data)
+ {
+   ChattyManager *self;
+-  ChattyMaAccount *account;
++  ChattyAccount *account;
+   g_autoptr(GTask) task = user_data;
+   GError *error = NULL;
+   gboolean success = FALSE;
+@@ -488,8 +496,11 @@
+   g_assert (CHATTY_IS_MANAGER (self));
+   g_assert (CHATTY_IS_ACCOUNT (account));
+ 
+-  if (CHATTY_IS_MA_ACCOUNT (account))
++  if (FALSE) {}
++#ifdef MATRIX_ENABLED
++  else if (CHATTY_IS_MA_ACCOUNT (account))
+     success = chatty_matrix_delete_account_finish (self->matrix, result, &error);
++#endif
+ #ifdef PURPLE_ENABLED
+   else if (CHATTY_IS_PP_ACCOUNT (account))
+     success = chatty_purple_delete_account_finish (self->purple, result, &error);
+@@ -516,10 +527,13 @@
+   task = g_task_new (self, cancellable, callback, user_data);
+   g_task_set_task_data (task, g_object_ref (account), g_object_unref);
+ 
+-  if (CHATTY_IS_MA_ACCOUNT (account))
++  if (FALSE) {}
++#ifdef MATRIX_ENABLED
++  else if (CHATTY_IS_MA_ACCOUNT (account))
+     chatty_matrix_delete_account_async (self->matrix, account, cancellable,
+                                         manager_delete_account_cb,
+                                         g_steal_pointer (&task));
++#endif
+ #ifdef PURPLE_ENABLED
+   else if (CHATTY_IS_PP_ACCOUNT (account))
+     chatty_purple_delete_account_async (self->purple, account, cancellable,
+@@ -560,8 +574,10 @@
+   g_assert (CHATTY_IS_MANAGER (self));
+   g_assert (CHATTY_IS_ACCOUNT (account));
+ 
++#ifdef MATRIX_ENABLED
+   if (CHATTY_IS_MA_ACCOUNT (account))
+     saved = chatty_matrix_save_account_finish (self->matrix, result, &error);
++#endif
+ 
+   if (error)
+     g_task_return_error (task, error);
+@@ -584,10 +600,13 @@
+   task = g_task_new (self, cancellable, callback, user_data);
+   g_task_set_task_data (task, g_object_ref (account), g_object_unref);
+ 
+-  if (CHATTY_IS_MA_ACCOUNT (account))
++  if (FALSE) {}
++#ifdef MATRIX_ENABLED
++  else if (CHATTY_IS_MA_ACCOUNT (account))
+     chatty_matrix_save_account_async (self->matrix, account, cancellable,
+                                       manager_save_account_cb,
+                                       g_steal_pointer (&task));
++#endif
+   else
+     g_return_if_reached ();
+ }
+@@ -619,8 +638,10 @@
+   g_return_val_if_fail (CHATTY_IS_MANAGER (self), NULL);
+   g_return_val_if_fail (account_id && *account_id, NULL);
+ 
++#ifdef MATRIX_ENABLED
+   if (protocol & CHATTY_PROTOCOL_MATRIX)
+     return chatty_matrix_find_account_with_name (self->matrix, account_id);
++#endif
+ 
+ #ifdef PURPLE_ENABLED
+   return chatty_purple_find_account_with_name (self->purple, protocol, account_id);
+@@ -647,8 +668,10 @@
+                                               protocol, account_id, chat_id);
+ #endif
+ 
++#ifdef MATRIX_ENABLED
+   if (protocol == CHATTY_PROTOCOL_MATRIX)
+     return chatty_matrix_find_chat_with_name (self->matrix, protocol, account_id, chat_id);
++#endif
+ 
+   return NULL;
+ }
+@@ -712,10 +735,14 @@
+ {
+   g_return_val_if_fail (CHATTY_IS_MANAGER (self), NULL);
+ 
++#ifdef MATRIX_ENABLED
+   if (!self->matrix)
+     return NULL;
+ 
+   return chatty_matrix_client_new (self->matrix);
++#else
++  return NULL;
++#endif
+ }
+ 
+ gboolean
+@@ -724,8 +751,12 @@
+ {
+   g_return_val_if_fail (CHATTY_IS_MANAGER (self), FALSE);
+ 
++#ifdef MATRIX_ENABLED
+   if (!self->matrix)
+     return FALSE;
+ 
+   return chatty_matrix_has_user_id (self->matrix, user_id);
+-}
++#else
++  return FALSE;
++#endif
++}
+--- a/src/chatty-message.c
++++ b/src/chatty-message.c
+@@ -134,6 +134,7 @@
+   return self;
+ }
+ 
++#ifdef MATRIX_ENABLED
+ ChattyMessage *
+ chatty_message_new_from_event (ChattyItem *user,
+                                CmEvent    *event)
+@@ -250,6 +251,7 @@
+ 
+   return self;
+ }
++#endif
+ 
+ CmEvent *
+ chatty_message_get_cm_event (ChattyMessage *self)
+--- a/src/chatty-message.h
++++ b/src/chatty-message.h
+@@ -10,8 +10,12 @@
+ 
+ #pragma once
+ 
++#ifdef MATRIX_ENABLED
+ #define CMATRIX_USE_EXPERIMENTAL_API
+ #include <cmatrix.h>
++#else
++typedef struct _CmEvent CmEvent;
++#endif
+ #include <glib-object.h>
+ 
+ #include "chatty-item.h"
+@@ -30,8 +34,10 @@
+                                                     ChattyMsgType       type,
+                                                     ChattyMsgDirection  direction,
+                                                     ChattyMsgStatus     status);
++#ifdef MATRIX_ENABLED
+ ChattyMessage      *chatty_message_new_from_event  (ChattyItem         *user,
+                                                     CmEvent            *event);
++#endif
+ CmEvent            *chatty_message_get_cm_event    (ChattyMessage      *self);
+ 
+ const char         *chatty_message_get_subject     (ChattyMessage      *self);
+--- a/src/chatty-verification-page.h
++++ b/src/chatty-verification-page.h
+@@ -9,6 +9,9 @@
+  */
+ 
+ #pragma once
++
++#include "config.h"
++#ifdef MATRIX_ENABLED
+ 
+ #include <gtk/gtk.h>
+ 
+@@ -25,3 +28,8 @@
+ 
+ G_END_DECLS
+ 
++
++#else
++#define CHATTY_IS_VERIFICATION_PAGE(object) (FALSE)
++
++#endif /* MATRIX_ENABLED */
+--- a/src/dialogs/chatty-info-dialog.c
++++ b/src/dialogs/chatty-info-dialog.c
+@@ -167,7 +167,9 @@
+   gtk_widget_class_bind_template_child (widget_class, ChattyInfoDialog, main_stack);
+   gtk_widget_class_bind_template_child (widget_class, ChattyInfoDialog, chat_type_stack);
+   gtk_widget_class_bind_template_child (widget_class, ChattyInfoDialog, header_bar);
++#ifdef MATRIX_ENABLED
+   gtk_widget_class_bind_template_child (widget_class, ChattyInfoDialog, ma_chat_info);
++#endif
+   gtk_widget_class_bind_template_child (widget_class, ChattyInfoDialog, mm_chat_info);
+   gtk_widget_class_bind_template_child (widget_class, ChattyInfoDialog, invite_page);
+ 
+@@ -186,7 +188,9 @@
+   gtk_widget_class_bind_template_callback (widget_class, cancel_button_clicked_cb);
+   gtk_widget_class_bind_template_callback (widget_class, apply_button_clicked_cb);
+ 
++#ifdef MATRIX_ENABLED
+   g_type_ensure (CHATTY_TYPE_MA_CHAT_INFO);
++#endif
+   g_type_ensure (CHATTY_TYPE_MM_CHAT_INFO);
+ }
+ 
+@@ -225,6 +229,7 @@
+   gtk_widget_set_visible (self->apply_button, FALSE);
+   adw_header_bar_set_show_end_title_buttons (ADW_HEADER_BAR (self->header_bar), TRUE);
+ 
++#ifdef MATRIX_ENABLED
+   if (CHATTY_IS_MA_CHAT (chat)) {
+     chatty_chat_info_set_item (CHATTY_CHAT_INFO (self->ma_chat_info), chat);
+     if (self->pp_chat_info)
+@@ -232,8 +237,12 @@
+     if (self->pp_chat_info)
+       chatty_chat_info_set_item (CHATTY_CHAT_INFO (self->pp_chat_info), NULL);
+     gtk_stack_set_visible_child (GTK_STACK (self->chat_type_stack), self->ma_chat_info);
+-  } else if (CHATTY_IS_MM_CHAT (chat)) {
++  } else
++#endif
++  if (CHATTY_IS_MM_CHAT (chat)) {
++#ifdef MATRIX_ENABLED
+     chatty_chat_info_set_item (CHATTY_CHAT_INFO (self->ma_chat_info), NULL);
++#endif
+     if (self->pp_chat_info)
+       chatty_chat_info_set_item (CHATTY_CHAT_INFO (self->pp_chat_info), NULL);
+     chatty_chat_info_set_item (CHATTY_CHAT_INFO (self->mm_chat_info), chat);
+@@ -244,7 +253,9 @@
+     }
+     gtk_stack_set_visible_child (GTK_STACK (self->chat_type_stack), self->mm_chat_info);
+   } else {
++#ifdef MATRIX_ENABLED
+     chatty_chat_info_set_item (CHATTY_CHAT_INFO (self->ma_chat_info), NULL);
++#endif
+     if (self->pp_chat_info)
+       chatty_chat_info_set_item (CHATTY_CHAT_INFO (self->pp_chat_info), chat);
+     chatty_chat_info_set_item (CHATTY_CHAT_INFO (self->mm_chat_info), NULL);
+--- a/src/dialogs/chatty-ma-account-details.h
++++ b/src/dialogs/chatty-ma-account-details.h
+@@ -23,6 +23,9 @@
+ 
+ #pragma once
+ 
++#include "config.h"
++#ifdef MATRIX_ENABLED
++
+ #include <adwaita.h>
+ 
+ #include "chatty-account.h"
+@@ -45,3 +48,8 @@
+                                                      ChattyAccount          *account);
+ 
+ G_END_DECLS
++
++#else
++#define CHATTY_IS_MA_ACCOUNT_DETAILS(object) (FALSE)
++
++#endif /* MATRIX_ENABLED */
+--- a/src/dialogs/chatty-ma-chat-info.h
++++ b/src/dialogs/chatty-ma-chat-info.h
+@@ -23,6 +23,9 @@
+ 
+ #pragma once
+ 
++#include "config.h"
++#ifdef MATRIX_ENABLED
++
+ #include <gtk/gtk.h>
+ 
+ #include "chatty-chat.h"
+@@ -37,3 +40,8 @@
+ GtkWidget     *chatty_ma_chat_info_new         (void);
+ 
+ G_END_DECLS
++
++#else
++#define CHATTY_IS_MA_CHAT_INFO(object) (FALSE)
++
++#endif /* MATRIX_ENABLED */
+--- a/src/dialogs/chatty-settings-dialog.c
++++ b/src/dialogs/chatty-settings-dialog.c
+@@ -29,8 +29,10 @@
+ #endif
+ 
+ #include <glib/gi18n.h>
++#ifdef MATRIX_ENABLED
+ #define CMATRIX_USE_EXPERIMENTAL_API
+ #include "cmatrix.h"
++#endif
+ 
+ #include "chatty-utils.h"
+ #include "chatty-ma-account.h"
+@@ -240,6 +242,7 @@
+   return G_SOURCE_REMOVE;
+ }
+ 
++#ifdef MATRIX_ENABLED
+ static void
+ matrix_home_server_verify_cb (GObject      *object,
+                               GAsyncResult *result,
+@@ -292,7 +295,9 @@
+   chatty_manager_save_account_async (chatty_manager_get_default (), CHATTY_ACCOUNT (account),
+                                      NULL, settings_save_account_cb, self);
+ }
+-
++#endif
++
++#ifdef MATRIX_ENABLED
+ static void
+ chatty_settings_save_matrix (ChattySettingsDialog *self,
+                              const char           *user_id,
+@@ -331,6 +336,7 @@
+                                   matrix_home_server_verify_cb,
+                                   self);
+ }
++#endif
+ 
+ static void
+ chatty_settings_add_clicked_cb (ChattySettingsDialog *self)
+@@ -352,10 +358,12 @@
+   if (is_matrix)
+     settings_check_librem_one (self);
+ 
++#ifdef MATRIX_ENABLED
+   if (is_matrix) {
+     chatty_settings_save_matrix (self, user_id, password);
+     return;
+   }
++#endif
+ 
+ #ifdef PURPLE_ENABLED
+   if (is_telegram) {
+@@ -420,9 +428,11 @@
+   if (gtk_stack_get_visible_child (stack) == self->pp_account_details)
+     chatty_pp_account_save_async (CHATTY_PP_ACCOUNT_DETAILS (self->pp_account_details),
+                                   pp_account_save_cb, g_object_ref (self));
++#ifdef MATRIX_ENABLED
+   else if (gtk_stack_get_visible_child (stack) == self->ma_account_details)
+     chatty_ma_account_details_save_async (CHATTY_MA_ACCOUNT_DETAILS (self->ma_account_details),
+                                           pp_account_save_cb, g_object_ref (self));
++#endif
+ }
+ 
+ static void
+@@ -469,9 +479,11 @@
+   g_assert (CHATTY_IS_SETTINGS_DIALOG (self));
+   window = gtk_application_get_active_window (GTK_APPLICATION (g_application_get_default ()));
+ 
++#ifdef MATRIX_ENABLED
+   if (CHATTY_IS_MA_ACCOUNT (self->selected_account))
+     username = chatty_ma_account_get_login_username (CHATTY_MA_ACCOUNT (self->selected_account));
+   else
++#endif
+     username = chatty_item_get_username (CHATTY_ITEM (self->selected_account));
+ 
+   dialog = adw_alert_dialog_new (_("Delete Account"), NULL);
+@@ -1148,7 +1160,9 @@
+   gtk_widget_grab_focus (self->new_account_id_entry);
+   gtk_widget_set_visible (self->back_button, TRUE);
+ 
++#ifdef MATRIX_ENABLED
+   gtk_widget_set_visible (self->matrix_row, TRUE);
++#endif
+ 
+ #ifdef PURPLE_ENABLED
+   /* if (purple_find_prpl ("prpl-matrix")) */
+@@ -1264,15 +1278,20 @@
+       self->selected_account = g_object_get_data (G_OBJECT (row), "row-account");
+       g_assert (self->selected_account != NULL);
+ 
++#ifdef MATRIX_ENABLED
+       if (CHATTY_IS_MA_ACCOUNT (self->selected_account)) {
+         chatty_ma_account_details_set_item (CHATTY_MA_ACCOUNT_DETAILS (self->ma_account_details),
+                                             self->selected_account);
+         chatty_pp_account_details_set_item (CHATTY_PP_ACCOUNT_DETAILS (self->pp_account_details), NULL);
+         gtk_stack_set_visible_child (GTK_STACK (self->account_details_stack), self->ma_account_details);
+-      } else {
++      } else
++#endif
++      {
+         chatty_pp_account_details_set_item (CHATTY_PP_ACCOUNT_DETAILS (self->pp_account_details),
+                                             self->selected_account);
++#ifdef MATRIX_ENABLED
+         chatty_ma_account_details_set_item (CHATTY_MA_ACCOUNT_DETAILS (self->ma_account_details), NULL);
++#endif
+         gtk_stack_set_visible_child (GTK_STACK (self->account_details_stack), self->pp_account_details);
+       }
+ 
+@@ -1462,9 +1481,11 @@
+                           account_enabled_switch, "active",
+                           G_BINDING_BIDIRECTIONAL | G_BINDING_SYNC_CREATE);
+ 
++#ifdef MATRIX_ENABLED
+   if (CHATTY_IS_MA_ACCOUNT (account))
+     username = chatty_ma_account_get_login_username (CHATTY_MA_ACCOUNT (account));
+   else
++#endif
+     username = chatty_item_get_username (CHATTY_ITEM (account));
+ 
+   adw_preferences_row_set_title (ADW_PREFERENCES_ROW (row), username);
+@@ -1695,7 +1716,9 @@
+ 
+   gtk_widget_class_bind_template_child (widget_class, ChattySettingsDialog, account_details_stack);
+   gtk_widget_class_bind_template_child (widget_class, ChattySettingsDialog, pp_account_details);
++#ifdef MATRIX_ENABLED
+   gtk_widget_class_bind_template_child (widget_class, ChattySettingsDialog, ma_account_details);
++#endif
+ 
+   gtk_widget_class_bind_template_child (widget_class, ChattySettingsDialog, protocol_list_group);
+   gtk_widget_class_bind_template_child (widget_class, ChattySettingsDialog, protocol_list);
+@@ -1793,13 +1816,18 @@
+                             self->accounts_list_box, "visible",
+                             G_BINDING_SYNC_CREATE);
+     if (chatty_purple_is_loaded (purple))
+-      show_account_box = TRUE;
++    show_account_box = TRUE;
+   }
+ #else
+   gtk_widget_set_visible (self->xmpp_radio_button, FALSE);
+ #endif
+ 
++#ifdef MATRIX_ENABLED
+   show_account_box = TRUE;
++#else
++  gtk_widget_set_visible (self->matrix_row, FALSE);
++  gtk_widget_set_visible (self->matrix_radio_button, FALSE);
++#endif
+ 
+   gtk_widget_set_visible (self->accounts_list_box, show_account_box);
+ 
+--- a/src/dialogs/chatty-wrong-pw-dialog.h
++++ b/src/dialogs/chatty-wrong-pw-dialog.h
+@@ -5,6 +5,9 @@
+  */
+ 
+ #pragma once
++
++#include "config.h"
++#ifdef MATRIX_ENABLED
+ 
+ #include "chatty-ma-account.h"
+ 
+@@ -26,3 +29,8 @@
+                                                    CmClient            *cm_client);
+ 
+ G_END_DECLS
++
++#else
++#define CHATTY_IS_WRONG_PW_DIALOG(object) (FALSE)
++
++#endif /* MATRIX_ENABLED */
+--- a/src/filter-matrix-resources.py
++++ b/src/filter-matrix-resources.py
+@@ -0,0 +1,23 @@
++#!/usr/bin/env python3
++"""Remove unavailable Matrix widget subtrees; keep resource paths stable."""
++import sys
++from pathlib import Path
++import xml.etree.ElementTree as ET
++inputs, outputs = sys.argv[1:5], sys.argv[5:9]
++types = {'ChattyVerificationPage', 'ChattyMaChatInfo', 'ChattyMaAccountDetails'}
++for source, destination in zip(inputs[1:], outputs[1:]):
++    tree = ET.parse(source)
++    for parent in tree.iter():
++        for child in list(parent):
++            if child.tag == 'child' and any(node.get('class') in types for node in child.iter('object')):
++                # The removed object is the direct child, never its enclosing UI.
++                if next(iter(child), None) is not None and child[0].get('class') in types:
++                    parent.remove(child)
++    tree.write(destination, encoding='utf-8', xml_declaration=True)
++tree = ET.parse(inputs[0])
++for node in tree.iter('file'):
++    for source, destination in zip(inputs[1:], outputs[1:]):
++        if node.text == 'ui/' + Path(source).name:
++            node.set('alias', node.text)
++            node.text = Path(destination).name
++tree.write(outputs[0], encoding='utf-8', xml_declaration=True)
+--- a/src/matrix/chatty-ma-account.h
++++ b/src/matrix/chatty-ma-account.h
+@@ -9,6 +9,9 @@
+  */
+ 
+ #pragma once
++
++#include "config.h"
++#ifdef MATRIX_ENABLED
+ 
+ #include <glib-object.h>
+ #define CMATRIX_USE_EXPERIMENTAL_API
+@@ -71,3 +74,8 @@
+                                                         GError         **error);
+ 
+ G_END_DECLS
++
++#else
++#define CHATTY_IS_MA_ACCOUNT(object) (FALSE)
++
++#endif /* MATRIX_ENABLED */
+--- a/src/matrix/chatty-ma-buddy.h
++++ b/src/matrix/chatty-ma-buddy.h
+@@ -9,6 +9,9 @@
+  */
+ 
+ #pragma once
++
++#include "config.h"
++#ifdef MATRIX_ENABLED
+ 
+ #include <glib-object.h>
+ #define CMATRIX_USE_EXPERIMENTAL_API
+@@ -27,3 +30,8 @@
+                                                     CmUser        *user);
+ 
+ G_END_DECLS
++
++#else
++#define CHATTY_IS_MA_BUDDY(object) (FALSE)
++
++#endif /* MATRIX_ENABLED */
+--- a/src/matrix/chatty-ma-chat.h
++++ b/src/matrix/chatty-ma-chat.h
+@@ -9,6 +9,9 @@
+  */
+ 
+ #pragma once
++
++#include "config.h"
++#ifdef MATRIX_ENABLED
+ 
+ #include <glib-object.h>
+ #define CMATRIX_USE_EXPERIMENTAL_API
+@@ -34,3 +37,8 @@
+                                                  const char    *room_id);
+ 
+ G_END_DECLS
++
++#else
++#define CHATTY_IS_MA_CHAT(object) (FALSE)
++
++#endif /* MATRIX_ENABLED */
+--- a/src/matrix/chatty-ma-key-chat.h
++++ b/src/matrix/chatty-ma-key-chat.h
+@@ -9,6 +9,9 @@
+  */
+ 
+ #pragma once
++
++#include "config.h"
++#ifdef MATRIX_ENABLED
+ 
+ #include <gtk/gtk.h>
+ #include <glib-object.h>
+@@ -48,3 +51,8 @@
+ 
+ G_END_DECLS
+ 
++
++#else
++#define CHATTY_IS_MA_KEY_CHAT(object) (FALSE)
++
++#endif /* MATRIX_ENABLED */
+--- a/src/matrix/chatty-ma-user-row.h
++++ b/src/matrix/chatty-ma-user-row.h
+@@ -9,6 +9,9 @@
+  */
+ 
+ #pragma once
++
++#include "config.h"
++#ifdef MATRIX_ENABLED
+ 
+ #include <gtk/gtk.h>
+ 
+@@ -23,3 +26,8 @@
+ GtkWidget  *chatty_ma_user_row_new        (ChattyMaBuddy *buddy);
+ 
+ G_END_DECLS
++
++#else
++#define CHATTY_IS_MA_USER_ROW(object) (FALSE)
++
++#endif /* MATRIX_ENABLED */
+--- a/src/matrix/chatty-matrix.h
++++ b/src/matrix/chatty-matrix.h
+@@ -9,6 +9,9 @@
+  */
+ 
+ #pragma once
++
++#include "config.h"
++#ifdef MATRIX_ENABLED
+ 
+ #include <glib-object.h>
+ #define CMATRIX_USE_EXPERIMENTAL_API
+@@ -54,3 +57,8 @@
+                                                       const char     *user_id);
+ 
+ G_END_DECLS
++
++#else
++#define CHATTY_IS_MATRIX(object) (FALSE)
++
++#endif /* MATRIX_ENABLED */
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -10,7 +10,10 @@
+ 
+ purple_plugdir = ''
+ 
+-subdir('matrix')
++src_inc += include_directories('matrix')
++if matrix_enabled
++  subdir('matrix')
++endif
+ subdir('mm')
+ subdir('purple')
+ 
+@@ -18,14 +21,11 @@
+   'contrib/demotaggedentry.c',
+   'dialogs/chatty-chat-info.c',
+   'dialogs/chatty-info-dialog.c',
+-  'dialogs/chatty-ma-account-details.c',
+-  'dialogs/chatty-ma-chat-info.c',
+   'dialogs/chatty-mm-chat-info.c',
+   'dialogs/chatty-new-chat-dialog.c',
+   'dialogs/chatty-new-muc-dialog.c',
+   'dialogs/chatty-pp-account-details.c',
+   'dialogs/chatty-settings-dialog.c',
+-  'dialogs/chatty-wrong-pw-dialog.c',
+   'users/chatty-account.c',
+   'users/chatty-contact.c',
+   'users/chatty-item.c',
+@@ -61,27 +61,32 @@
+   'chatty-settings.c',
+   'chatty-side-bar.c',
+   'chatty-utils.c',
+-  'chatty-verification-page.c',
+   'chatty-window.c',
+   version_h,
+ ]
++
++if matrix_enabled
++  libsrc += files('dialogs/chatty-ma-account-details.c', 'dialogs/chatty-ma-chat-info.c',
++                  'dialogs/chatty-wrong-pw-dialog.c', 'chatty-verification-page.c')
++endif
+ 
+ ui_files = files(
+   'ui/chatty-chat-page.ui',
+   'ui/chatty-contact-row.ui',
+   'ui/chatty-dialog-join-muc.ui',
+   'ui/chatty-dialog-new-chat.ui',
+-  'ui/chatty-dialog-wrong-pw.ui',
+   'ui/chatty-fp-row.ui',
+-  'ui/chatty-info-dialog.ui',
+   'ui/chatty-list-row.ui',
+-  'ui/chatty-ma-chat-info.ui',
+   'ui/chatty-message-row.ui',
+   'ui/chatty-mm-chat-info.ui',
+-  'ui/chatty-ma-user-row.ui',
+-  'ui/chatty-settings-dialog.ui',
+   'ui/chatty-window.ui',
+ )
++
++if matrix_enabled
++  ui_files += files('ui/chatty-main-view.ui', 'ui/chatty-info-dialog.ui',
++                    'ui/chatty-settings-dialog.ui', 'ui/chatty-dialog-wrong-pw.ui',
++                    'ui/chatty-ma-chat-info.ui', 'ui/chatty-ma-user-row.ui')
++endif
+ 
+ if purple_dep.found()
+   libsrc += files([
+@@ -133,8 +138,23 @@
+ 
+ gnome = import('gnome')
+ 
+-resources = gnome.compile_resources('chatty-resources',
+-  'chatty.gresource.xml',
++resource_xml = files('chatty.gresource.xml')
++resource_dependencies = []
++if not matrix_enabled
++  python = import('python').find_installation('python3')
++  resource_variants = custom_target('resources-without-matrix',
++    input: ['chatty.gresource.xml', 'ui/chatty-main-view.ui',
++            'ui/chatty-info-dialog.ui', 'ui/chatty-settings-dialog.ui'],
++    output: ['chatty-no-matrix.gresource.xml', 'chatty-main-view.ui',
++             'chatty-info-dialog.ui', 'chatty-settings-dialog.ui'],
++    command: [python, files('filter-matrix-resources.py'), '@INPUT@', '@OUTPUT@'])
++  ui_files += [resource_variants[1], resource_variants[2], resource_variants[3]]
++  resource_xml = resource_variants[0]
++  resource_dependencies = [resource_variants]
++endif
++resources = gnome.compile_resources('chatty-resources', resource_xml,
++  source_dir: [meson.current_build_dir(), meson.current_source_dir()],
++  dependencies: resource_dependencies,
+   c_name: 'chatty'
+ )
+ 
+--- a/tests/matrix-disabled.c
++++ b/tests/matrix-disabled.c
+@@ -0,0 +1,71 @@
++/* SPDX-License-Identifier: GPL-3.0-or-later */
++#include "config.h"
++#include <adwaita.h>
++#include "chatty-manager.h"
++#include "chatty-resources.h"
++#include "chatty-mm-account.h"
++#include "chatty-window.h"
++#include "dialogs/chatty-settings-dialog.h"
++
++#ifdef MATRIX_ENABLED
++#error This test exercises the Matrix-disabled variant
++#endif
++
++static void
++check_widget (GtkWidget *widget)
++{
++  const char *type = G_OBJECT_TYPE_NAME (widget);
++  const char *id = gtk_buildable_get_buildable_id (GTK_BUILDABLE (widget));
++  g_assert_false (g_str_has_prefix (type, "ChattyMaAccount") ||
++                  g_str_has_prefix (type, "ChattyMaChat") ||
++                  g_str_has_prefix (type, "ChattyMaKey") ||
++                  g_str_has_prefix (type, "ChattyMaUser"));
++  g_assert_cmpstr (type, !=, "ChattyVerificationPage");
++  if (g_strcmp0 (id, "matrix_row") == 0 ||
++      g_strcmp0 (id, "matrix_radio_button") == 0 ||
++      g_strcmp0 (id, "accounts_list_box") == 0)
++    g_assert_false (gtk_widget_get_visible (widget));
++  for (GtkWidget *child = gtk_widget_get_first_child (widget); child;
++       child = gtk_widget_get_next_sibling (child))
++    check_widget (child);
++}
++
++static void
++test_matrix_disabled_widgets (void)
++{
++  g_autoptr(AdwApplication) app = adw_application_new ("sm.puri.Chatty.MatrixDisabledTest", G_APPLICATION_NON_UNIQUE);
++  g_autoptr(GError) error = NULL;
++  ChattyManager *manager;
++  GtkWidget *window, *settings;
++
++  g_assert_true (g_application_register (G_APPLICATION (app), NULL, &error));
++  g_assert_no_error (error);
++  g_assert_nonnull (chatty_get_resource ());
++  manager = chatty_manager_get_default ();
++  g_assert_true (CHATTY_IS_MM_ACCOUNT (chatty_manager_get_mm_account (manager)));
++  g_assert_null (chatty_manager_matrix_client_new (manager));
++  g_assert_false (chatty_manager_has_matrix_with_id (manager, "@test:example.invalid"));
++
++  window = chatty_window_new (GTK_APPLICATION (app));
++  gtk_window_present (GTK_WINDOW (window));
++  settings = g_object_ref_sink (chatty_settings_dialog_new (GTK_WINDOW (window)));
++  adw_dialog_present (ADW_DIALOG (settings), window);
++  while (g_main_context_iteration (NULL, FALSE));
++  check_widget (window);
++  check_widget (settings);
++  adw_dialog_force_close (ADW_DIALOG (settings));
++  g_object_unref (settings);
++  gtk_window_destroy (GTK_WINDOW (window));
++}
++
++int
++main (int argc, char **argv)
++{
++  g_test_init (&argc, &argv, NULL);
++  gtk_init ();
++  /* Missing desktop/modem services in the isolated test bus are warnings. */
++  g_log_set_always_fatal (G_LOG_FATAL_MASK | G_LOG_LEVEL_CRITICAL);
++  adw_init ();
++  g_test_add_func ("/chatty/matrix-disabled/shared-widgets-and-sms-account", test_matrix_disabled_widgets);
++  return g_test_run ();
++}
+--- a/tests/meson.build
++++ b/tests/meson.build
+@@ -29,6 +29,10 @@
+   'pgp',
+ ]
+ 
++if not matrix_enabled
++  test_items += ['matrix-disabled']
++endif
++
+ foreach item: test_items
+   t = executable(
+     item,
