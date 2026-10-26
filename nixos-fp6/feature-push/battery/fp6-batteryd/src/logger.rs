@@ -337,11 +337,20 @@ pub fn classify(rel: &str) -> (String, String) {
                 return (name.replace("\\x2d", "-"), "app".into());
             }
         }
+        if leaf == "init.scope" {
+            return ("systemd user manager".into(), "user-service".into());
+        }
         let name = leaf.strip_suffix(".service").or_else(|| leaf.strip_suffix(".scope")).unwrap_or(leaf);
         return (name.to_string(), "user-service".into());
     }
+    if leaf == "init.scope" {
+        return ("systemd".into(), "system".into());
+    }
+    if let Some(uid) = leaf.strip_prefix("user-").and_then(|r| r.strip_suffix(".slice")) {
+        return (format!("Other processes of user {uid}"), "session".into());
+    }
     if leaf.starts_with("session-") && leaf.ends_with(".scope") {
-        return ("Login sessions (SSH, greeter)".into(), "session".into());
+        return ("Login sessions (SSH and greeter)".into(), "session".into());
     }
     let name = leaf.strip_suffix(".service").or_else(|| leaf.strip_suffix(".scope"))
         .or_else(|| leaf.strip_suffix(".mount")).unwrap_or(leaf);
@@ -652,6 +661,9 @@ mod tests {
         assert_eq!(classify("user.slice/user-10000.slice/user@10000.service/session.slice/lomiri.service"), ("lomiri".into(), "user-service".into()));
         assert_eq!(classify("system.slice/ofono.service"), ("ofono".into(), "system".into()));
         assert_eq!(classify("user.slice/user-10000.slice/session-19.scope").1, "session");
+        assert_eq!(classify("init.scope").0, "systemd");
+        assert_eq!(classify("user.slice/user-10000.slice/user@10000.service/init.scope").0, "systemd user manager");
+        assert!(!classify("user.slice/user-10000.slice/session-19.scope").0.contains(','));
         assert_eq!(classify("lxc.payload.waydroid2").0, "Waydroid (Android)");
     }
 

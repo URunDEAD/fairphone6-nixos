@@ -96,8 +96,10 @@ QtObject {
         if (!plugged) return ""
         var c = charging
         var who = c && c.charger ? c.charger : i18n.tr("USB")
+        if (c && c.status === "Full")
+            return i18n.tr("Fully charged: %1 from the charger (%2) runs the phone").arg(watts(inputWatts)).arg(who)
         if (chargeWatts > 0.05)
-            return i18n.tr("%1 into the battery (%2, %3 from the charger)")
+            return i18n.tr("Charging: %1 into the battery (%2, %3 from the charger)")
                 .arg(watts(chargeWatts)).arg(who).arg(watts(inputWatts))
         return i18n.tr("Not charging (%1, %2 from the charger runs the phone)").arg(who).arg(watts(inputWatts))
     }

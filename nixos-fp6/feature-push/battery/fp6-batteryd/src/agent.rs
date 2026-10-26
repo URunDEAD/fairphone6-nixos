@@ -490,6 +490,17 @@ pub fn run(status_path: PathBuf) -> Result<(), String> {
         std::mem::forget(_watch);
     }
 
+    // At login the datetime indicator may not be up yet ("not activatable"):
+    // ask again after 60 s instead of waiting for the 5 min poll.
+    {
+        let c = cell.clone();
+        glib::timeout_add_seconds_local_once(60, move || {
+            if let Some(a) = c.borrow_mut().as_mut() {
+                a.refresh_alarm(false);
+            }
+        });
+    }
+
     // Alarm poll every 5 min; indicator refresh every 30 s while plugged or
     // saving (status.json changes), every 5 min otherwise.
     {

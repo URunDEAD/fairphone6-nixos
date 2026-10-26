@@ -21,12 +21,15 @@ Column {
         pageStack.addPageToNextColumn(page, Qt.resolvedUrl(file), { m: model })
     }
 
-    SettingsListItems.SingleValue {
+    // Long text: a wrapped label instead of a SingleValue row (it overflowed).
+    Label {
         objectName: "fp6ChargingSpeed"
         visible: model.plugged
-        text: i18n.tr("Charging")
-        value: model.chargingText()
-        showDivider: false
+        anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
+        topPadding: units.gu(1)
+        bottomPadding: units.gu(1)
+        wrapMode: Text.WordWrap
+        text: model.chargingText()
     }
 
     SettingsListItems.SingleValue {
