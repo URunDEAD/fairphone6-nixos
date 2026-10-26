@@ -182,3 +182,4 @@ tools/switch-phone-lomiri-gpu.py
 !**/*.out
 # public replacements are maintained only in the public repo
 !tools/phone-ssh
+!nixos-fp6/feature-push/contacts/test/**
