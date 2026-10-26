@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- FP6 battery and charging. Written by System Settings > Battery; mirrored
+     to the fp6-batteryd system service by the fp6-batteryd agent (user
+     service), which applies them. saver-active is written by the agent. -->
+<schemalist gettext-domain="lomiri-system-settings">
+  <schema id="com.fairphone6.battery" path="/com/fairphone6/battery/">
+    <key name="charge-limit" type="i">
+      <range min="55" max="100"/>
+      <default>100</default>
+      <summary>Stop charging at this level (%)</summary>
+      <description>100 = no limit. Charging resumes 5 % below the limit; the phone keeps running from the charger meanwhile.</description>
+    </key>
+    <key name="adaptive-charging" type="b">
+      <default>false</default>
+      <summary>Adaptive charging</summary>
+      <description>Plugged in overnight with an alarm set: hold at adaptive-hold-level and finish charging just before the next alarm.</description>
+    </key>
+    <key name="adaptive-hold-level" type="i">
+      <range min="55" max="95"/>
+      <default>80</default>
+      <summary>Level held during adaptive charging (%)</summary>
+    </key>
+    <key name="adaptive-margin-minutes" type="i">
+      <range min="0" max="180"/>
+      <default>30</default>
+      <summary>Finish this many minutes before the alarm</summary>
+    </key>
+    <key name="saver-enabled" type="b">
+      <default>false</default>
+      <summary>Battery saver switched on by the user</summary>
+    </key>
+    <key name="saver-auto-level" type="i">
+      <range min="0" max="50"/>
+      <default>0</default>
+      <summary>Turn battery saver on automatically at this level (%), 0 = never</summary>
+      <description>Turns off again when the phone is plugged in.</description>
+    </key>
+    <key name="saver-cpu-limit" type="b">
+      <default>true</default>
+      <summary>Battery saver limits the maximum CPU speed</summary>
+    </key>
+    <key name="saver-cpu-percent" type="i">
+      <range min="30" max="100"/>
+      <default>60</default>
+      <summary>Maximum CPU frequency in battery saver (% of each cluster's maximum)</summary>
+    </key>
+    <key name="saver-brightness-cap" type="i">
+      <range min="10" max="100"/>
+      <default>60</default>
+      <summary>Maximum screen brightness in battery saver (%), 100 = no cap</summary>
+    </key>
+    <key name="saver-stop-waydroid" type="b">
+      <default>true</default>
+      <summary>Battery saver stops the Waydroid (Android) container</summary>
+    </key>
+    <key name="saver-extras" type="as">
+      <default>['com.fairphone6.gestures shake-enabled']</default>
+      <summary>Boolean settings ("schema key") switched off while battery saver is on</summary>
+      <description>Always-on extras such as gesture sensor sampling; restored afterwards unless changed meanwhile.</description>
+    </key>
+    <key name="saver-dismiss" type="i">
+      <default>0</default>
+      <summary>Incremented by the Settings page to turn an automatic battery saver off</summary>
+    </key>
+    <key name="saver-active" type="b">
+      <default>false</default>
+      <summary>Battery saver is active (written by fp6-batteryd agent; read-only for others)</summary>
+    </key>
+    <key name="charging-indicator" type="b">
+      <default>true</default>
+      <summary>Show charging speed and time to full in the status bar (also on the lock screen)</summary>
+    </key>
+    <key name="status-file" type="s">
+      <default>'/run/fp6-battery/status.json'</default>
+      <summary>Status JSON written by fp6-batteryd</summary>
+    </key>
+    <key name="history-file" type="s">
+      <default>'/run/fp6-battery/history.json'</default>
+      <summary>History JSON written by fp6-batteryd</summary>
+    </key>
+  </schema>
+</schemalist>

@@ -1,0 +1,20 @@
+--- a/PageComponent.qml
++++ b/PageComponent.qml
+@@ -289,6 +289,17 @@
+                 showDivider: false
+             }
+ 
++            // FP6: charging speed/time to full, battery saver, charge limit,
++            // health/history and usage (fp6-batteryd). The files ship with
++            // the lomiri-system-settings-battery-fp6 plugin in this directory.
++            Loader {
++                objectName: "fp6BatteryExtras"
++                anchors.left: parent.left
++                anchors.right: parent.right
++                source: Qt.resolvedUrl("Fp6BatteryExtras.qml")
++                onLoaded: item.page = root
++            }
++
+             SettingsListItems.Standard {
+                 CheckBox {
+                     objectName: "batteryPercentage"

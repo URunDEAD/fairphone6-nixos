@@ -1,0 +1,17 @@
+[package]
+name = "fp6-batteryd"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Battery and charging service for Lomiri on the Fairphone 6: charge limit, adaptive charging, battery saver, health/usage logger"
+
+[dependencies]
+gio = "0.20"
+glib = "0.20"
+libc = "0.2"
+zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
