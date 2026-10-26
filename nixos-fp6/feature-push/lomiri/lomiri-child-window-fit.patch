@@ -1,13 +1,17 @@
 diff --git a/qml/Stage/ChildWindow.qml b/qml/Stage/ChildWindow.qml
-index 0626ddc..ea0c3c4 100644
+index 0626ddc..bf47358 100644
 --- a/qml/Stage/ChildWindow.qml
 +++ b/qml/Stage/ChildWindow.qml
-@@ -42,6 +42,10 @@ FocusScope {
+@@ -42,6 +42,14 @@ FocusScope {
  
      readonly property bool dragging: windowResizeArea.dragging || d.touchOverlayDragging || d.moveHandlerDragging
  
 +    // fp6: used by ChildWindowTree to fit dialogs into a phone-stage app.
++    // Mir gives every Wayland xdg_toplevel (including transient dialogs such
++    // as GTK's file chooser) mir_window_type_freestyle, which is not in
++    // d.decorated; xdg_popups are gloss/menu and stay excluded.
 +    readonly property bool fitCandidate: d.decorated
++                                         || (surface ? surface.type === Mir.FreeStyleType : false)
 +    readonly property real shownDecorationHeight: decorationLoader.active ? decorationLoader.height : 0
 +
      QtObject {
