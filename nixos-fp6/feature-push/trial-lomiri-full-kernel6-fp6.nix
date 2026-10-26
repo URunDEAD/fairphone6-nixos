@@ -17,12 +17,16 @@ let
     # sha256 of the kernel6 builds (checked at runtime by the selfie boot-load unit):
     # fp6-s5kkd1.ko from s02slx2w...-fp6-s5kkd1-driver-diagnostic-0.3-kernel4-stream-reads,
     # updates/qcom-camss.ko from zc8hrrdl...-fp6-camss-kernel4-rdi16-1 (both vermagic nixos6).
-    selfieModuleSha256 = "6aa174a532756863a22fc83a8147f60bb6abe806ab53974606428c30579e2ef5";
+    # Front camera Bayer fix (camera phase 0): the fp6-s5kkd1 module is the
+    # same 0.3 source rebuilt with MEDIA_BUS_FMT_SGBRG10_1X10
+    # (camera/selfie-gbrg-fp6.nix); the plain 0.3 build was
+    # 6aa174a532756863a22fc83a8147f60bb6abe806ab53974606428c30579e2ef5.
+    selfieModuleSha256 = "21cfae84945c73fd1f67f73db289dd6f87c2a4892f12e502eac0ec0829b34fda";
     expectedCamssSha256 = "7629d4dd284c12ed84f2a6ee63e4ae48a8444bb8b271986e25e33684d53ce8e7";
   };
   base = import ./trial-lomiri-full-fp6.nix { inherit nixpkgs kernelPin; };
   evaluated = base.eval.extendModules {
-    modules = [ ({ config, lib, ... }: let
+    modules = [ ./camera/selfie-gbrg-fp6.nix ({ config, lib, ... }: let
       kernel = config.mobile.boot.stage-1.kernel.package;
     in {
       # stk3310 (STK36C61 ALS/proximity, CONFIG_STK3310=m) autoloads through

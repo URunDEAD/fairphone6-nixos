@@ -66,6 +66,14 @@ in {
 
   options.hardware.fp6LomiriCamera = {
     enable = lib.mkEnableOption "lomiri-camera-app on the FP6 libcamera stack";
+    frontBayerFixed = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        The fp6-s5kkd1 driver reports the correct Bayer order (GBRG), so the
+        front stream needs no swap-rb relabel. Set by selfie-gbrg-fp6.nix.
+      '';
+    };
     hardwareEncode = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -100,9 +108,10 @@ in {
         sizes = [ "1536x1152" "1440x1080" "960x720" "640x480" ];
         mountAngle = 270;           # vendor roll 270; NOT physically verified yet
         # Selfies came out with blue skin: R and B exchanged (2026-10-26;
-        # swapping the channels of a saved selfie gave natural skin). The
-        # proper fix is the Bayer code in the fp6-s5kkd1 driver.
-        swapRB = true;
+        # swapping the channels of a saved selfie gave natural skin). Fixed
+        # at the source by the GBRG fp6-s5kkd1 driver (selfie-gbrg-fp6.nix,
+        # sets frontBayerFixed); the relabel stays only for older drivers.
+        swapRB = !cfg.frontBayerFixed;
       };
     };
     flash = {
