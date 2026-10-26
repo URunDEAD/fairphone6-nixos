@@ -31,7 +31,10 @@ for i in $(seq 1 30); do pgrep -u lightdm -x .lomiri-wrapped >/dev/null && break
 sleep 8
 for try in 1 2 3; do
   screen_on; sleep 1
-  python3 "$here/touch.py" swipe 558 2100 558 700 350 >/dev/null
+  # The cover page is dismissed by a horizontal drag; an upward swipe only
+  # taps the infographic, and the PIN typed next would open the prompt with
+  # its first digit (one stray character, then a failed login).
+  python3 "$here/touch.py" swipe 1000 1800 150 1800 300 >/dev/null
   sleep 2
   asroot python3 "$here/phone-type.py" "$pin" >/dev/null
   for i in $(seq 1 30); do fresh && break; sleep 1; done

@@ -13,7 +13,8 @@ S() { printf '%s\n' "$FP6_PW" | sudo -S -p '' "$@"; }
 login() {
   for i in $(seq 1 30); do loginctl list-sessions --no-legend | grep -q "lightdm seat0 .* greeter" && break; sleep 1; done
   sleep 6
-  S python3 /tmp/fp6-dc-in/touch.py swipe 558 2000 558 600 300 wait 1200
+  # Horizontal drag: an upward swipe does not dismiss the cover page.
+  S python3 /tmp/fp6-dc-in/touch.py swipe 1000 1800 150 1800 300 wait 1200
   S python3 /tmp/fp6-dc-in/touch.py tap 556 960 wait 500
   S python3 /tmp/phone-type.py "$FP6_PW"
   for i in $(seq 1 40); do pgrep -f "lomiri --mode=full" >/dev/null && break; sleep 1; done
