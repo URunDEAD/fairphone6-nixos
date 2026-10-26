@@ -1,0 +1,42 @@
+# ---- fetched by tools/fetch-sources.sh (pinned, not vendored) ----
+/nixos-fp6/upstream/
+/kernel-build/source/
+/kernel-build/linux-*.tar.gz
+/kernel-build/gmu-timeout/linux-*.tar.gz
+
+# ---- device-derived / proprietary inputs (see nixos-fp6/assets/README.md) ----
+/nixos-fp6/assets/*
+!/nixos-fp6/assets/README.md
+!/nixos-fp6/assets/kernel.config
+
+# ---- local machine settings and credentials (never commit) ----
+/local/*
+!/local/README.md
+*.env
+.env
+.github.env
+.gitlab.env
+**/*secret*
+!/tools/publish/secret-scan.sh
+**/*askpass*
+**/known_hosts*
+**/id_ed25519*
+**/id_rsa*
+*.key
+*.pem
+
+# ---- build outputs ----
+result
+result-*
+*.img
+*.tar
+*.tar.gz
+*.tar.xz
+*.zst
+*.ko
+*.o
+*.so
+*.dtb
+*.pyc
+__pycache__/
+*.log
