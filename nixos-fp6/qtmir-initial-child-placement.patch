@@ -1,0 +1,215 @@
+--- /dev/null
++++ b/src/common/initialchildplacement.h
+@@ -0,0 +1,50 @@
++/* Initial automatic placement of a child before its first real buffer. */
++#ifndef QTMIR_INITIALCHILDPLACEMENT_H
++#define QTMIR_INITIALCHILDPLACEMENT_H
++
++#include <QPoint>
++#include <QSize>
++
++namespace qtmir {
++class InitialChildPlacement
++{
++public:
++    static QPoint centeredOffset(QSize parent, QSize child)
++    {
++        // Match MirAL's optical centre, including its integer rounding.
++        const int dx = parent.width() - child.width();
++        const int dy = parent.height() - child.height();
++        return QPoint(dx / 2, dy / 2 - dy / 6);
++    }
++
++    void remember(bool eligible, QPoint childPosition, QSize childSize,
++                  QPoint parentPosition, QSize parentSize)
++    {
++        initialSize = childSize;
++        initialOffset = childPosition - parentPosition;
++        pending = eligible && positive(childSize) && positive(parentSize)
++            && initialOffset == centeredOffset(parentSize, childSize);
++    }
++
++    void cancel() { pending = false; }
++
++    bool takePosition(QPoint childPosition, QSize childSize,
++                      QPoint parentPosition, QSize parentSize, QPoint &position)
++    {
++        const bool wasPending = pending;
++        pending = false; // Only the first ready notification may adjust placement.
++        if (!wasPending || childSize == initialSize || !positive(childSize)
++            || !positive(parentSize) || childPosition - parentPosition != initialOffset)
++            return false;
++        position = parentPosition + centeredOffset(parentSize, childSize);
++        return true;
++    }
++
++private:
++    static bool positive(QSize size) { return size.width() > 0 && size.height() > 0; }
++    bool pending{false};
++    QSize initialSize;
++    QPoint initialOffset;
++};
++}
++#endif
+--- a/src/common/windowmodelnotifier.h
++++ b/src/common/windowmodelnotifier.h
+@@ -16,6 +16,8 @@
+ 
+ #ifndef WINDOWMODELNOTIFIER_H
+ #define WINDOWMODELNOTIFIER_H
++
++#include "initialchildplacement.h"
+ 
+ #include <QObject>
+ #include <QPoint>
+@@ -66,6 +68,9 @@
+ 
+     // Input-region updates may arrive before the queued MirSurface is created.
+     QRect inputBounds; // guarded by mutex
++
++    // Used only by the Mir policy, under mutex when accessed after publication.
++    InitialChildPlacement initialChildPlacement;
+ 
+     QMutex mutex;
+ };
+--- a/src/platforms/mirserver/wrappedwindowmanagementpolicy.cpp
++++ b/src/platforms/mirserver/wrappedwindowmanagementpolicy.cpp
+@@ -206,6 +206,29 @@
+                 extraWindowInfo->inputBounds |= toQRect(rect);
+             }
+         }
++        // Wayland toplevels initially have a placeholder size before their first
++        // buffer. Remember automatic child placement, without touching popups
++        // that supplied an anchor rectangle or positioning hints.
++        if (parameters.parent().is_set()) {
++            auto parentSurface = parameters.parent().value().lock();
++            if (parentSurface) {
++                auto parent = tools.info_for(parentSurface).window();
++                const bool eligible = (surfaceType == mir_window_type_normal
++                    || surfaceType == mir_window_type_dialog
++                    || surfaceType == mir_window_type_utility
++                    // Mir2 represents ordinary xdg_toplevel children as freestyle.
++                    || surfaceType == mir_window_type_freestyle)
++                    && !parameters.aux_rect().is_set()
++                    && !parameters.placement_hints().is_set()
++                    && parameters.state().is_set()
++                    && parameters.state().value() == mir_window_state_restored;
++                if (parameters.top_left().is_set() && parameters.size().is_set()) {
++                    extraWindowInfo->initialChildPlacement.remember(eligible,
++                        toQPoint(parameters.top_left().value()), toQSize(parameters.size().value()),
++                        toQPoint(parent.top_left()), toQSize(parent.size()));
++                }
++            }
++        }
+         parameters.userdata() = extraWindowInfo;
+ 
+         return parameters;
+@@ -213,6 +236,25 @@
+ 
+     void WindowManagementPolicy::handle_window_ready(miral::WindowInfo &windowInfo)
+     {
++        auto extraWindowInfo = getExtraInfo(windowInfo);
++        QPoint newPosition;
++        bool reposition = false;
++        {
++            QMutexLocker locker(&extraWindowInfo->mutex);
++            if (auto parent = windowInfo.parent()) {
++                auto window = windowInfo.window();
++                reposition = extraWindowInfo->initialChildPlacement.takePosition(
++                    toQPoint(window.top_left()), toQSize(window.size()),
++                    toQPoint(parent.top_left()), toQSize(parent.size()), newPosition);
++            } else {
++                extraWindowInfo->initialChildPlacement.cancel();
++            }
++        }
++        if (reposition) {
++            miral::WindowSpecification placement;
++            placement.top_left() = toMirPoint(newPosition);
++            tools.modify_window(windowInfo, placement);
++        }
+         MinimalWindowManager::handle_window_ready(windowInfo);
+ 
+         Q_EMIT d->m_windowModel.windowReady(windowInfo);
+@@ -225,6 +267,13 @@
+                                                       const miral::WindowSpecification &modificationsClient)
+     {
+         miral::WindowSpecification modifications(modificationsClient);
++
++        if (modifications.top_left().is_set() || modifications.aux_rect().is_set()
++            || modifications.placement_hints().is_set() || modifications.parent().is_set()) {
++            auto extraWindowInfo = getExtraInfo(windowInfo);
++            QMutexLocker locker(&extraWindowInfo->mutex);
++            extraWindowInfo->initialChildPlacement.cancel();
++        }
+ 
+         if (modifications.size().is_set()) {
+             auto extraWindowInfo = qtmir::getExtraInfo(windowInfo);
+@@ -750,7 +799,13 @@
+     modifications.top_left() = topLeft;
+     tools.invoke_under_lock([&window, &modifications, this]() {
+         try {
+-            tools.modify_window(tools.info_for(window), modifications);
++            auto &windowInfo = tools.info_for(window);
++            {
++                auto extraWindowInfo = qtmir::getExtraInfo(windowInfo);
++                QMutexLocker locker(&extraWindowInfo->mutex);
++                extraWindowInfo->initialChildPlacement.cancel();
++            }
++            tools.modify_window(windowInfo, modifications);
+         } catch (const std::out_of_range&) {
+             // usually shell trying to operate on a window which already closed, just ignore
+             // TODO: see above comment in resize, same issue
+--- /dev/null
++++ b/tests/initialchildplacement_test.cpp
+@@ -0,0 +1,51 @@
++#include "initialchildplacement.h"
++#include <iostream>
++#include <cstdlib>
++
++static void check(bool result, const char *message)
++{
++    if (!result) { std::cerr << message << '\n'; std::exit(1); }
++}
++
++int main()
++{
++    using qtmir::InitialChildPlacement;
++    const QSize parentSize(372, 804), placeholder(640, 480), actual(200, 120);
++    const QPoint parent(-134, 116), initialOffset(-134, 108), actualOffset(86, 228);
++    QPoint target;
++    InitialChildPlacement placement;
++    auto remember = [&](bool eligible = true) {
++        placement.remember(eligible, parent + initialOffset, placeholder, parent, parentSize);
++    };
++    remember();
++    check(placement.takePosition(parent + initialOffset, actual, parent, parentSize, target),
++          "changed automatic child size must correct first placement");
++    check(target - parent == actualOffset, "640x480 -> 200x120 must yield relative(86,228)");
++    check(!placement.takePosition(parent + initialOffset, actual, parent, parentSize, target),
++          "placement must only be consumed once");
++    remember();
++    check(!placement.takePosition(parent + initialOffset, placeholder, parent, parentSize, target),
++          "unchanged size must keep position");
++    remember();
++    check(!placement.takePosition(parent + initialOffset + QPoint(1, 2), actual, parent, parentSize, target),
++          "moved child must keep manual position");
++    remember();
++    placement.cancel();
++    check(!placement.takePosition(parent + initialOffset, actual, parent, parentSize, target),
++          "explicit move cancels even if moved back to initial position");
++    remember(false);
++    check(!placement.takePosition(parent + initialOffset, actual, parent, parentSize, target),
++          "excluded popup or positioning-hint path must keep placement");
++    placement.remember(true, parent + QPoint(12, 34), placeholder, parent, parentSize);
++    check(!placement.takePosition(parent + QPoint(12, 34), actual, parent, parentSize, target),
++          "nonautomatic initial placement must be preserved");
++    remember();
++    const QPoint movedParent(70, -90);
++    check(placement.takePosition(movedParent + initialOffset, actual, movedParent, parentSize, target),
++          "inherited parent translation must not cancel automatic placement");
++    check(target == movedParent + actualOffset, "current parent global offset must be added once");
++    remember();
++    check(!placement.takePosition(parent + initialOffset, QSize(0, 120), parent, parentSize, target),
++          "zero child dimensions must be rejected");
++    std::cout << "Initial child placement regression passed\n";
++}

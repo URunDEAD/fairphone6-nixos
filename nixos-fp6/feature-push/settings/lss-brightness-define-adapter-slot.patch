@@ -1,0 +1,18 @@
+--- a/plugins/brightness/aethercast/devicemodel.cpp
++++ b/plugins/brightness/aethercast/devicemodel.cpp
+@@ -325,3 +325,15 @@
+ 
+     return accepts;
+ }
++
++// FP6: declared as a slot in devicemodel.h but never defined or connected
++// upstream. UT links plugin modules with unresolved symbols allowed; nixpkgs
++// links with --unresolved-symbols=report-all, so give it an empty body.
++void DeviceModel::slotAdapterPropertiesChanged(const QString &interface,
++                                               const QVariantMap &changedProperties,
++                                               const QStringList &invalidatedProperties)
++{
++    Q_UNUSED(interface);
++    Q_UNUSED(changedProperties);
++    Q_UNUSED(invalidatedProperties);
++}

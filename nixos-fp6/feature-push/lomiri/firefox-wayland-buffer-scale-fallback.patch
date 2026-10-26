@@ -1,0 +1,84 @@
+diff -ru a/widget/gtk/WaylandSurface.cpp b/widget/gtk/WaylandSurface.cpp
+--- a/widget/gtk/WaylandSurface.cpp
++++ b/widget/gtk/WaylandSurface.cpp
+@@ -10,6 +10,7 @@
+ #include "mozilla/ToString.h"
+ #include <dlfcn.h>
+ #include <fcntl.h>
++#include <cmath>
+ #include "ScreenHelperGTK.h"
+ #include "DMABufFormats.h"
+ #include "nsWindow.h"
+@@ -572,6 +573,7 @@
+   ClearOpaqueCallbackLocked(aSurfaceLock);
+ 
+   MozClearPointer(mViewport, wp_viewport_destroy);
++  mBufferScaleFallbackValue = 0;
+   mViewportDestinationSize = DesktopIntSize(-1, -1);
+   mViewportSourceRect = DesktopIntRect(-1, -1, -1, -1);
+ 
+@@ -823,9 +825,19 @@
+   LOGWAYLAND("WaylandSurface::EnableCeiledScaleLocked()");
+ 
+   if (!CreateViewportLocked(aProofOfLock, /* aFollowsSizeChanges */ true)) {
+-    LOGWAYLAND("WaylandSurface::EnableCeiledScaleLocked() failed");
+-    return false;
++    // fp6: the compositor has no wp_viewporter (Mir 2.15 / Lomiri). Without
++    // a viewport the HiDPI buffer would be shown 1:1 in surface coordinates,
++    // i.e. scale times too large. Fall back to the integer
++    // wl_surface.set_buffer_scale that pre-viewport Firefox used.
++    LOGWAYLAND(
++        "WaylandSurface::EnableCeiledScaleLocked(): no viewport, using "
++        "wl_surface.set_buffer_scale fallback");
++    mBufferScaleFallback = true;
++    mScaleType = ScaleType::Ceiled;
++    SetBufferScaleFallbackLocked(aProofOfLock, static_cast<int>(std::ceil(GetScale())));
++    return true;
+   }
++  mBufferScaleFallback = false;
+ 
+   if (mViewportFollowsSizeChanges) {
+     SetViewPortDestLocked(aProofOfLock, mSize);
+@@ -846,11 +858,25 @@
+   MOZ_DIAGNOSTIC_ASSERT(&aProofOfLock == mSurfaceLock);
+   if (IsCeiledScaleLocked(aProofOfLock)) {
+     mScreenScale = aScreenCeiledScale;
++    SetBufferScaleFallbackLocked(aProofOfLock, aScreenCeiledScale);
+     LOGWAYLAND("WaylandSurface::SetCeiledScaleLocked() scale %f",
+                (double)mScreenScale);
+   }
+ }
+ 
++void WaylandSurface::SetBufferScaleFallbackLocked(
++    const WaylandSurfaceLock& aProofOfLock, int aScale) {
++  MOZ_DIAGNOSTIC_ASSERT(&aProofOfLock == mSurfaceLock);
++  if (!mBufferScaleFallback || !mIsMapped || !mSurface || aScale < 1 ||
++      mBufferScaleFallbackValue == aScale) {
++    return;
++  }
++  mBufferScaleFallbackValue = aScale;
++  LOGWAYLAND("WaylandSurface::SetBufferScaleFallbackLocked() scale %d", aScale);
++  wl_surface_set_buffer_scale(mSurface, aScale);
++  mSurfaceNeedsCommit = true;
++}
++
+ void WaylandSurface::SetViewPortDestLocked(
+     const WaylandSurfaceLock& aProofOfLock, const DesktopIntSize& aDestSize) {
+   MOZ_DIAGNOSTIC_ASSERT(&aProofOfLock == mSurfaceLock);
+diff -ru a/widget/gtk/WaylandSurface.h b/widget/gtk/WaylandSurface.h
+--- a/widget/gtk/WaylandSurface.h
++++ b/widget/gtk/WaylandSurface.h
+@@ -487,6 +487,13 @@
+ 
+   ScaleType mScaleType = ScaleType::Disabled;
+ 
++  // fp6: integer wl_surface.set_buffer_scale fallback for compositors
++  // without wp_viewporter.
++  bool mBufferScaleFallback = false;
++  int mBufferScaleFallbackValue = 0;
++  void SetBufferScaleFallbackLocked(const WaylandSurfaceLock& aProofOfLock,
++                                    int aScale);
++
+   // mScreenScale is set from main thread only but read from
+   // different threads.
+   mozilla::Atomic<double, mozilla::Relaxed> mScreenScale{sNoScale};

@@ -1,0 +1,232 @@
+diff --git a/iiosensorproxyorientationsensor.cpp b/iiosensorproxyorientationsensor.cpp
+index 86ebb35..4969e65 100644
+--- a/iiosensorproxyorientationsensor.cpp
++++ b/iiosensorproxyorientationsensor.cpp
+@@ -43,7 +43,7 @@
+ 
+ #include <QtDBus/QDBusPendingReply>
+ 
+-char const * const IIOSensorProxyOrientationSensor::id("iio-sensor-proxy.orientationsensor");
++char const * const IIOSensorProxyOrientationSensor::id("fp6-iio-sensor-proxy.orientationsensor");
+ 
+ static inline QString dbusPath() { return QStringLiteral("/net/hadess/SensorProxy"); }
+ 
+@@ -61,32 +61,61 @@ IIOSensorProxyOrientationSensor::~IIOSensorProxyOrientationSensor()
+ 
+ void IIOSensorProxyOrientationSensor::start()
+ {
+-    if (isServiceRunning()) {
+-        if (m_sensorProxyInterface->hasAccelerometer()) {
+-            QDBusPendingReply<> reply = m_sensorProxyInterface->ClaimAccelerometer();
+-            reply.waitForFinished();
+-            if (!reply.isError()) {
+-                QString orientation = m_sensorProxyInterface->accelerometerOrientation();
+-                updateOrientation(orientation);
+-                return;
+-            }
+-        }
+-    }
+-    sensorStopped();
++    m_wanted = true;
++    tryClaim();
++    // Unlike upstream, stay active while the proxy is absent (not started yet,
++    // or restarting) or has not probed its accelerometer yet.
+ }
+ 
+ void IIOSensorProxyOrientationSensor::stop()
+ {
+-    if (isServiceRunning()) {
++    m_wanted = false;
++    if (m_claimed && isServiceRunning()) {
+         QDBusPendingReply<> reply = m_sensorProxyInterface->ReleaseAccelerometer();
+         reply.waitForFinished();
+     }
++    m_claimed = false;
+     sensorStopped();
+ }
+ 
++void IIOSensorProxyOrientationSensor::tryClaim()
++{
++    if (!m_wanted || m_claimed || !isServiceRunning())
++        return;
++    if (!m_sensorProxyInterface->hasAccelerometer())
++        return; // claimed later from the HasAccelerometer change
++    QDBusPendingReply<> reply = m_sensorProxyInterface->ClaimAccelerometer();
++    reply.waitForFinished();
++    if (reply.isError()) {
++        qWarning("fp6-iio-sensor-proxy: ClaimAccelerometer failed: %s",
++                 qPrintable(reply.error().message()));
++        return;
++    }
++    m_claimed = true;
++    updateOrientation(m_sensorProxyInterface->accelerometerOrientation());
++}
++
++void IIOSensorProxyOrientationSensor::serviceAppeared()
++{
++    tryClaim();
++}
++
++void IIOSensorProxyOrientationSensor::serviceVanished()
++{
++    m_claimed = false;
++    if (!m_wanted)
++        sensorStopped();
++}
++
+ void IIOSensorProxyOrientationSensor::updateProperties(const QVariantMap &changedProperties)
+ {
+-    if (changedProperties.contains("AccelerometerOrientation")) {
++    if (changedProperties.contains("HasAccelerometer")) {
++        if (changedProperties.value("HasAccelerometer").toBool())
++            tryClaim();
++        else
++            m_claimed = false;
++    }
++    if (m_claimed && changedProperties.contains("AccelerometerOrientation")) {
+         QString orientation = changedProperties.value("AccelerometerOrientation").toString();
+         updateOrientation(orientation);
+     }
+diff --git a/iiosensorproxyorientationsensor.h b/iiosensorproxyorientationsensor.h
+index 959113f..abfd544 100644
+--- a/iiosensorproxyorientationsensor.h
++++ b/iiosensorproxyorientationsensor.h
+@@ -61,9 +61,17 @@ public:
+ 
+ protected:
+     void updateProperties(const QVariantMap &changedProperties) override;
++    void serviceAppeared() override;
++    void serviceVanished() override;
+ 
+ private:
+     void updateOrientation(const QString &orientation);
++    void tryClaim();
++
++    // FP6: the sensor stays active across iio-sensor-proxy restarts and
++    // claims again as soon as a new proxy (with an accelerometer) appears.
++    bool m_wanted = false;
++    bool m_claimed = false;
+ 
+     QOrientationReading m_reading;
+     NetHadessSensorProxyInterface *m_sensorProxyInterface;
+diff --git a/iiosensorproxysensorbase.cpp b/iiosensorproxysensorbase.cpp
+index 0a9f318..bcccc0a 100644
+--- a/iiosensorproxysensorbase.cpp
++++ b/iiosensorproxysensorbase.cpp
+@@ -71,10 +71,11 @@ IIOSensorProxySensorBase::IIOSensorProxySensorBase(const QString& dbusPath, cons
+     QDBusServiceWatcher *watcher = new QDBusServiceWatcher(serviceName(), QDBusConnection::systemBus(),
+                                                            QDBusServiceWatcher::WatchForRegistration |
+                                                            QDBusServiceWatcher::WatchForUnregistration, this);
+-    connect(watcher, SIGNAL(serviceRegistered(QString)),
+-            this, SLOT(serviceRegistered()));
+-    connect(watcher, SIGNAL(serviceUnregistered(QString)),
+-            this, SLOT(serviceUnregistered()));
++    // FP6: serviceOwnerChanged also covers a direct owner hand-over, which
++    // emits neither serviceRegistered nor serviceUnregistered.
++    watcher->setWatchMode(QDBusServiceWatcher::WatchForOwnerChange);
++    connect(watcher, SIGNAL(serviceOwnerChanged(QString,QString,QString)),
++            this, SLOT(serviceOwnerChanged(QString,QString,QString)));
+ 
+     m_serviceRunning = QDBusConnection::systemBus().interface()->isServiceRegistered(serviceName());
+ 
+@@ -93,15 +94,19 @@ QString IIOSensorProxySensorBase::serviceName() const
+     return QLatin1String("net.hadess.SensorProxy");
+ }
+ 
+-void IIOSensorProxySensorBase::serviceRegistered()
++void IIOSensorProxySensorBase::serviceOwnerChanged(const QString &/*service*/,
++                                                   const QString &oldOwner,
++                                                   const QString &newOwner)
+ {
+-    m_serviceRunning = true;
+-}
+-
+-void IIOSensorProxySensorBase::serviceUnregistered()
+-{
+-    m_serviceRunning = false;
+-    sensorStopped();
++    if (!oldOwner.isEmpty() && m_serviceRunning) {
++        // Every claim died with the old owner.
++        m_serviceRunning = false;
++        serviceVanished();
++    }
++    if (!newOwner.isEmpty() && !m_serviceRunning) {
++        m_serviceRunning = true;
++        serviceAppeared();
++    }
+ }
+ 
+ void IIOSensorProxySensorBase::propertiesChanged(const QString &interface,
+diff --git a/iiosensorproxysensorbase.h b/iiosensorproxysensorbase.h
+index 96e036a..f0702b7 100644
+--- a/iiosensorproxysensorbase.h
++++ b/iiosensorproxysensorbase.h
+@@ -60,10 +60,14 @@ public:
+ protected:
+     static quint64 produceTimestamp();
+     virtual void updateProperties(const QVariantMap &changedProperties) = 0;
++    // FP6: called when net.hadess.SensorProxy gets a (new) owner / loses it.
++    // The defaults keep the upstream behaviour (stop on vanish).
++    virtual void serviceAppeared() {}
++    virtual void serviceVanished() { sensorStopped(); }
+ 
+ private slots:
+-    void serviceRegistered();
+-    void serviceUnregistered();
++    void serviceOwnerChanged(const QString &service, const QString &oldOwner,
++                             const QString &newOwner);
+     void propertiesChanged(const QString &interface, const QVariantMap &changedProperties,
+                            const QStringList &invalidatedProperties);
+ 
+diff --git a/main.cpp b/main.cpp
+index 580e2c4..f02c9bb 100644
+--- a/main.cpp
++++ b/main.cpp
+@@ -39,8 +39,6 @@
+ ****************************************************************************/
+ 
+ #include "iiosensorproxyorientationsensor.h"
+-#include "iiosensorproxylightsensor.h"
+-#include "iiosensorproxycompass.h"
+ 
+ #include <qsensorplugin.h>
+ #include <qsensorbackend.h>
+@@ -60,26 +58,17 @@ class IIOSensorProxySensorPlugin : public QObject, public QSensorPluginInterface
+ public:
+     void registerSensors() override
+     {
+-        if (QDBusConnection::systemBus().interface()->isServiceRegistered("net.hadess.SensorProxy")) {
+-            if (!QSensorManager::isBackendRegistered(QOrientationSensor::type, IIOSensorProxyOrientationSensor::id))
+-                QSensorManager::registerBackend(QOrientationSensor::type, IIOSensorProxyOrientationSensor::id, this);
+-            if (!QSensorManager::isBackendRegistered(QLightSensor::type, IIOSensorProxyLightSensor::id))
+-                QSensorManager::registerBackend(QLightSensor::type, IIOSensorProxyLightSensor::id, this);
+-            if (!QSensorManager::isBackendRegistered(QCompass::type, IIOSensorProxyCompass::id))
+-                QSensorManager::registerBackend(QCompass::type, IIOSensorProxyCompass::id, this);
+-        }
++        // FP6: register unconditionally. Lomiri may start before
++        // iio-sensor-proxy; the backend claims once the proxy appears.
++        if (!QSensorManager::isBackendRegistered(QOrientationSensor::type, IIOSensorProxyOrientationSensor::id))
++            QSensorManager::registerBackend(QOrientationSensor::type, IIOSensorProxyOrientationSensor::id, this);
+     }
+ 
+     QSensorBackend *createBackend(QSensor *sensor) override
+     {
+         if (sensor->identifier() == IIOSensorProxyOrientationSensor::id)
+             return new IIOSensorProxyOrientationSensor(sensor);
+-        else if (sensor->identifier() == IIOSensorProxyLightSensor::id)
+-            return new IIOSensorProxyLightSensor(sensor);
+-        else if (sensor->identifier() == IIOSensorProxyCompass::id)
+-            return new IIOSensorProxyCompass(sensor);
+-
+-        return 0;
++        return nullptr;
+     }
+ };
+ 
+diff --git a/plugin.json b/plugin.json
+index 5397f76..b2f4ab9 100644
+--- a/plugin.json
++++ b/plugin.json
+@@ -1 +1 @@
+-{ "Keys": [ "iio-sensor-proxy" ] }
++{ "Keys": [ "fp6-iio-sensor-proxy" ] }

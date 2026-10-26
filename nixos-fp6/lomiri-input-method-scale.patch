@@ -1,0 +1,40 @@
+--- a/qml/Components/InputMethod.qml
++++ b/qml/Components/InputMethod.qml
+@@ -22,18 +22,33 @@
+ Item {
+     id: root
+ 
+-    readonly property rect visibleRect: surfaceItem.surface && visible ? surfaceItem.surface.inputBounds : Qt.rect(0, 0, 0, 0)
++    readonly property real surfaceScaleX: surfaceItem.width > 0 ? width / surfaceItem.width : 1
++    readonly property real surfaceScaleY: surfaceItem.height > 0 ? height / surfaceItem.height : 1
++    readonly property rect visibleRect: {
++        if (!surfaceItem.surface || !visible) return Qt.rect(0, 0, 0, 0);
++        var bounds = surfaceItem.surface.inputBounds;
++        return Qt.rect(bounds.x * surfaceScaleX, bounds.y * surfaceScaleY,
++                       bounds.width * surfaceScaleX, bounds.height * surfaceScaleY);
++    }
+ 
+     property var surface: root.enabled ? InputMethodManager.surface : null;
+ 
+     MirSurfaceItem {
+         id: surfaceItem
+-        anchors.fill: parent
++        // The input-panel protocol supplies its own logical surface size.
++        width: surface && surface.size.width > 0 ? surface.size.width : root.width
++        height: surface && surface.size.height > 0 ? surface.size.height : root.height
++        transform: Scale {
++            xScale: root.surfaceScaleX
++            yScale: root.surfaceScaleY
++        }
+ 
+         consumesInput: true
+ 
+-        surfaceWidth: root.enabled ? width : -1
+-        surfaceHeight: root.enabled ? height : -1
++        // Keep rendering and input in the client's coordinate system. Qt Quick
++        // applies the inverse transform when TouchGate forwards touch events.
++        surfaceWidth: -1
++        surfaceHeight: -1
+         surface: root.surface
+ 
+         onLiveChanged: {

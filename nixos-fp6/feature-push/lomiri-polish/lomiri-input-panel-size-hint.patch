@@ -1,0 +1,217 @@
+diff --git a/plugins/Utils/CMakeLists.txt b/plugins/Utils/CMakeLists.txt
+index 03cd65b..0afb73e 100644
+--- a/plugins/Utils/CMakeLists.txt
++++ b/plugins/Utils/CMakeLists.txt
+@@ -22,6 +22,7 @@ set(QMLPLUGIN_SRC
+     constants.cpp
+     WindowInputMonitor.cpp
+     inputwatcher.cpp
++    inputpanelsizehint.cpp
+     qlimitproxymodelqml.cpp
+     lomirisortfilterproxymodelqml.cpp
+     Timer.cpp
+diff --git a/plugins/Utils/inputpanelsizehint.cpp b/plugins/Utils/inputpanelsizehint.cpp
+new file mode 100644
+index 0000000..dc1b6b5
+--- /dev/null
++++ b/plugins/Utils/inputpanelsizehint.cpp
+@@ -0,0 +1,87 @@
++/*
++ * Copyright (C) 2026 FP6 Mobile NixOS port
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; version 3.
++ */
++
++#include "inputpanelsizehint.h"
++
++#include <QDebug>
++#include <QDir>
++#include <QSaveFile>
++#include <QTimer>
++
++InputPanelSizeHint::InputPanelSizeHint(QObject *parent)
++    : QObject(parent)
++    , m_filePath(defaultFilePath())
++{
++}
++
++QString InputPanelSizeHint::defaultFilePath()
++{
++    const QString runtimeDir = qEnvironmentVariable("XDG_RUNTIME_DIR");
++    if (runtimeDir.isEmpty())
++        return QString();
++    return QDir(runtimeDir).filePath(QStringLiteral("lomiri-input-panel-size"));
++}
++
++void InputPanelSizeHint::setWidth(int width)
++{
++    if (m_width == width)
++        return;
++    m_width = width;
++    Q_EMIT widthChanged();
++    scheduleWrite();
++}
++
++void InputPanelSizeHint::setHeight(int height)
++{
++    if (m_height == height)
++        return;
++    m_height = height;
++    Q_EMIT heightChanged();
++    scheduleWrite();
++}
++
++void InputPanelSizeHint::setFilePath(const QString &path)
++{
++    if (m_filePath == path)
++        return;
++    m_filePath = path;
++    m_writtenWidth = m_writtenHeight = -1;
++    Q_EMIT filePathChanged();
++    scheduleWrite();
++}
++
++void InputPanelSizeHint::scheduleWrite()
++{
++    // A rotation changes width and height in two steps; write once.
++    if (m_pending)
++        return;
++    m_pending = true;
++    QTimer::singleShot(0, this, &InputPanelSizeHint::write);
++}
++
++void InputPanelSizeHint::write()
++{
++    m_pending = false;
++    if (m_filePath.isEmpty() || m_width <= 0 || m_height <= 0)
++        return;
++    if (m_width == m_writtenWidth && m_height == m_writtenHeight)
++        return;
++
++    QSaveFile file(m_filePath);
++    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
++        qWarning() << "InputPanelSizeHint: cannot open" << m_filePath << file.errorString();
++        return;
++    }
++    file.write(QStringLiteral("%1 %2\n").arg(m_width).arg(m_height).toLatin1());
++    if (!file.commit()) {
++        qWarning() << "InputPanelSizeHint: cannot write" << m_filePath << file.errorString();
++        return;
++    }
++    m_writtenWidth = m_width;
++    m_writtenHeight = m_height;
++}
+diff --git a/plugins/Utils/inputpanelsizehint.h b/plugins/Utils/inputpanelsizehint.h
+new file mode 100644
+index 0000000..761b780
+--- /dev/null
++++ b/plugins/Utils/inputpanelsizehint.h
+@@ -0,0 +1,58 @@
++/*
++ * Copyright (C) 2026 FP6 Mobile NixOS port
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; version 3.
++ */
++
++#pragma once
++
++#include <QObject>
++#include <QString>
++
++/*
++ * Publishes the size of the shell's input-method area (in shell pixels) to
++ * $XDG_RUNTIME_DIR/lomiri-input-panel-size as "WIDTH HEIGHT\n".
++ *
++ * zwp_input_panel_v1 has no configure event, and Lomiri rotates in QML rather
++ * than through the wl_output transform, so the keyboard client otherwise only
++ * ever sees the portrait output size. maliit-keyboard reads this file to lay
++ * itself out for the shell's real (rotated) input-method area.
++ */
++class InputPanelSizeHint : public QObject
++{
++    Q_OBJECT
++    Q_PROPERTY(int width READ width WRITE setWidth NOTIFY widthChanged)
++    Q_PROPERTY(int height READ height WRITE setHeight NOTIFY heightChanged)
++    Q_PROPERTY(QString filePath READ filePath WRITE setFilePath NOTIFY filePathChanged)
++
++public:
++    explicit InputPanelSizeHint(QObject *parent = nullptr);
++
++    int width() const { return m_width; }
++    int height() const { return m_height; }
++    QString filePath() const { return m_filePath; }
++
++    void setWidth(int width);
++    void setHeight(int height);
++    void setFilePath(const QString &path);
++
++    static QString defaultFilePath();
++
++Q_SIGNALS:
++    void widthChanged();
++    void heightChanged();
++    void filePathChanged();
++
++private:
++    void scheduleWrite();
++    void write();
++
++    int m_width{0};
++    int m_height{0};
++    int m_writtenWidth{-1};
++    int m_writtenHeight{-1};
++    bool m_pending{false};
++    QString m_filePath;
++};
+diff --git a/plugins/Utils/plugin.cpp b/plugins/Utils/plugin.cpp
+index 69ab6cd..3556443 100644
+--- a/plugins/Utils/plugin.cpp
++++ b/plugins/Utils/plugin.cpp
+@@ -27,6 +27,7 @@
+ #include "easingcurve.h"
+ #include "WindowInputMonitor.h"
+ #include "inputwatcher.h"
++#include "inputpanelsizehint.h"
+ #include "qlimitproxymodelqml.h"
+ #include "lomirisortfilterproxymodelqml.h"
+ #include "lomirimenumodelpaths.h"
+@@ -81,6 +82,7 @@ void UtilsPlugin::registerTypes(const char *uri)
+     qmlRegisterType<EasingCurve>(uri, 0, 1, "EasingCurve");
+     qmlRegisterSingletonType<WindowStateStorage>(uri, 0, 1, "WindowStateStorage", createWindowStateStorage);
+     qmlRegisterType<InputWatcher>(uri, 0, 1, "InputWatcher");
++    qmlRegisterType<InputPanelSizeHint>(uri, 0, 1, "InputPanelSizeHint");
+     qmlRegisterSingletonType<Constants>(uri, 0, 1, "Constants", createConstants);
+     qmlRegisterSingletonType<TimezoneFormatter>(uri, 0, 1, "TimezoneFormatter",
+                                                 [](QQmlEngine*, QJSEngine*) -> QObject* { return new TimezoneFormatter; });
+diff --git a/qml/Components/InputMethod.qml b/qml/Components/InputMethod.qml
+index 6f7279c..24470ff 100644
+--- a/qml/Components/InputMethod.qml
++++ b/qml/Components/InputMethod.qml
+@@ -18,6 +18,7 @@ import QtQuick 2.15
+ import QtMir.Application 0.1
+ import Lomiri.Gestures 0.1
+ import WindowManager 1.0
++import Utils 0.1
+ 
+ Item {
+     id: root
+@@ -33,6 +34,15 @@ Item {
+ 
+     property var surface: root.enabled ? InputMethodManager.surface : null;
+ 
++    // FP6: the input panel cannot be configured over Wayland and the shell
++    // rotates in QML, so tell the keyboard the real (rotated) area to lay out
++    // for. Without this it always lays out for the portrait output and the
++    // Scale below stretches it non-uniformly in landscape.
++    InputPanelSizeHint {
++        width: Math.round(root.width)
++        height: Math.round(root.height)
++    }
++
+     MirSurfaceItem {
+         id: surfaceItem
+         // The input-panel protocol supplies its own logical surface size.

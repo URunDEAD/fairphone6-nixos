@@ -1,0 +1,81 @@
+--- a/qml/Stage/StagedFullscreenPolicy.qml	2026-10-26 15:12:31.176584339 +0200
++++ b/qml/Stage/StagedFullscreenPolicy.qml	2026-10-26 15:12:31.180309828 +0200
+@@ -21,22 +21,54 @@
+ // state and shell chrome.
+ //
+ // Chrome changed to LowChrome -> server sets client window state to "fullscreen"
+-// Chrome changed to NormalChrome -> server sets client window to "restored" state.
++// Chrome changed to NormalChrome -> server sets client window to "maximized" state.
+ // Chrome set and state change to restored -> server RESETS client window state to "fullscreen"
+-// Chrome not set and state change to restored -> client window stays "restored"
++// Chrome not set and state change to restored -> client window becomes "maximized"
+ // Chrome not set and state change to fulscreen -> client window stays "fullscreen"
++//
++// fp6: a staged (phone/tablet) window always fills the stage, so it is
++// reported to the client as maximized instead of restored. Mir then sends
++// xdg_toplevel state "maximized", and client-side-decorated toolkits (GTK3,
++// GTK4/libadwaita) draw no shadow margin, no rounded corners and no resize
++// borders. Lomiri's "staged" delegate state ignores windowState, so the shell
++// geometry does not change. Leaving staged mode (windowed/desktop) restores
++// windows this policy maximized.
+ QtObject {
+     id: root
+     property bool active: true
+ 
++    function stagedState(surfaceState) {
++        if (surfaceState === Mir.FullscreenState
++                || surfaceState === Mir.MinimizedState
++                || surfaceState === Mir.HiddenState) {
++            return surfaceState;
++        }
++        return Mir.MaximizedState;
++    }
++
+     function applyPolicy(surfaceState, surfaceChrome) {
+         if (surfaceChrome === Mir.LowChrome) {
+             return Mir.FullscreenState;
+         }
+-        return surfaceState;
++        return root.active ? stagedState(surfaceState) : surfaceState;
+     }
+ 
+     property var surface: null
++    property bool _maximizedByPolicy: false
++
++    onActiveChanged: {
++        if (!surface) return;
++        if (active) {
++            if (surface.state === Mir.RestoredState) {
++                _maximizedByPolicy = true;
++                surface.requestState(Mir.MaximizedState);
++            }
++        } else if (_maximizedByPolicy && surface.state === Mir.MaximizedState) {
++            _maximizedByPolicy = false;
++            surface.requestState(Mir.RestoredState);
++        }
++    }
++
+     property var _connections: Connections {
+         target: surface
+         function onShellChromeChanged() {
+@@ -44,7 +76,19 @@
+             if (surface.shellChrome === Mir.LowChrome) {
+                 surface.requestState(Mir.FullscreenState);
+             } else {
+-                surface.requestState(Mir.RestoredState);
++                root._maximizedByPolicy = true;
++                surface.requestState(Mir.MaximizedState);
++            }
++        }
++        function onStateChanged() {
++            if (!root.active || !surface) return;
++            // A client or the shell restored a staged window (e.g. GTK's
++            // titlebar double-click, or leaving fullscreen): keep it maximized.
++            if (surface.state === Mir.RestoredState) {
++                root._maximizedByPolicy = true;
++                surface.requestState(Mir.MaximizedState);
++            } else if (surface.state === Mir.MaximizedState && !root._maximizedByPolicy) {
++                root._maximizedByPolicy = true;
+             }
+         }
+     }

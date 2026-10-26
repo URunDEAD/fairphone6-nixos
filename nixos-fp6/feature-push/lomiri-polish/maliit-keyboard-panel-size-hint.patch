@@ -1,0 +1,162 @@
+diff --git a/src/plugin/inputmethod.cpp b/src/plugin/inputmethod.cpp
+index 23cacca..ffd7ae9 100644
+--- a/src/plugin/inputmethod.cpp
++++ b/src/plugin/inputmethod.cpp
+@@ -46,6 +46,12 @@
+ #include <maliit/namespace.h>
+ 
+ #include <QGuiApplication>
++#include <QFile>
++#include <QFileInfo>
++#include <QFileSystemWatcher>
++#include <QScreen>
++
++#include "panelsizehint.h"
+ 
+ 
+ class MImUpdateEvent;
+@@ -145,11 +151,40 @@ InputMethod::InputMethod(MAbstractInputMethodHost *host)
+     } else {
+         d->view->setSource(QUrl::fromLocalFile(g_maliit_keyboard_qml));
+     }
+-    d->view->setGeometry(qGuiApp->primaryScreen()->geometry());
+-    connect(qGuiApp->primaryScreen(), &QScreen::geometryChanged,
+-            this, [this, d](const QRect &geometry) {
+-        d->view->setGeometry(geometry);
+-    });
++    // FP6: lay out for the shell's (rotated) input-method area when Lomiri
++    // publishes it; otherwise fall back to the output geometry as before.
++    const QString hintPath = panelSizeHintPath();
++    auto applyGeometry = [d, hintPath]() {
++        QScreen *output = qGuiApp->primaryScreen();
++        const QRect screen = output->geometry();
++        QRect geometry = screen;
++        QFile hint(hintPath);
++        if (!hintPath.isEmpty() && hint.open(QIODevice::ReadOnly)) {
++            const QSize size = parsePanelSizeHint(hint.read(64), output->devicePixelRatio(),
++                                                  screen.size());
++            if (size.isValid())
++                geometry = QRect(screen.topLeft(), size);
++        }
++        if (d->view->geometry() != geometry)
++            d->view->setGeometry(geometry);
++    };
++    applyGeometry();
++    connect(qGuiApp->primaryScreen(), &QScreen::geometryChanged, this, applyGeometry);
++    if (!hintPath.isEmpty()) {
++        // The hint is replaced atomically (rename), which drops a file watch,
++        // so also watch the directory and re-arm the file watch every time.
++        auto *watcher = new QFileSystemWatcher(this);
++        const QString hintDir = QFileInfo(hintPath).absolutePath();
++        auto rearm = [watcher, hintPath, applyGeometry]() {
++            if (QFileInfo::exists(hintPath) && !watcher->files().contains(hintPath))
++                watcher->addPath(hintPath);
++            applyGeometry();
++        };
++        watcher->addPath(hintDir);
++        rearm();
++        connect(watcher, &QFileSystemWatcher::directoryChanged, this, rearm);
++        connect(watcher, &QFileSystemWatcher::fileChanged, this, rearm);
++    }
+ }
+ 
+ InputMethod::~InputMethod() = default;
+diff --git a/src/plugin/panelsizehint.h b/src/plugin/panelsizehint.h
+new file mode 100644
+index 0000000..01d7851
+--- /dev/null
++++ b/src/plugin/panelsizehint.h
+@@ -0,0 +1,58 @@
++/*
++ * FP6 Mobile NixOS: input-panel size hint published by the Lomiri shell.
++ *
++ * zwp_input_panel_v1 has no configure event and Lomiri rotates in QML, so
++ * QScreen keeps reporting the portrait output. Lomiri writes the real
++ * (rotated) input-method area, in compositor pixels, to
++ * $XDG_RUNTIME_DIR/lomiri-input-panel-size as "WIDTH HEIGHT\n".
++ */
++#ifndef MALIIT_KEYBOARD_PANELSIZEHINT_H
++#define MALIIT_KEYBOARD_PANELSIZEHINT_H
++
++#include <QByteArray>
++#include <QDir>
++#include <QList>
++#include <QSize>
++#include <QString>
++#include <QtGlobal>
++#include <cmath>
++
++namespace MaliitKeyboard {
++
++inline QString panelSizeHintPath()
++{
++    const QString overridePath = qEnvironmentVariable("MALIIT_PANEL_SIZE_HINT_FILE");
++    if (!overridePath.isEmpty())
++        return overridePath;
++    const QString runtimeDir = qEnvironmentVariable("XDG_RUNTIME_DIR");
++    if (runtimeDir.isEmpty())
++        return QString();
++    return QDir(runtimeDir).filePath(QStringLiteral("lomiri-input-panel-size"));
++}
++
++//! Parses "W H" (compositor pixels) into a logical window size. Returns an
++//! invalid QSize for anything malformed or implausible for \a screen.
++inline QSize parsePanelSizeHint(const QByteArray &contents, qreal devicePixelRatio,
++                                const QSize &screen)
++{
++    const QList<QByteArray> parts = contents.simplified().split(' ');
++    if (parts.size() != 2 || devicePixelRatio <= 0)
++        return QSize();
++    bool okWidth = false, okHeight = false;
++    const int w = parts.at(0).toInt(&okWidth);
++    const int h = parts.at(1).toInt(&okHeight);
++    if (!okWidth || !okHeight || w <= 0 || h <= 0)
++        return QSize();
++    const QSize size(int(std::lround(w / devicePixelRatio)),
++                     int(std::lround(h / devicePixelRatio)));
++    // The area is at most the (possibly rotated) output.
++    const int longest = qMax(screen.width(), screen.height());
++    if (size.width() < 1 || size.height() < 1
++            || size.width() > longest || size.height() > longest)
++        return QSize();
++    return size;
++}
++
++} // namespace MaliitKeyboard
++
++#endif
+diff --git a/tests/fp6/panelsizehint_test.cpp b/tests/fp6/panelsizehint_test.cpp
+new file mode 100644
+index 0000000..2fddc33
+--- /dev/null
++++ b/tests/fp6/panelsizehint_test.cpp
+@@ -0,0 +1,29 @@
++#include "panelsizehint.h"
++#include <cstdio>
++using MaliitKeyboard::parsePanelSizeHint;
++static int failures = 0;
++static void expect(const QSize &got, const QSize &want, const char *what)
++{
++    if (got != want) {
++        std::fprintf(stderr, "FAIL %s: got %dx%d want %dx%d\n", what,
++                     got.width(), got.height(), want.width(), want.height());
++        ++failures;
++    }
++}
++int main()
++{
++    const QSize screen(372, 828); // FP6 1116x2484 at DPR 3
++    // Portrait shell area below a 72 px panel.
++    expect(parsePanelSizeHint("1116 2412\n", 3, screen), QSize(372, 804), "portrait");
++    // Landscape: the shell is rotated in QML, the output is not.
++    expect(parsePanelSizeHint("2484 1044\n", 3, screen), QSize(828, 348), "landscape");
++    expect(parsePanelSizeHint("  2484   1044  ", 3, screen), QSize(828, 348), "whitespace");
++    expect(parsePanelSizeHint("", 3, screen), QSize(), "empty");
++    expect(parsePanelSizeHint("2484", 3, screen), QSize(), "one value");
++    expect(parsePanelSizeHint("a b", 3, screen), QSize(), "garbage");
++    expect(parsePanelSizeHint("-5 100", 3, screen), QSize(), "negative");
++    expect(parsePanelSizeHint("99999 100", 3, screen), QSize(), "too large");
++    expect(parsePanelSizeHint("1116 2412", 0, screen), QSize(), "bad dpr");
++    if (failures == 0) std::puts("panelsizehint: all checks passed");
++    return failures ? 1 : 0;
++}

@@ -1,0 +1,57 @@
+diff --git a/qml/Components/Dialogs.qml b/qml/Components/Dialogs.qml
+index 292aa82..58b68a6 100644
+--- a/qml/Components/Dialogs.qml
++++ b/qml/Components/Dialogs.qml
+@@ -36,6 +36,8 @@ MouseArea {
+     property string usageScenario
+     property size screenSize: Qt.size(Screen.width, Screen.height)
+     property bool hasKeyboard: false
++    // FP6: offer Log Out in the power-key dialog of a user session.
++    property bool canLogout: false
+ 
+     signal powerOffClicked();
+ 
+@@ -271,6 +273,15 @@ MouseArea {
+                     topLevelSurfaceList.closeAllWindows();
+                 }
+             }
++            Button {
++                width: parent.width
++                visible: root.canLogout
++                text: i18n.ctr("Button: Log out from the system", "Log Out")
++                onClicked: {
++                    powerDialog.hide();
++                    root.lomiriSessionService.logout();
++                }
++            }
+             Button {
+                 width: parent.width
+                 text: i18n.tr("Screenshot")
+diff --git a/qml/Panel/Panel.qml b/qml/Panel/Panel.qml
+index f6242cc..e5ccf9c 100644
+--- a/qml/Panel/Panel.qml
++++ b/qml/Panel/Panel.qml
+@@ -451,7 +451,10 @@ Item {
+                 readonly property bool overflow: parent.width - (x - __indicators.rowContentX) > __indicators.overFlowWidth
+                 readonly property bool hidden: !expanded && (overflow || !indicatorVisible || hideSessionIndicator || hideKeyboardIndicator)
+                 // HACK for indicator-session
+-                readonly property bool hideSessionIndicator: identifier == "ayatana-indicator-session" && Math.min(Screen.width, Screen.height) <= units.gu(60)
++                // FP6: on phone-sized screens keep it out of the collapsed status
++                // row, but show it in the expanded indicator menus: it is the only
++                // place that offers Log Out (and Lock/Shut Down) on a phone.
++                readonly property bool hideSessionIndicator: identifier == "ayatana-indicator-session" && !expanded && Math.min(Screen.width, Screen.height) <= units.gu(60)
+                 // HACK for indicator-keyboard
+                 readonly property bool hideKeyboardIndicator: identifier == "ayatana-indicator-keyboard" && !hasKeyboard
+ 
+diff --git a/qml/Shell.qml b/qml/Shell.qml
+index de801a0..4035398 100644
+--- a/qml/Shell.qml
++++ b/qml/Shell.qml
+@@ -851,6 +851,7 @@ StyledItem {
+         z: overlay.z + 10
+         usageScenario: shell.usageScenario
+         hasKeyboard: shell.hasKeyboard
++        canLogout: shell.mode !== "greeter"
+         onPowerOffClicked: {
+             shutdownFadeOutRectangle.enabled = true;
+             shutdownFadeOutRectangle.visible = true;

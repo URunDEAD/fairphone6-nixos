@@ -1,0 +1,51 @@
+Subject: [PATCH] qtmir: run orientation sensor lifecycle on its QObject thread
+
+ScreensModel lifecycle and PlatformScreen creation run on MirServerThread,
+while OrientationSensor belongs to the Qt main thread. Queue cross-thread
+entry calls before mutating flags or creating QtSensors/DBus children. Keep
+owner-thread calls direct and preserve existing lifecycle flag semantics.
+Nonblocking delivery avoids waiting on the Qt event loop during Mir startup.
+
+--- a/src/platforms/mirserver/orientationsensor.cpp
++++ b/src/platforms/mirserver/orientationsensor.cpp
+@@ -17,6 +17,9 @@
+ 
+ #include "orientationsensor.h"
+ #include "logging.h"
++
++#include <QMetaObject>
++#include <QThread>
+ 
+ // Qt sensors
+ #include <QtSensors/QOrientationReading>
+@@ -53,11 +56,19 @@
+ }
+ 
+ void OrientationSensor::start() {
++    if (QThread::currentThread() != thread()) {
++        QMetaObject::invokeMethod(this, &OrientationSensor::start, Qt::QueuedConnection);
++        return;
++    }
+     m_started = true;
+     startIfNeeded();
+ }
+ 
+ void OrientationSensor::stop() {
++    if (QThread::currentThread() != thread()) {
++        QMetaObject::invokeMethod(this, &OrientationSensor::stop, Qt::QueuedConnection);
++        return;
++    }
+     if (m_orientationSensor != nullptr) {
+         if (m_orientationSensor->isActive())
+             m_orientationSensor->stop();
+@@ -65,6 +76,10 @@
+ }
+ 
+ void OrientationSensor::enable() {
++    if (QThread::currentThread() != thread()) {
++        QMetaObject::invokeMethod(this, &OrientationSensor::enable, Qt::QueuedConnection);
++        return;
++    }
+     m_enabled = true;
+     startIfNeeded();
+ }

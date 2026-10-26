@@ -1,0 +1,175 @@
+--- a/qml/Stage/SurfaceContainer.qml
++++ b/qml/Stage/SurfaceContainer.qml
+@@ -15,6 +15,7 @@
+ */
+ 
+ import QtQuick 2.15
++import QtQuick.Window 2.15
+ import QtQml 2.15
+ import Lomiri.Components 1.3
+ import Lomiri.Gestures 0.1 // For TouchGate
+@@ -24,11 +25,23 @@
+ FocusScope {
+     id: root
+     objectName: "surfaceContainer"
+-    implicitWidth: surfaceItem.implicitWidth
+-    implicitHeight: surfaceItem.implicitHeight
++    implicitWidth: surfaceItem.implicitWidth * clientScale
++    implicitHeight: surfaceItem.implicitHeight * clientScale
+ 
+     // Must be set from outside
+     property var surface: null
++
++    // The shell uses native pixels; Wayland surface geometry is logical.
++    // ScreenWindow exposes the scale of this particular output.
++    readonly property real clientScale: {
++        var window = root.Window.window;
++        var scale = window && window.screen ? window.screen.scale : 1;
++        return scale > 0 ? scale : 1;
++    }
++
++    function toClientDimension(value) {
++        return value > 0 ? Math.max(1, Math.round(value / clientScale)) : value;
++    }
+ 
+     // Might be changed from outside
+     property int requestedWidth: -1
+@@ -65,15 +78,22 @@
+     MirSurfaceItem {
+         id: surfaceItem
+         objectName: "surfaceItem"
+-        anchors.fill: parent
++        anchors.left: parent.left
++        anchors.top: parent.top
++        width: root.width / root.clientScale
++        height: root.height / root.clientScale
++        transform: Scale {
++            xScale: root.clientScale
++            yScale: root.clientScale
++        }
+ 
+         focus: true
+ 
+-        fillMode: MirSurfaceItem.PadOrCrop
++        fillMode: MirSurfaceItem.Stretch
+         consumesInput: true
+ 
+-        surfaceWidth: root.requestedWidth
+-        surfaceHeight: root.requestedHeight
++        surfaceWidth: root.toClientDimension(root.requestedWidth)
++        surfaceHeight: root.toClientDimension(root.requestedHeight)
+ 
+         enabled: root.interactive
+         antialiasing: !root.interactive
+--- a/qml/Stage/ApplicationWindow.qml
++++ b/qml/Stage/ApplicationWindow.qml
+@@ -39,12 +39,18 @@
+     property int requestedHeight: -1
+     property real splashRotation: 0
+ 
+-    readonly property int minimumWidth: surface ? surface.minimumWidth : 0
+-    readonly property int minimumHeight: surface ? surface.minimumHeight : 0
+-    readonly property int maximumWidth: surface ? surface.maximumWidth : 0
+-    readonly property int maximumHeight: surface ? surface.maximumHeight : 0
+-    readonly property int widthIncrement: surface ? surface.widthIncrement : 0
+-    readonly property int heightIncrement: surface ? surface.heightIncrement : 0
++    readonly property real clientScale: surfaceContainer.clientScale
++
++    function toSceneDimension(value, round) {
++        return value > 0 ? round(value * clientScale) : value;
++    }
++
++    readonly property int minimumWidth: surface ? toSceneDimension(surface.minimumWidth, Math.ceil) : 0
++    readonly property int minimumHeight: surface ? toSceneDimension(surface.minimumHeight, Math.ceil) : 0
++    readonly property int maximumWidth: surface ? toSceneDimension(surface.maximumWidth, Math.floor) : 0
++    readonly property int maximumHeight: surface ? toSceneDimension(surface.maximumHeight, Math.floor) : 0
++    readonly property int widthIncrement: surface ? toSceneDimension(surface.widthIncrement, Math.round) : 0
++    readonly property int heightIncrement: surface ? toSceneDimension(surface.heightIncrement, Math.round) : 0
+ 
+     Connections {
+         target: surface
+@@ -123,7 +129,8 @@
+         target: root.application
+         restoreMode: Binding.RestoreBinding
+         property: "initialSurfaceSize"
+-        value: Qt.size(root.requestedWidth, root.requestedHeight)
++        value: Qt.size(surfaceContainer.toClientDimension(root.requestedWidth),
++                       surfaceContainer.toClientDimension(root.requestedHeight))
+     }
+ 
+     Timer {
+@@ -184,6 +191,7 @@
+         }
+         delegate: SurfaceContainer {
+             id: promptSurfaceContainer
++            // Prompt sizing uses the same physical-to-logical conversion as the app.
+             interactive: index === 0 && root.interactive
+             surface: model.surface
+             width: root.width
+--- a/qml/Stage/ChildWindow.qml
++++ b/qml/Stage/ChildWindow.qml
+@@ -29,10 +29,11 @@
+     property Item target
+     property alias requestedWidth: surfaceContainer.requestedWidth
+     property alias requestedHeight: surfaceContainer.requestedHeight
++    readonly property real clientScale: surfaceContainer.clientScale
+     property real decorationHeight
+ 
+-    width: surface ? surface.size.width : 0
+-    height: surface ? surface.size.height : 0
++    width: surface ? surface.size.width * clientScale : 0
++    height: surface ? surface.size.height * clientScale : 0
+ 
+     // Make it get shown and hidden with a fade in/out effect
+     opacity: surface && surface.state !== Mir.MinimizedState && surface.state !== Mir.HiddenState ? 1.0 : 0.0
+@@ -118,7 +119,7 @@
+                     target: root.surface
+                     restoreMode: Binding.RestoreBinding
+                     property: "topMargin"
+-                    value: windowDecoration.height
++                    value: windowDecoration.height / root.clientScale
+                 }
+             }
+         }
+@@ -146,8 +147,8 @@
+         //       and properties.
+         surface: root.surface && root.surface.live ? root.surface : null
+ 
+-        requestedWidth: surface ? surface.size.width : 0
+-        requestedHeight: surface ? surface.size.height : 0
++        requestedWidth: surface ? surface.size.width * root.clientScale : 0
++        requestedHeight: surface ? surface.size.height * root.clientScale : 0
+ 
+         // TODO ChildWindow parent will probably want to control those
+         interactive: true
+--- a/qml/Stage/ChildWindowTree.qml
++++ b/qml/Stage/ChildWindowTree.qml
+@@ -22,14 +22,15 @@
+ FocusScope {
+     id: root
+ 
++    readonly property real clientScale: childWindow.clientScale
+     property alias surface: childWindow.surface
+     property real displacementX: 0
+     property real displacementY: 0
+     property alias boundsItem: childWindow.boundsItem
+     property alias decorationHeight: childWindow.decorationHeight
+ 
+-    x: surface ? surface.position.x + displacementX : 0
+-    y: surface ? surface.position.y + displacementY : 0
++    x: surface ? surface.position.x * clientScale + displacementX : 0
++    y: surface ? surface.position.y * clientScale + displacementY : 0
+     width: childWindow.width
+     height: childWindow.height
+ 
+@@ -86,8 +87,8 @@
+         restoreMode: Binding.RestoreBinding
+         when: childWindow.dragging
+         property: "requestedPosition"
+-        value: Qt.point(root.windowedX - root.displacementX,
+-                        root.windowedY - root.displacementY);
++        value: Qt.point((root.windowedX - root.displacementX) / root.clientScale,
++                        (root.windowedY - root.displacementY) / root.clientScale);
+     }
+ 
+     // It's a separate Item so that a window can be hid independently of its children

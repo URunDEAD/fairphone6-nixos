@@ -1,0 +1,153 @@
+--- a/include/paths.h.in
++++ b/include/paths.h.in
+@@ -23,16 +23,18 @@
+ #include <QtQml/QQmlEngine>
+ #include <QStandardPaths>
+ 
++// Configured store paths must remain ASCII in the ELF so runtime closure
++// relocation can rewrite them. QStringLiteral would embed unrewritable UTF-16.
+ inline QString installRoot() {
+     static QString installRoot;
+     static bool installRootSet = false;
+     if (!installRootSet) {
+         QString snapRoot = QFile::decodeName(qgetenv("SNAP"));
+         if (!snapRoot.isEmpty() && QCoreApplication::applicationDirPath() ==
+-                   QDir(snapRoot + QStringLiteral("@CMAKE_INSTALL_FULL_BINDIR@")).canonicalPath()) {
++                   QDir(snapRoot + QString::fromUtf8("@CMAKE_INSTALL_FULL_BINDIR@")).canonicalPath()) {
+             installRoot = snapRoot;
+         } else if (QCoreApplication::applicationDirPath() ==
+-                   QDir(QStringLiteral("@CMAKE_INSTALL_FULL_BINDIR@")).canonicalPath()) {
++                   QDir(QString::fromUtf8("@CMAKE_INSTALL_FULL_BINDIR@")).canonicalPath()) {
+             installRoot = QStringLiteral("");
+         }
+         installRootSet = true;
+@@ -49,17 +51,17 @@
+ 
+ inline QString buildDirectory() {
+     if (!qEnvironmentVariableIsEmpty("LOMIRI_BINARY_DIR")) return qgetenv("LOMIRI_BINARY_DIR");
+-    return QStringLiteral("@CMAKE_BINARY_DIR@");
++    return QString::fromUtf8("@CMAKE_BINARY_DIR@");
+ }
+ 
+ inline QString sourceDirectory() {
+     if (!qEnvironmentVariableIsEmpty("LOMIRI_SOURCE_DIR")) return qgetenv("LOMIRI_SOURCE_DIR");
+-    return QStringLiteral("@CMAKE_SOURCE_DIR@");
++    return QString::fromUtf8("@CMAKE_SOURCE_DIR@");
+ }
+ 
+ inline QString translationDirectory() {
+     if (isRunningInstalled()) {
+-        return installRoot() + QStringLiteral("@CMAKE_INSTALL_FULL_LOCALEDIR@");
++        return installRoot() + QString::fromUtf8("@CMAKE_INSTALL_FULL_LOCALEDIR@");
+     } else {
+         return buildDirectory() + QStringLiteral("/po/locale");
+     }
+@@ -89,7 +91,7 @@
+ 
+ inline QString qmlDirectory() {
+     if (isRunningInstalled()) {
+-        return installRoot() + QStringLiteral("@SHELL_APP_FULL_DIR@/");
++        return installRoot() + QString::fromUtf8("@SHELL_APP_FULL_DIR@/");
+     } else {
+         return sourceDirectory() + QStringLiteral("/qml");
+     }
+@@ -106,7 +108,7 @@
+ inline QStringList nonMirImportPaths() {
+     QStringList paths;
+     if (isRunningInstalled()) {
+-        paths << installRoot() + QStringLiteral("@SHELL_INSTALL_QML@/nonmirplugins");
++        paths << installRoot() + QString::fromUtf8("@SHELL_INSTALL_QML@/nonmirplugins");
+     } else {
+         paths << buildDirectory() + QStringLiteral("/nonmirplugins");
+     }
+@@ -116,13 +118,13 @@
+ inline QStringList fallbackImportPaths() {
+     QStringList paths;
+     if (isRunningInstalled()) {
+-        paths << installRoot() + QStringLiteral("@SHELL_INSTALL_QML@");
+-        paths << installRoot() + QStringLiteral("@LOMIRI_SYSTEM_SETTINGS_PRIVATE_PLUGINDIR@");
+-        paths << installRoot() + QStringLiteral("@SHELL_PLUGINDIR@");
+-        paths << installRoot() + QStringLiteral("@SHELL_INSTALL_QML@/mocks");
++        paths << installRoot() + QString::fromUtf8("@SHELL_INSTALL_QML@");
++        paths << installRoot() + QString::fromUtf8("@LOMIRI_SYSTEM_SETTINGS_PRIVATE_PLUGINDIR@");
++        paths << installRoot() + QString::fromUtf8("@SHELL_PLUGINDIR@");
++        paths << installRoot() + QString::fromUtf8("@SHELL_INSTALL_QML@/mocks");
+     } else {
+-        paths << QStringLiteral("@LOMIRI_SYSTEM_SETTINGS_PRIVATE_PLUGINDIR@");
+-        paths << QStringLiteral("@SHELL_PLUGINDIR@");
++        paths << QString::fromUtf8("@LOMIRI_SYSTEM_SETTINGS_PRIVATE_PLUGINDIR@");
++        paths << QString::fromUtf8("@SHELL_PLUGINDIR@");
+         paths << buildDirectory() + QStringLiteral("/tests/mocks");
+     }
+     return paths;
+@@ -130,7 +132,7 @@
+ 
+ inline QString mockPluginsDir() {
+     if (isRunningInstalled()) {
+-        return installRoot() + QStringLiteral("@SHELL_INSTALL_QML@/mocks");
++        return installRoot() + QString::fromUtf8("@SHELL_INSTALL_QML@/mocks");
+     } else {
+         return buildDirectory() + QStringLiteral("/tests/mocks");
+     }
+--- /dev/null
++++ b/tests/installedpaths_test.cpp
+@@ -0,0 +1,26 @@
++#include <algorithm>
++#include <paths.h>
++#include <QFileInfo>
++#include <iostream>
++
++int main(int argc, char **argv)
++{
++    QCoreApplication application(argc, argv);
++    if (argc != 2 || !isRunningInstalled()) {
++        std::cerr << "Installed binary was mistaken for a development build\n";
++        return 1;
++    }
++    const QString expected = QDir::cleanPath(QString::fromLocal8Bit(argv[1]) + "/share/lomiri");
++    if (QDir::cleanPath(qmlDirectory()) != expected || !overrideImportPaths().isEmpty()) {
++        std::cerr << "Wrong installed QML/import directory: " << qmlDirectory().toStdString() << '\n';
++        return 1;
++    }
++    for (const char *name : { "/ShellApplication.qml", "/ErrorApplication.qml" }) {
++        if (!QFileInfo::exists(expected + name)) {
++            std::cerr << "Installed QML file missing: " << name << '\n';
++            return 1;
++        }
++    }
++    std::cout << "Installed QML paths verified: " << expected.toStdString() << '\n';
++    return 0;
++}
+--- /dev/null
++++ b/tests/installedpaths_relocation.py
+@@ -0,0 +1,30 @@
++"""Exercise real paths.h helpers before/after an ASCII store-reference rewrite."""
++import os
++from pathlib import Path
++import subprocess
++import sys
++import tempfile
++
++binary, prefix = map(Path, sys.argv[1:])
++env = os.environ.copy()
++for name in ('SNAP', 'LOMIRI_TESTING_DATADIR', 'LOMIRI_SOURCE_DIR', 'LOMIRI_BINARY_DIR'):
++    env.pop(name, None)
++subprocess.run([str(binary), str(prefix)], env=env, check=True)
++with tempfile.TemporaryDirectory(prefix='fp6-paths-') as temporary:
++    padding = len(str(prefix)) - len(temporary) - 1
++    assert padding > 0
++    relocated = Path(temporary) / ('r' * padding)
++    before, after = str(prefix).encode(), str(relocated).encode()
++    assert len(before) == len(after)
++    data = binary.read_bytes()
++    assert before in data, 'Configured paths must be ASCII references in the ELF'
++    target = relocated / 'bin' / binary.name
++    target.parent.mkdir(parents=True)
++    target.write_bytes(data.replace(before, after))
++    target.chmod(0o755)
++    qml = relocated / 'share/lomiri'
++    qml.mkdir(parents=True)
++    for name in ('ShellApplication.qml', 'ErrorApplication.qml'):
++        (qml / name).symlink_to(prefix / 'share/lomiri' / name)
++    subprocess.run([str(target), str(relocated)], env=env, check=True)
++print('Installed QML path relocation regression passed')

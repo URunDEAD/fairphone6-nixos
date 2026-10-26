@@ -1,0 +1,86 @@
+--- a/src/common/windowmodelnotifier.h
++++ b/src/common/windowmodelnotifier.h
+@@ -19,6 +19,7 @@
+ 
+ #include <QObject>
+ #include <QPoint>
++#include <QRect>
+ #include <QSize>
+ #include <QMutex>
+ 
+@@ -62,6 +63,9 @@
+     Mir::State state{Mir::UnknownState};
+ 
+     bool allowClientResize{true};
++
++    // Input-region updates may arrive before the queued MirSurface is created.
++    QRect inputBounds; // guarded by mutex
+ 
+     QMutex mutex;
+ };
+--- a/src/platforms/mirserver/wrappedwindowmanagementpolicy.cpp
++++ b/src/platforms/mirserver/wrappedwindowmanagementpolicy.cpp
+@@ -200,7 +200,13 @@
+ 
+         parameters.server_side_decorated() = false;
+ 
+-        parameters.userdata() = std::make_shared<ExtraWindowInfo>();
++        auto extraWindowInfo = std::make_shared<ExtraWindowInfo>();
++        if (parameters.input_shape().is_set()) {
++            for (const auto &rect : parameters.input_shape().value()) {
++                extraWindowInfo->inputBounds |= toQRect(rect);
++            }
++        }
++        parameters.userdata() = extraWindowInfo;
+ 
+         return parameters;
+     }
+@@ -229,6 +235,17 @@
+         }
+ 
+         MinimalWindowManager::handle_modify_window(windowInfo, modifications);
++
++        // Keep the latest region even before a SurfaceObserver has been registered.
++        if (modifications.input_shape().is_set()) {
++            QRect bounds;
++            for (const auto &rect : modifications.input_shape().value()) {
++                bounds |= toQRect(rect);
++            }
++            auto extraWindowInfo = qtmir::getExtraInfo(windowInfo);
++            QMutexLocker locker(&extraWindowInfo->mutex);
++            extraWindowInfo->inputBounds = bounds;
++        }
+ 
+         int surfaceType = modificationsClient.type().is_set() ? modificationsClient.type().value() : -1;
+ 
+--- a/src/modules/QtMir/Application/mirsurface.cpp
++++ b/src/modules/QtMir/Application/mirsurface.cpp
+@@ -266,7 +266,15 @@
+     connect(m_surfaceObserver.get(), &SurfaceObserver::shellChromeChanged, this, [&](MirShellChrome shell_chrome) {
+         setShellChrome(toQtShellChrome(shell_chrome));
+     });
+-    connect(m_surfaceObserver.get(), &SurfaceObserver::inputBoundsChanged, this, &MirSurface::setInputBounds);
++    connect(m_surfaceObserver.get(), &SurfaceObserver::inputBoundsChanged, this, [this]() {
++        QRect bounds;
++        {
++            QMutexLocker locker(&m_extraInfo->mutex);
++            bounds = m_extraInfo->inputBounds;
++        }
++        // A queued notification can predate construction; always use the latest region.
++        setInputBounds(bounds);
++    });
+     connect(m_surfaceObserver.get(), &SurfaceObserver::confinesMousePointerChanged, this, &MirSurface::confinesMousePointerChanged);
+     connect(m_surfaceObserver.get(), &SurfaceObserver::resized, this, [&](QSize const &size){
+         m_size = size;
+@@ -277,6 +285,11 @@
+     });
+ 
+     m_surfaceObserver->setListener(this);
++
++    {
++        QMutexLocker locker(&m_extraInfo->mutex);
++        m_inputBounds = m_extraInfo->inputBounds;
++    }
+ 
+     connect(session, &SessionInterface::stateChanged, this, [this]() {
+         if (clientIsRunning() && m_pendingResize.isValid()) {

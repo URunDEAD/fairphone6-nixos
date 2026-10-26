@@ -1,0 +1,14 @@
+--- a/plugins/CMakeLists.txt	2026-10-24 19:51:17.100457878 +0300
++++ b/plugins/CMakeLists.txt	2026-10-24 19:51:17.138100039 +0300
+@@ -1,6 +1,9 @@
++# FP6 (NixOS, no libhybris): About and Brightness only need property_get(),
++# which the FP6 build provides through a small header-only shim. NFC needs
++# Sailfish nfcd and stays tied to the real libandroid-properties.
++add_subdirectory(about)
++add_subdirectory(brightness)
+ if(ANDR_PROP_FOUND)
+-    add_subdirectory(about)
+-    add_subdirectory(brightness)
+     add_subdirectory(nfc)
+ endif()
+ add_subdirectory(background)

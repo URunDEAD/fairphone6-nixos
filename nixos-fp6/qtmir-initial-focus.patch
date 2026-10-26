@@ -1,0 +1,16 @@
+diff --git a/src/platforms/mirserver/screenplatformwindow.cpp b/src/platforms/mirserver/screenplatformwindow.cpp
+index 14e70a0..974fe2a 100644
+--- a/src/platforms/mirserver/screenplatformwindow.cpp
++++ b/src/platforms/mirserver/screenplatformwindow.cpp
+@@ -89,6 +89,11 @@ void ScreenPlatformWindow::setVisible(bool visible)
+ {
+     DEBUG_MSG << "(visible=" << visible << ")";
+     QPlatformWindow::setVisible(visible);
++    // addWindow() may activate the screen before this window is marked primary.
++    // Request focus once construction is complete so input contexts get a window.
++    if (visible) {
++        requestActivateWindow();
++    }
+ }
+ 
+ void ScreenPlatformWindow::setGeometry(const QRect &rect)

@@ -1,0 +1,65 @@
+--- a/src/modules/QtMir/Application/mirsurfaceitem.cpp	2026-10-26 15:11:38.646147939 +0200
++++ b/src/modules/QtMir/Application/mirsurfaceitem.cpp	2026-10-26 15:12:00.357596860 +0200
+@@ -373,23 +373,47 @@
+     }
+     
+     if (m_fillMode == PadOrCrop) {
+-        const QSize &textureSize = texture->textureSize();
+-
+-        QRectF targetRect;
+-        targetRect.setWidth(qMin(width(), static_cast<qreal>(textureSize.width())));
+-        targetRect.setHeight(qMin(height(), static_cast<qreal>(textureSize.height())));
+-
+-        // x/y from extent is offset
+-        auto r = subtextures[0].extent;
+-        targetRect.setX(r.x());
+-        targetRect.setY(r.y());
++        // fp6: crop in surface (logical) coordinates instead of buffer pixels.
++        // Upstream compared the item size with texture->textureSize(), which
++        // is only right for buffer scale 1: a scale-3 client (1116x2412
++        // buffer for a 372x804 surface) was cut to its top-left ninth. Each
++        // renderable's extent is its rect in surface coordinates (relative to
++        // the window geometry, so a CSD shadow margin has a negative offset).
++        // Draw every renderable 1:1 at its extent, clipped to the item: at
++        // item size == surface size that is the whole window (minus anything
++        // outside the window geometry), and when the item is smaller (the
++        // spread's square card) the top of the window is shown with its own
++        // aspect ratio, like upstream. Subsurfaces are clipped the same way,
++        // so they stay aligned with the main surface.
++        const QRectF itemRect(0, 0, width(), height());
++        auto cropNode = [&itemRect](QSGDefaultInternalImageNode *n, QRectF extent, const QSize &textureSize) {
++            if (extent.width() <= 0 || extent.height() <= 0)
++                extent.setSize(QSizeF(textureSize));
++            const QRectF visible = extent.intersected(itemRect);
++            if (visible.isEmpty() || extent.width() <= 0 || extent.height() <= 0) {
++                n->setSubSourceRect(QRectF(0, 0, 0, 0));
++                n->setTargetRect(QRectF());
++                n->setInnerTargetRect(QRectF());
++                return;
++            }
++            n->setSubSourceRect(QRectF((visible.x() - extent.x()) / extent.width(),
++                                       (visible.y() - extent.y()) / extent.height(),
++                                       visible.width() / extent.width(),
++                                       visible.height() / extent.height()));
++            n->setTargetRect(visible);
++            n->setInnerTargetRect(visible);
++        };
+ 
+-        qreal u = targetRect.width() / textureSize.width();
+-        qreal v = targetRect.height() / textureSize.height();
+-        node->setSubSourceRect(QRectF(0, 0, u, v));
++        cropNode(node, subtextures[0].extent, texture->textureSize());
+ 
+-        node->setTargetRect(targetRect);
+-        node->setInnerTargetRect(targetRect);
++        // Child node i belongs to subtextures[i + 1] (see the loop above).
++        const int subCount = qMin(node->childCount(), static_cast<int>(subtextures.size()) - 1);
++        for (int i = 0; i < subCount; ++i) {
++            auto *subnode = static_cast<QSGDefaultInternalImageNode*>(node->childAtIndex(i));
++            const auto &sub = subtextures[i + 1];
++            cropNode(subnode, sub.extent, sub.texture ? sub.texture->textureSize() : QSize());
++            subnode->update();
++        }
+     } else {
+         // Stretch
+         const QSize &textureSize = texture->textureSize();

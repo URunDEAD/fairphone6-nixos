@@ -1,0 +1,189 @@
+--- /dev/null
++++ b/src/common/untrackedclientcommand.h
+@@ -0,0 +1,14 @@
++#ifndef QTMIR_UNTRACKEDCLIENTCOMMAND_H
++#define QTMIR_UNTRACKEDCLIENTCOMMAND_H
++#include <QRegularExpression>
++#include <QString>
++namespace qtmir {
++inline bool isUntrackedClientCommand(const QString &command)
++{
++    // Keyboard services and WebKit helpers are not independently managed apps.
++    static const QRegularExpression pattern(QStringLiteral(
++        "((^|/)(maliit6?-server|maliit-keyboard)|qt5/libexec/QtWebProcess)$"));
++    return pattern.match(command).hasMatch();
++}
++}
++#endif
+--- a/src/modules/QtMir/Application/application_manager.cpp
++++ b/src/modules/QtMir/Application/application_manager.cpp
+@@ -1,3 +1,4 @@
++#include "untrackedclientcommand.h"
+ /*
+  * Copyright (C) 2013-2017 Canonical Ltd.
+  *
+@@ -649,11 +650,8 @@
+         return;
+     }
+ 
+-    // We want to match both "maliit-server" and "/usr/bin/maliit-server"
+-    QRegularExpression isMaliitOrQtWebProess(
+-        QStringLiteral("((^|/)maliit6?-server|qt5/libexec/QtWebProcess)$"));
+-
+-    if (isMaliitOrQtWebProess.match(argv0).hasMatch()) {
++    // Standalone maliit-keyboard has the same service lifecycle as maliit-server.
++    if (qtmir::isUntrackedClientCommand(argv0)) {
+         authorized = true;
+         return;
+     }
+--- a/src/modules/QtMir/Application/session.cpp
++++ b/src/modules/QtMir/Application/session.cpp
+@@ -204,6 +204,12 @@
+ 
+ void Session::registerSurface(MirSurfaceInterface *newSurface)
+ {
++    // Input-method windows are managed by the shell's dedicated input-method
++    // path. Hiding one destroys its Wayland surface, but must not make the
++    // application lifecycle stop the persistent keyboard service.
++    if (newSurface->type() == Mir::InputMethodType)
++        return;
++
+     DEBUG_MSG << "(surface=" << newSurface << ")";
+ 
+     // Only notify QML of surface creation once it has drawn its first frame.
+--- a/src/modules/QtMir/Application/CMakeLists.txt
++++ b/src/modules/QtMir/Application/CMakeLists.txt
+@@ -117,3 +117,17 @@
+ # install
+ add_qml_plugin(QtMir.Application 0.1 QtMir/Application TARGETS qtmirapplicationplugin)
+ install(FILES com.canonical.qtmir.gschema.xml DESTINATION ${CMAKE_INSTALL_DATADIR}/glib-2.0/schemas)
++
++# This focused test needs no removed Mir2 mirtest headers or compositor.
++option(QTMIR_INPUTMETHOD_LIFECYCLE_TEST "Build the input-method lifecycle regression" OFF)
++if(QTMIR_INPUTMETHOD_LIFECYCLE_TEST)
++    add_executable(qtmir-inputmethod-lifecycle-test
++        ${CMAKE_SOURCE_DIR}/tests/inputmethod_lifecycle_test.cpp
++        ${CMAKE_SOURCE_DIR}/tests/framework/fake_mirsurface.cpp)
++    target_include_directories(qtmir-inputmethod-lifecycle-test PRIVATE
++        ${CMAKE_CURRENT_SOURCE_DIR}
++        ${CMAKE_SOURCE_DIR}/tests/framework
++        ${CMAKE_SOURCE_DIR}/src/modules)
++    target_link_libraries(qtmir-inputmethod-lifecycle-test
++        qtmirapplicationplugin Qt5::Test)
++endif()
+--- a/tests/framework/fake_mirsurface.h
++++ b/tests/framework/fake_mirsurface.h
+@@ -21,6 +21,7 @@
+ #include <QtMir/Application/mirsurfacelistmodel.h>
+ 
+ #include <QSharedPointer>
++#include <QMutex>
+ #include <QSGTexture>
+ #include <QPointer>
+ 
+@@ -111,7 +112,8 @@
+     // methods called from the rendering (scene graph) thread:
+     QSharedPointer<QSGTexture> texture(qintptr) override;
+     QSGTexture *weakTexture(qintptr) const override;
+-    bool updateTexture(qintptr) override;
++    std::vector<SubSurfaceTexture> updateTexture(qintptr) override;
++    QMutex* textureMutex() override { return &m_textureMutex; }
+     unsigned int currentFrameNumber(qintptr) const override;
+     bool numBuffersReadyForCompositor(qintptr) override;
+     // end of methods called from the rendering (scene graph) thread
+@@ -169,6 +171,7 @@
+ private:
+     void updateVisibility();
+ 
++    QMutex m_textureMutex;
+     bool m_ready;
+     bool m_isFrameDropperRunning;
+     bool m_live;
+--- a/tests/framework/fake_mirsurface.cpp
++++ b/tests/framework/fake_mirsurface.cpp
+@@ -159,7 +159,7 @@
+ 
+ QSGTexture *FakeMirSurface::weakTexture(qintptr) const { return nullptr; }
+ 
+-bool FakeMirSurface::updateTexture(qintptr) { return true; }
++std::vector<MirSurfaceInterface::SubSurfaceTexture> FakeMirSurface::updateTexture(qintptr) { return {}; }
+ 
+ unsigned int FakeMirSurface::currentFrameNumber(qintptr) const { return 0; }
+ 
+--- /dev/null
++++ b/tests/inputmethod_lifecycle_test.cpp
+@@ -0,0 +1,74 @@
++/* SPDX-License-Identifier: LGPL-3.0-or-later */
++#include "session.h"
++#include "untrackedclientcommand.h"
++#include "fake_mirsurface.h"
++#include <QCoreApplication>
++#include <QLoggingCategory>
++#include <QSignalSpy>
++#include <iostream>
++#include <cstdlib>
++
++static void check(bool result, const char *message)
++{
++    if (!result) { std::cerr << message << '\n'; std::exit(1); }
++}
++
++class InputMethodSurface : public qtmir::FakeMirSurface
++{
++public:
++    Mir::Type type() const override { return Mir::InputMethodType; }
++};
++
++int main(int argc, char **argv)
++{
++    QCoreApplication application(argc, argv);
++    // No Mir session is needed: this exercises only surface registration/list
++    // bookkeeping, and no name(), lifecycle IPC or prompt manager operations.
++    QLoggingCategory::setFilterRules(QStringLiteral("qtmir.*=false"));
++    for (const char *command : { "maliit-server", "/usr/bin/maliit-server",
++                                "maliit6-server", "/nix/store/example/bin/maliit-keyboard",
++                                "maliit-keyboard", "/usr/bin/maliit-keyboard",
++                                "/usr/lib/qt5/libexec/QtWebProcess" }) {
++        check(qtmir::isUntrackedClientCommand(QString::fromUtf8(command)),
++              "Keyboard services must bypass ordinary application tracking");
++    }
++    for (const char *command : { "terminal", "/usr/bin/evil-maliit-keyboard",
++                                "/usr/bin/maliit-keyboard-helper",
++                                "/usr/lib/qt5/libexec/QtWebProcessHelper" }) {
++        check(!qtmir::isUntrackedClientCommand(QString::fromUtf8(command)),
++              "Ordinary application command must keep lifecycle tracking");
++    }
++    qtmir::Session session({}, {});
++    auto *inputMethod = new InputMethodSurface;
++    QSignalSpy inputReady(inputMethod, &qtmir::MirSurfaceInterface::ready);
++    QSignalSpy inputDestroyed(inputMethod, &QObject::destroyed);
++    QSignalSpy sessionEmpty(session.surfaceList(), &qtmir::MirSurfaceListModel::emptyChanged);
++    session.registerSurface(inputMethod);
++    inputMethod->setReady();
++    check(inputReady.count() == 1, "Dedicated input-method observers must still receive ready");
++    check(session.surfaceList()->isEmpty() && !session.hadSurface(),
++          "Input method must not enter the application surface lifecycle");
++    check(session.state() == qtmir::SessionInterface::Starting,
++          "Input method readiness must not start the ordinary surface lifecycle");
++    delete inputMethod;
++    check(inputDestroyed.count() == 1 && sessionEmpty.count() == 0 && !session.hadSurface(),
++          "Input method hide/destroy must not look like losing the last application surface");
++
++    auto *normal = new qtmir::FakeMirSurface;
++    session.registerSurface(normal);
++    check(session.surfaceList()->isEmpty(), "Ordinary surfaces still wait for their first frame");
++    normal->setReady();
++    check(session.surfaceList()->count() == 1 && session.hadSurface()
++          && session.state() == qtmir::SessionInterface::Running,
++          "Ordinary ready surface must retain normal application lifecycle behavior");
++    auto *secondInput = new InputMethodSurface;
++    session.registerSurface(secondInput);
++    secondInput->setReady();
++    delete secondInput;
++    check(session.surfaceList()->count() == 1 && session.surfaceList()->first() == normal,
++          "Hiding an input method must preserve an ordinary surface in the same session");
++    delete normal;
++    check(session.surfaceList()->isEmpty() && session.hadSurface(),
++          "Last ordinary surface destruction must retain existing close detection");
++    std::cout << "Input-method lifecycle regression passed\n";
++}
