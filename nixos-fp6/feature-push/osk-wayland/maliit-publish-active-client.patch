@@ -1,0 +1,86 @@
+diff --git a/connection/hybridinputcontextconnection.cpp b/connection/hybridinputcontextconnection.cpp
+index 8b6f82f..82389c5 100644
+--- a/connection/hybridinputcontextconnection.cpp
++++ b/connection/hybridinputcontextconnection.cpp
+@@ -10,12 +10,20 @@
+ #include "hybridinputcontextconnection.h"
+ #include "waylandinputmethodconnection.h"
+ 
++#include <QDir>
+ #include <QKeyEvent>
++#include <QSaveFile>
+ 
+ HybridInputContextConnection::HybridInputContextConnection(const QSharedPointer<Maliit::Server::DBus::Address> &address)
+     : DBusInputContextConnection(address)
+     , mWayland(new WaylandInputMethodConnection(this))
+ {
++    // FP6: tell the shell which kind of client is active (see publishActiveClient()).
++    connect(this, &MInputContextConnection::clientActivated,
++            this, &HybridInputContextConnection::publishActiveClient);
++    connect(this, &MInputContextConnection::activeClientDisconnected,
++            this, &HybridInputContextConnection::publishActiveClient);
++    publishActiveClient();
+ }
+ 
+ HybridInputContextConnection::~HybridInputContextConnection()
+@@ -27,6 +35,37 @@ bool HybridInputContextConnection::waylandActive() const
+     return activeConnection == WaylandInputMethodConnection::waylandConnectionId();
+ }
+ 
++/*
++ * $XDG_RUNTIME_DIR/maliit-active-client/state is "wayland", "dbus" or "none".
++ * D-Bus clients (the Qt5 Maliit plugin) get the keyboard rectangle through
++ * updateInputMethodArea() and make room themselves. Wayland text-input clients
++ * get no panel geometry from the compositor, so Lomiri resizes their window
++ * while the keyboard is shown for them. Written synchronously, before
++ * showInputMethod(), so the shell knows it when the panel appears.
++ */
++void HybridInputContextConnection::publishActiveClient()
++{
++    const QByteArray state = activeConnection == 0 ? QByteArrayLiteral("none")
++                           : waylandActive()       ? QByteArrayLiteral("wayland")
++                                                   : QByteArrayLiteral("dbus");
++    if (state == mPublishedClient)
++        return;
++
++    const QString runtimeDir = qEnvironmentVariable("XDG_RUNTIME_DIR");
++    if (runtimeDir.isEmpty())
++        return;
++    const QString dir = QDir(runtimeDir).filePath(QStringLiteral("maliit-active-client"));
++    if (!QDir().mkpath(dir))
++        return;
++
++    QSaveFile file(QDir(dir).filePath(QStringLiteral("state")));
++    if (!file.open(QIODevice::WriteOnly | QIODevice::Text))
++        return;
++    file.write(state + '\n');
++    if (file.commit())
++        mPublishedClient = state;
++}
++
+ void HybridInputContextConnection::sendPreeditString(const QString &string,
+                                                      const QList<Maliit::PreeditTextFormat> &preeditFormats,
+                                                      int replacementStart, int replacementLength,
+diff --git a/connection/hybridinputcontextconnection.h b/connection/hybridinputcontextconnection.h
+index 0ef68b1..52ef2a3 100644
+--- a/connection/hybridinputcontextconnection.h
++++ b/connection/hybridinputcontextconnection.h
+@@ -12,6 +12,7 @@
+ 
+ #include "dbusinputcontextconnection.h"
+ 
++#include <QByteArray>
+ #include <QScopedPointer>
+ 
+ class WaylandInputMethodConnection;
+@@ -49,8 +50,10 @@ public:
+ 
+ private:
+     bool waylandActive() const;
++    void publishActiveClient();
+ 
+     QScopedPointer<WaylandInputMethodConnection> mWayland;
++    QByteArray mPublishedClient;
+ };
+ 
+ #endif

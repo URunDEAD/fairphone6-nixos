@@ -1,0 +1,64 @@
+diff --git a/src/platforms/mirserver/wrappedwindowmanagementpolicy.cpp b/src/platforms/mirserver/wrappedwindowmanagementpolicy.cpp
+index 151352a..9da88bf 100644
+--- a/src/platforms/mirserver/wrappedwindowmanagementpolicy.cpp
++++ b/src/platforms/mirserver/wrappedwindowmanagementpolicy.cpp
+@@ -44,6 +44,37 @@ using namespace miral::toolkit;
+ 
+ using namespace mir::geometry;
+ 
++namespace {
++// fp6: the shell (Lomiri's InputMethod item) draws the input panel and makes
++// room for it (Stage.qml), so Mir must not lay the panel out as a window
++// attached to an output edge. miral recomputes the application zone whenever
++// an attached window changes state or size, or a window is moved to an output
++// (zwp_input_panel_surface_v1.set_toplevel, on every keyboard show), subtracts
++// the panel's exclusive rect, and re-places every Mir-maximized window (all
++// staged windows, see lomiri-staged-maximized.patch) to that zone by itself.
++// That overrides the geometry Lomiri asked for (e.g. 828 px tall under the
++// 24 px top panel, 10 ms after Lomiri resized the app above the keyboard),
++// uses a keyboard height off by the shell's panel offset, and also shrinks
++// Maliit D-Bus (Qt5) clients, which make room themselves (shrunk twice). So
++// the panel is "restored" instead of "attached", and gets no exclusive rect,
++// attached edges or output assignment.
++void detachInputPanel(miral::WindowSpecification &spec)
++{
++    if (spec.state().is_set() && spec.state().value() == mir_window_state_attached) {
++        spec.state() = mir_window_state_restored;
++    }
++    if (spec.exclusive_rect().is_set()) {
++        spec.exclusive_rect().consume();
++    }
++    if (spec.attached_edges().is_set()) {
++        spec.attached_edges().consume();
++    }
++    if (spec.output_id().is_set()) {
++        spec.output_id().consume();
++    }
++}
++} // namespace
++
+ namespace qtmir
+ {
+     std::shared_ptr<ExtraWindowInfo> getExtraInfo(const miral::WindowInfo &windowInfo) {
+@@ -134,6 +165,10 @@ namespace qtmir
+             }
+         }
+ 
++        if (surfaceType == mir_window_type_inputmethod) {
++            detachInputPanel(parameters);
++        }
++
+         bool hasInitialSize = false;
+         if (!requestParameters.parent().is_set() || requestParameters.parent().value().lock().get() == nullptr) {
+             QSize initialSize = InitialSurfaceSizes::get(appPid);
+@@ -268,6 +303,10 @@ namespace qtmir
+     {
+         miral::WindowSpecification modifications(modificationsClient);
+ 
++        if (windowInfo.type() == mir_window_type_inputmethod) {
++            detachInputPanel(modifications);
++        }
++
+         if (modifications.top_left().is_set() || modifications.aux_rect().is_set()
+             || modifications.placement_hints().is_set() || modifications.parent().is_set()) {
+             auto extraWindowInfo = getExtraInfo(windowInfo);

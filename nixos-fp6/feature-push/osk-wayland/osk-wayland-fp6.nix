@@ -31,6 +31,35 @@
 #    GTK_IM_MODULE=wayland (text-input-v3), see ../lomiri/firefox-lomiri-fp6.nix.
 # Landscape sizing patches from ../lomiri-polish are untouched (they patch
 # maliit-keyboard and lomiri, this patches maliit-framework only).
+#
+# Making room for the keyboard (resizeStagedApps, 2026-10-26; notes in
+# results/feature-push-20261024/osk-resize/README.md). Lomiri itself never
+# resized staged (phone) windows for the OSK. Qt5 Maliit D-Bus clients get the
+# keyboard rectangle and shrink their own content (UITK anchorToKeyboard).
+# Wayland text-input clients (Firefox/GTK3, GTK4 apps such as Fragments, Qt6
+# Morph) get no panel geometry from Mir (text-input-v3 has no such event, Mir
+# sends no text-input-v2 input_panel_state). What did change their size was
+# Mir: the fp6 input panel is an "attached" window with an exclusive rect and
+# an output (set_toplevel), and on every keyboard show/hide/resize miral
+# recomputes the application zone and re-places every Mir-maximized window
+# (all staged windows since lomiri-staged-maximized) itself, overriding
+# Lomiri's geometry: Firefox ended ~24 px short (its bottom toolbar stayed
+# under the keyboard), Qt5 apps were shrunk twice (the terminal showed
+# wallpaper between its content and the keyboard), and with only the
+# exclusive rect removed, windows were reset to the full 828 px (under the
+# shell's top panel) 10 ms after Lomiri had resized them.
+#  * qtmir-input-panel-detached.patch: the input panel is "restored" instead
+#    of "attached" and gets no exclusive rect, attached edges or output, so
+#    Mir never re-places windows for the keyboard; Lomiri (which draws the
+#    panel) owns the layout.
+#  * maliit-publish-active-client.patch: the hybrid connection writes
+#    $XDG_RUNTIME_DIR/maliit-active-client/state ("wayland"/"dbus"/"none")
+#    whenever the active client changes (before the panel is shown).
+#  * lomiri-staged-osk-resize.patch: Utils.InputMethodClient watches that
+#    file; while the keyboard is shown for a Wayland client, Stage.qml asks for
+#    the focused staged window's height minus the keyboard (shell
+#    coordinates). D-Bus (Qt5) clients keep the full height and resize their
+#    own content, as on Ubuntu Touch.
 { config, lib, pkgs, ... }:
 let
   cfg = config.hardware.fairphone6.oskWayland;
@@ -39,6 +68,16 @@ in {
     enable = lib.mkEnableOption ''
       the Maliit keyboard for Wayland text-input clients (Qt6 Morph, GTK
       Firefox) next to the D-Bus Maliit path used by the Qt5 apps'';
+    resizeStagedApps = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Shrink the focused staged (phone) window above the on-screen keyboard
+        while the keyboard serves a Wayland text-input client (GTK, Firefox,
+        Qt6), which cannot learn the keyboard size itself. Maliit D-Bus (Qt5)
+        clients keep resizing themselves.
+      '';
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -57,10 +96,24 @@ in {
       });
     }) ]) (lib.mkAfter [ (final: prev: {
       maliit-framework = prev.maliit-framework.overrideAttrs (old: {
-        patches = (old.patches or [ ]) ++ [ ./maliit-hybrid-dbus-wayland-connection.patch ];
+        patches = (old.patches or [ ]) ++ [ ./maliit-hybrid-dbus-wayland-connection.patch ]
+          ++ lib.optional cfg.resizeStagedApps ./maliit-publish-active-client.patch;
         passthru = (old.passthru or { }) // { fp6HybridConnection = true; };
       });
-    }) ]) ];
+    }) ])
+    # After lomiri-polish (mkOrder 2000) and gtk-lomiri (mkAfter): the patch
+    # was made on top of their Stage.qml / Utils plugin changes.
+    (lib.mkIf cfg.resizeStagedApps (lib.mkOrder 2100 [ (final: prev: {
+      lomiri = prev.lomiri.overrideScope (_lfinal: lprev: {
+        lomiri = lprev.lomiri.overrideAttrs (old: {
+          patches = (old.patches or [ ]) ++ [ ./lomiri-staged-osk-resize.patch ];
+          passthru = (old.passthru or { }) // { fp6StagedOskResize = true; };
+        });
+        qtmir = lprev.qtmir.overrideAttrs (old: {
+          patches = (old.patches or [ ]) ++ [ ./qtmir-input-panel-detached.patch ];
+        });
+      });
+    }) ])) ];
 
     systemd.user.services.lomiri-keyboard.environment.MALIIT_HYBRID_CONNECTION = "1";
 
@@ -69,6 +122,8 @@ in {
 
     system.build.fp6-osk-maliit-framework = pkgs.maliit-framework;
     system.build.fp6-osk-morph-browser = pkgs.lomiri-qt6.morph-browser;
+    system.build.fp6-osk-lomiri = pkgs.lomiri.lomiri;
+    system.build.fp6-osk-qtmir = pkgs.lomiri.qtmir;
 
     assertions = [
       {

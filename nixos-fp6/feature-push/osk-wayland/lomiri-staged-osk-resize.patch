@@ -1,0 +1,205 @@
+diff --git a/plugins/Utils/CMakeLists.txt b/plugins/Utils/CMakeLists.txt
+index 0afb73e..ea5bd9e 100644
+--- a/plugins/Utils/CMakeLists.txt
++++ b/plugins/Utils/CMakeLists.txt
+@@ -26,6 +26,7 @@ set(QMLPLUGIN_SRC
+     qlimitproxymodelqml.cpp
+     lomirisortfilterproxymodelqml.cpp
+     Timer.cpp
++    inputmethodclient.cpp
+     lomirimenumodelpaths.cpp
+     windowinputfilter.cpp
+     easingcurve.cpp
+diff --git a/plugins/Utils/inputmethodclient.cpp b/plugins/Utils/inputmethodclient.cpp
+new file mode 100644
+index 0000000..15961f9
+--- /dev/null
++++ b/plugins/Utils/inputmethodclient.cpp
+@@ -0,0 +1,45 @@
++/*
++ * Copyright (C) 2026 FP6 Mobile NixOS port
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; version 3.
++ */
++
++#include "inputmethodclient.h"
++
++#include <QDir>
++#include <QFile>
++#include <QFileInfo>
++
++InputMethodClient::InputMethodClient(QObject *parent)
++    : QObject(parent)
++{
++    const QString runtimeDir = qEnvironmentVariable("XDG_RUNTIME_DIR");
++    if (runtimeDir.isEmpty())
++        return;
++
++    // maliit-server replaces the file atomically (write + rename), so watch
++    // the directory: it reports the rename, and also the first write when
++    // maliit starts after the shell.
++    m_dirPath = QDir(runtimeDir).filePath(QStringLiteral("maliit-active-client"));
++    m_filePath = QDir(m_dirPath).filePath(QStringLiteral("state"));
++    QDir().mkpath(m_dirPath);
++    if (QFileInfo::exists(m_dirPath))
++        m_watcher.addPath(m_dirPath);
++    connect(&m_watcher, &QFileSystemWatcher::directoryChanged, this, &InputMethodClient::reload);
++    reload();
++}
++
++void InputMethodClient::reload()
++{
++    QString client;
++    QFile file(m_filePath);
++    if (!m_filePath.isEmpty() && file.open(QIODevice::ReadOnly | QIODevice::Text))
++        client = QString::fromLatin1(file.read(64)).trimmed();
++
++    if (client == m_client)
++        return;
++    m_client = client;
++    Q_EMIT clientChanged();
++}
+diff --git a/plugins/Utils/inputmethodclient.h b/plugins/Utils/inputmethodclient.h
+new file mode 100644
+index 0000000..22ee11e
+--- /dev/null
++++ b/plugins/Utils/inputmethodclient.h
+@@ -0,0 +1,49 @@
++/*
++ * Copyright (C) 2026 FP6 Mobile NixOS port
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; version 3.
++ */
++
++#pragma once
++
++#include <QFileSystemWatcher>
++#include <QObject>
++#include <QString>
++
++/*
++ * Which kind of client the on-screen keyboard is currently serving, as
++ * published by maliit-server (FP6 hybrid D-Bus + Wayland connection) in
++ * $XDG_RUNTIME_DIR/maliit-active-client/state: "wayland", "dbus" or "none".
++ *
++ * Maliit D-Bus clients (Qt5 apps with the Maliit input-context plugin) are
++ * told the keyboard rectangle and make room themselves. Wayland text-input
++ * clients (GTK3/GTK4 apps, Firefox, Qt6 apps) are not: Mir sends them no
++ * panel geometry (text-input-v3 has none at all), so the shell has to resize
++ * their window. client is "" when the file does not exist (no hybrid Maliit),
++ * and the shell then keeps upstream behaviour.
++ */
++class InputMethodClient : public QObject
++{
++    Q_OBJECT
++    Q_PROPERTY(QString client READ client NOTIFY clientChanged)
++    Q_PROPERTY(bool waylandTextInput READ waylandTextInput NOTIFY clientChanged)
++
++public:
++    explicit InputMethodClient(QObject *parent = nullptr);
++
++    QString client() const { return m_client; }
++    bool waylandTextInput() const { return m_client == QLatin1String("wayland"); }
++
++Q_SIGNALS:
++    void clientChanged();
++
++private:
++    void reload();
++
++    QString m_dirPath;
++    QString m_filePath;
++    QString m_client;
++    QFileSystemWatcher m_watcher;
++};
+diff --git a/plugins/Utils/plugin.cpp b/plugins/Utils/plugin.cpp
+index 3556443..eee68a6 100644
+--- a/plugins/Utils/plugin.cpp
++++ b/plugins/Utils/plugin.cpp
+@@ -33,6 +33,7 @@
+ #include "lomirimenumodelpaths.h"
+ #include "windowinputfilter.h"
+ #include "windowstatestorage.h"
++#include "inputmethodclient.h"
+ #include "constants.h"
+ #include "timezoneFormatter.h"
+ #include "applicationsfiltermodel.h"
+@@ -78,6 +79,7 @@ void UtilsPlugin::registerTypes(const char *uri)
+     qmlRegisterType<QLimitProxyModelQML>(uri, 0, 1, "LimitProxyModel");
+     qmlRegisterType<LomiriSortFilterProxyModelQML>(uri, 0, 1, "LomiriSortFilterProxyModel");
+     qmlRegisterType<LomiriMenuModelPaths>(uri, 0, 1, "LomiriMenuModelPaths");
++    qmlRegisterType<InputMethodClient>(uri, 0, 1, "InputMethodClient");
+     qmlRegisterType<WindowInputFilter>(uri, 0, 1, "WindowInputFilter");
+     qmlRegisterType<EasingCurve>(uri, 0, 1, "EasingCurve");
+     qmlRegisterSingletonType<WindowStateStorage>(uri, 0, 1, "WindowStateStorage", createWindowStateStorage);
+diff --git a/qml/Stage/Stage.qml b/qml/Stage/Stage.qml
+index b03b126..1c1c9f7 100644
+--- a/qml/Stage/Stage.qml
++++ b/qml/Stage/Stage.qml
+@@ -485,11 +485,27 @@ FocusScope {
+ 
+         readonly property real virtualKeyboardHeight: root.inputMethodRect.height
+ 
++        // fp6: the on-screen keyboard is up for a Wayland text-input client
++        // (GTK3/GTK4, Firefox, Qt6 apps). Mir tells those clients nothing
++        // about the input panel (text-input-v3 has no such event), so unlike
++        // Maliit D-Bus clients (Qt5 apps, which get the keyboard rectangle and
++        // make room themselves) they cannot avoid it; the staged stage shrinks
++        // the focused window above the keyboard instead, as the windowed stage
++        // already moves windows up.
++        readonly property bool oskResizesStagedApp: root.oskEnabled
++                                                    && inputMethodClient.waylandTextInput
++                                                    && root.inputMethodRect.height > 0
++
+         readonly property real windowDecorationHeight: units.gu(3)
+     }
+ 
+     Component.onCompleted: priv.updateMainAndSideStageIndexes()
+ 
++    // fp6: which kind of client maliit-server is serving (see priv.oskResizesStagedApp).
++    InputMethodClient {
++        id: inputMethodClient
++    }
++
+     Connections {
+         target: panelState
+         function onCloseClicked() { if (priv.focusedAppDelegate) { priv.focusedAppDelegate.close(); } }
+@@ -1064,6 +1080,16 @@ FocusScope {
+                 property real requestedWidth: windowedWidth
+                 property real requestedHeight: windowedHeight
+ 
++                // fp6: how much of this staged window the on-screen keyboard
++                // covers (focused window, Wayland text-input client only). The
++                // keyboard is docked at the bottom of the screen. At least
++                // units.gu(8) of the window is always kept.
++                readonly property real stagedOskInset: priv.oskResizesStagedApp && appDelegate.focus
++                    ? Math.max(0, Math.min(priv.virtualKeyboardHeight
++                                               - (appContainer.height - (root.availableDesktopArea.y + root.availableDesktopArea.height)),
++                                           root.availableDesktopArea.height - units.gu(8)))
++                    : 0
++
+                 // For both windowed and staged need to tell miral what screen we are on,
+                 // so we need to add the screen offset to the position we tell miral
+                 // FIXME: when proper multiscreen lands
+@@ -1706,7 +1732,7 @@ FocusScope {
+                         PropertyChanges {
+                             target: appDelegate
+                             requestedWidth: appContainer.width
+-                            requestedHeight: root.availableDesktopArea.height
++                            requestedHeight: root.availableDesktopArea.height - appDelegate.stagedOskInset
+                             restoreEntryValues: false
+                         }
+                         PropertyChanges {
+@@ -1743,7 +1769,7 @@ FocusScope {
+                         PropertyChanges {
+                             target: appDelegate
+                             requestedWidth: stageMaths.itemWidth
+-                            requestedHeight: root.availableDesktopArea.height
++                            requestedHeight: root.availableDesktopArea.height - appDelegate.stagedOskInset
+                             restoreEntryValues: false
+                         }
+                         PropertyChanges {
