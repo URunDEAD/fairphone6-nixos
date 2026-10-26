@@ -1,0 +1,31 @@
+# Pure Maps (Qt5 + Lomiri UI Toolkit flavour, PyOtherSide/Python, MapLibre GL).
+# Profile name = Lomiri app id; pure-maps-uri-handler (geo: links) uses the
+# same binary and therefore the same label.
+abi <abi/5.0>,
+include <tunables/global>
+
+profile io.github.rinigus.PureMaps /nix/store/*-pure-maps-*/bin/{.pure-maps-wrapped,pure-maps} flags=(attach_disconnected, mediate_deleted) {
+  include <abstractions/fp6-gui>
+  include <abstractions/fp6-audio>
+  include <abstractions/fp6-network-client>
+
+  /nix/store/*-pure-maps-*/bin/{.pure-maps-wrapped,pure-maps} mrix,
+  # Voice navigation engines (optional; run as subprocesses).
+  /nix/store/*/bin/{flite,mimic,espeak,espeak-ng,pico2wave} mrix,
+
+  owner @{HOME}/.config/pure-maps/ rw,
+  owner @{HOME}/.config/pure-maps/** rwkl,
+  owner @{HOME}/.cache/pure-maps/ rw,
+  owner @{HOME}/.cache/pure-maps/** rwkl,
+  owner @{HOME}/.local/share/pure-maps/ rw,
+  owner @{HOME}/.local/share/pure-maps/** rwkl,
+  owner @{HOME}/.config/fp6-location/{,**} r,
+  owner @{HOME}/.local/share/qtposition-geoclue2{,/**} rwk,
+  # QSettings / QML cache / MapLibre tile cache paths named after the app.
+  owner "@{HOME}/.config/Unknown Organization/{,**}" rwkl,
+  owner @{HOME}/.cache/io.github.rinigus.PureMaps/{,**} rwkl,
+  owner @{HOME}/.local/share/io.github.rinigus.PureMaps/{,**} rwkl,
+  owner /tmp/** rwk,
+
+  include if exists <local/io.github.rinigus.PureMaps>
+}

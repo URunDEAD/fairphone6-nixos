@@ -1,0 +1,16 @@
+  # fp6-audio: PipeWire / pipewire-pulse client (playback, and capture when the
+  # app asks for it -- capture permission lives in WirePlumber, not here).
+  abi <abi/5.0>,
+
+  owner @{run}/user/@{uid}/pipewire-0 rw,
+  owner @{run}/user/@{uid}/pipewire-0-manager rw,
+  owner @{run}/user/@{uid}/pulse/ r,
+  owner @{run}/user/@{uid}/pulse/native rw,
+  owner @{HOME}/.config/pulse/ r,
+  owner @{HOME}/.config/pulse/** rk,
+  owner @{HOME}/.config/pulse/cookie rwk,
+  owner @{HOME}/.cache/event-sound-cache.* rwk,
+  /dev/shm/pulse-shm-* rwk,
+  /dev/snd/ r,
+
+  include if exists <abstractions/fp6-audio.d>

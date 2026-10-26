@@ -37,6 +37,7 @@ let
       ./apps/fragments-fp6.nix
       ./apps/maps-fp6.nix
       ./netbird/netbird-fp6.nix
+      ./apparmor/apparmor-fp6.nix
       ({ lib, options, ... }: {
         # fp6-lomiri-powerd replaces the manual-only brightness bridge.
         # lomiri-gpu-fp6.nix restates it at mkOverride 10.
@@ -108,6 +109,11 @@ let
         # NetBird daemon (idle, not logged in) + NM VPN plugin: on/off from the
         # VPN switch in the network menu. See netbird/netbird-fp6.nix.
         hardware.fairphone6.netbird.enable = true;
+        # AppArmor profiles (named after the Lomiri app ids) for the browsers,
+        # Fragments, media player, Pure Maps, Messaging, Camera and nuntium;
+        # per-app modes in hardware.fairphone6.apparmor.apps.
+        # See results/feature-push-20261024/apparmor/README.md.
+        hardware.fairphone6.apparmor.enable = true;
         system.nixos.tags = [ "full-features" ];
       })
     ];

@@ -1,0 +1,74 @@
+  # fp6-nixos-base: what every confined FP6 program needs on NixOS.
+  #
+  # AppArmor checks the path AFTER symlink resolution, so everything that is
+  # reached through /run/current-system, /run/opengl-driver, /etc/static,
+  # ~/.nix-profile or /run/wrappers ends up as a /nix/store path. The store is
+  # root-owned, read-only and world-readable, so read + mmap of all of it is
+  # granted here; the confinement is on writes, home-directory data, devices,
+  # sockets, ptrace/signals and execution of other programs (exec is granted
+  # per profile, never here).
+  abi <abi/5.0>,
+
+  include <abstractions/base>
+  include <abstractions/nameservice>
+
+  /nix/store/ r,
+  /nix/store/** mr,
+  /run/current-system r,
+  /run/opengl-driver r,
+  /run/booted-system r,
+
+  # /etc: most entries resolve into the store (/etc/static); the rest are
+  # world-readable config (passwd, group, machine-id, localtime, resolv.conf).
+  /etc/ r,
+  /etc/** r,
+  deny /etc/shadow* r,
+  deny /etc/gshadow* r,
+  deny /etc/ssh/ssh_host_* r,
+  deny /etc/NetworkManager/system-connections/** r,
+
+  /var/lib/dbus/machine-id r,
+  /usr/bin/env r,
+
+  # Process introspection of itself (Qt, glib, Chromium, Firefox, GStreamer).
+  @{PROC}/ r,
+  owner @{PROC}/@{pid}/** r,
+  owner @{PROC}/@{pid}/fd/ r,
+  owner @{PROC}/@{pid}/task/@{tid}/comm rw,
+  owner @{PROC}/@{pid}/comm rw,
+  owner @{PROC}/@{pid}/oom_score_adj rw,
+  @{PROC}/sys/kernel/random/uuid r,
+  @{PROC}/sys/kernel/random/boot_id r,
+  @{PROC}/sys/kernel/osrelease r,
+  @{PROC}/sys/kernel/core_pattern r,
+  @{PROC}/sys/kernel/yama/ptrace_scope r,
+  @{PROC}/sys/kernel/pid_max r,
+  @{PROC}/sys/vm/overcommit_memory r,
+  @{PROC}/sys/fs/inotify/max_user_watches r,
+  @{PROC}/sys/net/core/somaxconn r,
+  @{PROC}/sys/net/ipv6/conf/all/disable_ipv6 r,
+  @{PROC}/cpuinfo r,
+  @{PROC}/meminfo r,
+  @{PROC}/stat r,
+  @{PROC}/version r,
+  @{PROC}/filesystems r,
+  @{PROC}/pressure/* r,
+  @{sys}/devices/system/cpu/ r,
+  @{sys}/devices/system/cpu/** r,
+  @{sys}/devices/system/node/ r,
+  @{sys}/devices/system/node/** r,
+  @{sys}/fs/cgroup/** r,
+  @{sys}/kernel/mm/transparent_hugepage/* r,
+
+  # The private /tmp of a session and per-user runtime directory listing.
+  /tmp/ r,
+  @{run}/user/@{uid}/ r,
+  /dev/shm/ r,
+
+  # Signals: the session (systemd --user, Lomiri, the launcher) may stop us.
+  signal (receive) peer=unconfined,
+  # Own threads/children of the same profile.
+  signal (send, receive) peer=@{profile_name},
+  ptrace (read) peer=@{profile_name},
+
+  include if exists <abstractions/fp6-nixos-base.d>

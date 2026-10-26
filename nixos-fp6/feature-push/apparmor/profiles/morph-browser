@@ -1,0 +1,37 @@
+# Morph Browser (Qt6 + QtWebEngine). Profile name = the Lomiri legacy app id
+# (desktop file id), so content-hub sees a label that matches APP_ID.
+abi <abi/5.0>,
+include <tunables/global>
+
+profile morph-browser /nix/store/*-morph-browser-*/bin/.{morph-browser,webapp-container}-wrapped flags=(attach_disconnected, mediate_deleted) {
+  include <abstractions/fp6-gui>
+  include <abstractions/fp6-audio>
+  include <abstractions/fp6-network-client>
+  include <abstractions/fp6-user-downloads>
+
+  owner @{HOME}/.local/share/morph-browser/ rw,
+  owner @{HOME}/.local/share/morph-browser/** rwkl,
+  owner @{HOME}/.cache/morph-browser/ rw,
+  owner @{HOME}/.cache/morph-browser/** rwkl,
+  owner @{HOME}/.config/morph-browser/ rw,
+  owner @{HOME}/.config/morph-browser/** rwkl,
+  # webapp-container instances
+  owner @{HOME}/.local/share/webapp-container/{,**} rwkl,
+  owner @{HOME}/.cache/webapp-container/{,**} rwkl,
+  owner @{HOME}/.config/webapp-container/{,**} rwkl,
+
+  # Chromium zygote/renderer/GPU/network-service processes. Chromium sets
+  # no_new_privs before exec'ing them, and AppArmor refuses a transition to a
+  # non-subset (child) profile under NNP, so they inherit this profile (ix).
+  # Morph runs QtWebEngine with --no-sandbox, so this profile is the only
+  # sandbox the renderers have.
+  /nix/store/*-qtwebengine-*/libexec/QtWebEngineProcess mrix,
+
+  # Firefox's profile is not Morph's business.
+  deny @{HOME}/.mozilla/** rw,
+
+  # Chromium shared-memory temp files.
+  owner /tmp/.org.chromium.Chromium.* rwk,
+
+  include if exists <local/morph-browser>
+}

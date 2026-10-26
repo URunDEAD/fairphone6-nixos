@@ -1,0 +1,44 @@
+# Lomiri Media Player (Qt5 QtMultimedia + GStreamer, Iris V4L2 hw decode).
+abi <abi/5.0>,
+include <tunables/global>
+
+profile lomiri-mediaplayer-app /nix/store/*-lomiri-mediaplayer-app-*/bin/{.lomiri-mediaplayer-app-wrapped,lomiri-mediaplayer-app} flags=(attach_disconnected, mediate_deleted) {
+  include <abstractions/fp6-gui>
+  include <abstractions/fp6-audio>
+  include <abstractions/fp6-network-client>
+  include <abstractions/fp6-user-media-read>
+
+  # Shell wrapper (hwdecode env) -> makeWrapper ELF launcher -> real binary.
+  /nix/store/*-lomiri-mediaplayer-app-*/bin/{.lomiri-mediaplayer-app-wrapped,lomiri-mediaplayer-app} mrix,
+  /nix/store/*-gstreamer-*/libexec/gstreamer-1.0/gst-plugin-scanner mrix,
+
+  # Iris stateful V4L2 decoders: v4l2h264dec/v4l2h265dec/v4l2vp9dec.
+  /dev/ r,
+  /dev/video* rw,
+  /dev/media* rw,
+  # GStreamer's v4l2 device provider also probes the camera sub-devices; a
+  # player has no business opening the camera pipeline.
+  deny /dev/v4l-subdev* rw,
+  @{sys}/class/video4linux/{,**} r,
+  @{sys}/devices/platform/**/video4linux/** r,
+  @{run}/udev/data/c81:* r,
+  @{run}/udev/data/c25[0-9]:* r,
+
+  owner @{HOME}/.cache/lomiri-mediaplayer-app/ rw,
+  owner @{HOME}/.cache/lomiri-mediaplayer-app/** rwk,
+  owner @{HOME}/.config/lomiri-mediaplayer-app/{,**} rwk,
+  owner @{HOME}/.local/share/lomiri-mediaplayer-app/{,**} rwk,
+  owner @{HOME}/.config/mediaplayer.ubports/{,**} rwk,
+  owner @{HOME}/.local/share/mediaplayer.ubports/{,**} rwk,
+  owner @{HOME}/.cache/mediaplayer.ubports/{,**} rwk,
+  # QSettings without an organization name / QQuickWindow shader cache.
+  owner "@{HOME}/.config/Unknown Organization/" rw,
+  owner "@{HOME}/.config/Unknown Organization/**" rwkl,
+  owner "@{HOME}/.cache/Media Player/" rw,
+  owner "@{HOME}/.cache/Media Player/**" rwkl,
+  # Files handed over by content-hub.
+  owner @{HOME}/.cache/lomiri-mediaplayer-app/HubIncoming/** r,
+  owner @{HOME}/.local/share/lomiri-mediaplayer-app/HubIncoming/** r,
+
+  include if exists <local/lomiri-mediaplayer-app>
+}

@@ -1,0 +1,9 @@
+  # fp6-user-downloads: save into ~/Downloads (and read the media folders,
+  # e.g. for upload pickers).
+  abi <abi/5.0>,
+
+  include <abstractions/fp6-user-media-read>
+  owner @{HOME}/Downloads/ rw,
+  owner @{HOME}/Downloads/** rwkl,
+
+  include if exists <abstractions/fp6-user-downloads.d>

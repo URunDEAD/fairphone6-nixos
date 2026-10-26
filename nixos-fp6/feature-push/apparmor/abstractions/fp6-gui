@@ -1,0 +1,121 @@
+  # fp6-gui: a Wayland (Mir/Lomiri or a headless sway) client with GPU
+  # rendering, Qt5/Qt6 + Lomiri UI Toolkit or GTK, Maliit, D-Bus, dconf.
+  abi <abi/5.0>,
+
+  include <abstractions/fp6-nixos-base>
+  include <abstractions/fonts>
+  include <abstractions/wayland>
+  include <abstractions/mesa>
+  include <abstractions/qt5>
+  include <abstractions/qt6>
+  include <abstractions/freedesktop.org>
+  include <abstractions/dconf>
+
+  # Wayland / Mir sockets (wayland-0 under Lomiri, wayland-N in a private sway).
+  owner @{run}/user/@{uid}/wayland-[0-9]* rw,
+  owner @{run}/user/@{uid}/mir_socket* rw,
+  # memfd-backed wl_shm pools and dma-buf heaps.
+  owner /memfd:* rw,
+  owner /dev/shm/* rwk,
+  /dev/dma_heap/ r,
+  /dev/dma_heap/* rw,
+  /dev/udmabuf rw,
+
+  # GPU (Adreno 810 via msm/freedreno): /dev/dri/card0, renderD128.
+  /dev/dri/ r,
+  /dev/dri/** rw,
+  @{sys}/dev/char/ r,
+  @{sys}/dev/char/226:* r,
+  @{sys}/devices/platform/** r,
+  @{sys}/bus/platform/** r,
+  @{sys}/class/drm/ r,
+  @{sys}/devices/virtual/drm/** r,
+  @{sys}/firmware/devicetree/base/** r,
+  @{sys}/devices/soc0/* r,
+  @{run}/udev/data/c226:* r,
+  @{run}/udev/data/+platform:* r,
+
+  # Session D-Bus (dbus-broker here: no D-Bus AppArmor mediation, the socket
+  # access is what matters) and the system bus.
+  owner @{run}/user/@{uid}/bus rw,
+  @{run}/dbus/system_bus_socket rw,
+  dbus (send, receive) bus=session,
+  dbus (send, receive) bus=system,
+  dbus (send, receive) bus=accessibility,
+  owner @{run}/user/@{uid}/at-spi/ r,
+  owner @{run}/user/@{uid}/at-spi/bus* rw,
+
+  # Maliit input method server socket (Qt5 D-Bus path + Wayland text-input).
+  owner @{run}/user/@{uid}/maliit-server rw,
+  owner @{run}/user/@{uid}/maliit-server/** rw,
+  owner @{run}/user/@{uid}/lomiri-input-panel-size r,
+  owner @{run}/user/@{uid}/fp6-maliit-software-fallback r,
+
+  # dconf / gsettings / GTK.
+  owner @{run}/user/@{uid}/dconf/ rw,
+  owner @{run}/user/@{uid}/dconf/user rw,
+  owner @{HOME}/.config/dconf/user r,
+  owner @{HOME}/.config/gtk-{3.0,4.0}/** r,
+  owner @{HOME}/.config/user-dirs.{dirs,locale} r,
+  owner @{HOME}/.config/mimeapps.list r,
+  owner @{HOME}/.local/share/applications/{,**} r,
+  owner @{HOME}/.local/share/icons/{,**} r,
+  owner @{HOME}/.local/share/mime/{,**} r,
+
+  # Qt / Lomiri UI Toolkit settings and caches.
+  owner @{HOME}/.config/QtProject.conf rw,
+  owner @{HOME}/.config/QtProject/{,**} r,
+  owner @{HOME}/.config/lomiri-ui-toolkit/ r,
+  owner @{HOME}/.config/lomiri-ui-toolkit/** rk,
+  owner @{HOME}/.compose-cache/ rw,
+  owner @{HOME}/.compose-cache/** rwk,
+  owner @{HOME}/.cache/ rw,
+  owner @{HOME}/.cache/qtshadercache-*/ rw,
+  owner @{HOME}/.cache/qtshadercache-*/** rwkl,
+  owner @{HOME}/.cache/QtProject/ rw,
+  owner @{HOME}/.cache/QtProject/** rwk,
+  owner @{HOME}/.cache/qt_compose_cache_* rwk,
+  owner @{HOME}/.cache/mesa_shader_cache/** rwk,
+  owner @{HOME}/.cache/mesa_shader_cache_db/** rwk,
+  owner @{HOME}/.cache/fontconfig/** rwk,
+  owner @{HOME}/.cache/thumbnails/{,**} r,
+  owner @{HOME}/.cache/gstreamer-1.0/{,**} rwk,
+  owner @{HOME}/.cache/gtk-4.0/{,**} rwk,
+  owner @{HOME}/.local/ r,
+  owner @{HOME}/.local/share/ r,
+  owner @{HOME}/.config/ r,
+  owner @{HOME}/ r,
+
+  # udev/sysfs enumeration by Qt and Chromium (input, video). Raw input
+  # devices stay closed: Wayland delivers input, /dev/input is a keylogging
+  # surface.
+  @{sys}/bus/ r,
+  @{sys}/class/ r,
+  @{sys}/class/input/ r,
+  deny /dev/input/* rw,
+  deny @{sys}/devices/virtual/input/** r,
+  deny @{sys}/devices/platform/**/input/** r,
+  deny @{run}/udev/data/+input:* r,
+  deny @{run}/udev/data/c13:* r,
+  # LTTng-UST tracepoints (lomiri-app-launch, content-hub libs): not needed.
+  deny /dev/shm/lttng-ust-wait-* rw,
+  deny /dev/tty rw,
+  # liborc (GStreamer) JIT wants a writable+executable temp file; refusing it
+  # keeps W^X and orc falls back to its (slower) emulation.
+  deny /tmp/orcexec.* rwm,
+  deny @{run}/user/@{uid}/orcexec.* rwm,
+  deny @{HOME}/orcexec.* rwm,
+
+  # Lomiri thumbnailer / url-dispatcher / content-hub clients use D-Bus only.
+  owner @{run}/user/@{uid}/systemd/{,**} r,
+
+  # Network-state checks by Qt (QNetworkInformation) and glib.
+  network netlink raw,
+  @{PROC}/@{pid}/net/** r,
+
+  # Unix sockets: Wayland, D-Bus, Maliit, PipeWire are reached by path above.
+  unix (create, connect, send, receive, getattr, getopt, setopt, shutdown) type=stream,
+  unix (create, connect, send, receive, getattr, getopt, setopt, shutdown) type=seqpacket,
+  unix (create, send, receive, getattr, getopt, setopt, bind) type=dgram,
+
+  include if exists <abstractions/fp6-gui.d>

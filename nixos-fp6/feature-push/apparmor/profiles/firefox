@@ -1,0 +1,49 @@
+# Firefox (GTK3/Wayland, mobile-config). Profile name = Lomiri app id.
+# Large and fast-moving: shipped in COMPLAIN mode by default.
+abi <abi/5.0>,
+include <tunables/global>
+
+profile firefox /nix/store/*-firefox-*/{bin/.firefox-wrapped,lib/firefox/firefox{,-bin}} flags=(attach_disconnected, mediate_deleted) {
+  include <abstractions/fp6-gui>
+  include <abstractions/fp6-audio>
+  include <abstractions/fp6-network-client>
+  include <abstractions/fp6-user-downloads>
+
+  # Content/GPU/RDD/socket processes, helper probes.
+  /nix/store/*-firefox-*/lib/firefox/{firefox,firefox-bin,glxtest,v4l2test,crashhelper,crashreporter,pingsender} mrix,
+  /nix/store/*-firefox-*/bin/.firefox-wrapped mrix,
+
+  owner @{HOME}/.mozilla/ rw,
+  owner @{HOME}/.mozilla/** rwkl,
+  owner @{HOME}/.cache/mozilla/ rw,
+  owner @{HOME}/.cache/mozilla/** rwkl,
+  owner /tmp/ r,
+  owner /tmp/** rwk,
+  owner @{run}/user/@{uid}/firefox*/{,**} rwk,
+  owner @{run}/user/@{uid}/.mutter-Xwaylandauth.* r,
+  owner /dev/shm/org.mozilla.* rwk,
+
+  # Firefox's own content sandbox (user namespaces + seccomp-bpf, chroot to
+  # an empty dir, drop capabilities).
+  userns,
+  capability sys_admin,
+  capability sys_chroot,
+  capability setuid,
+  capability setgid,
+  capability sys_ptrace,
+  ptrace (read, trace) peer=firefox,
+  signal (send, receive) peer=firefox,
+  @{PROC}/@{pid}/{uid_map,gid_map,setgroups} rw,
+
+  # Wayland proxy (Firefox >= 121) next to the compositor socket.
+  owner @{run}/user/@{uid}/wayland-proxy-* rw,
+  # Device enumeration + V4L2 stateful decoder probe (v4l2test, hw decode).
+  /dev/ r,
+  /dev/video* rw,
+  @{sys}/class/video4linux/{,**} r,
+  @{sys}/devices/platform/**/video4linux/** r,
+  @{run}/udev/data/c81:* r,
+  deny @{HOME}/.local/share/morph-browser/** rw,
+
+  include if exists <local/firefox>
+}

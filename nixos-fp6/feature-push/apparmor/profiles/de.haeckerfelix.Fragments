@@ -1,0 +1,30 @@
+# Fragments (GTK4/libadwaita BitTorrent client; embeds a transmission-daemon).
+# Profile name = Lomiri app id (desktop file id).
+abi <abi/5.0>,
+include <tunables/global>
+
+profile de.haeckerfelix.Fragments /nix/store/*-fragments-*/bin/{.fragments-wrapped,fragments} flags=(attach_disconnected, mediate_deleted) {
+  include <abstractions/fp6-gui>
+  include <abstractions/fp6-network-client>
+  include <abstractions/fp6-user-downloads>
+
+  # Peers connect in (TCP/uTP); local RPC between the UI and the daemon.
+  network inet stream,
+  network inet6 stream,
+  network inet dgram,
+  network inet6 dgram,
+
+  /nix/store/*-fragments-*/bin/{.fragments-wrapped,fragments} mrix,
+  /nix/store/*-transmission*/bin/transmission-daemon mrix,
+
+  owner @{HOME}/.config/fragments/ rw,
+  owner @{HOME}/.config/fragments/** rwkl,
+  owner @{HOME}/.local/share/fragments/ rw,
+  owner @{HOME}/.local/share/fragments/** rwkl,
+  owner @{HOME}/.cache/fragments/ rw,
+  owner @{HOME}/.cache/fragments/** rwkl,
+  owner /tmp/** rwk,
+
+
+  include if exists <local/de.haeckerfelix.Fragments>
+}

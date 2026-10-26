@@ -1,0 +1,30 @@
+# Lomiri Messaging (SMS/MMS UI). Talks to telepathy/history-service over D-Bus,
+# renders MMS attachments stored by history-service.
+abi <abi/5.0>,
+include <tunables/global>
+
+profile lomiri-messaging-app /nix/store/*-lomiri-messaging-app-*/bin/{.lomiri-messaging-app-wrapped,lomiri-messaging-app} flags=(attach_disconnected, mediate_deleted) {
+  include <abstractions/fp6-gui>
+  include <abstractions/fp6-audio>
+  include <abstractions/fp6-user-media-read>
+
+  /nix/store/*-lomiri-messaging-app-*/bin/{.lomiri-messaging-app-wrapped,lomiri-messaging-app} mrix,
+
+  owner @{HOME}/.config/messaging-app.ubports/ rw,
+  owner @{HOME}/.config/messaging-app.ubports/** rwkl,
+  owner @{HOME}/.cache/messaging-app.ubports/{,**} rwkl,
+  owner @{HOME}/.local/share/messaging-app.ubports/{,**} rwkl,
+  owner @{HOME}/.cache/lomiri-messaging-app/{,**} rwkl,
+  owner @{HOME}/.local/share/lomiri-messaging-app/{,**} rwkl,
+  # MMS attachments and the message/contact databases are read via D-Bus,
+  # attachments by path.
+  owner @{HOME}/.local/share/history-service/attachments/{,**} r,
+  owner @{HOME}/.local/share/evolution/addressbook/{,**} r,
+  owner "@{HOME}/.config/Unknown Organization/{,**}" rwkl,
+
+  # QTemporaryFile (O_TMPFILE + link) for attachment/vCard handling.
+  owner /tmp/ r,
+  owner /tmp/** rwkl,
+
+  include if exists <local/lomiri-messaging-app>
+}

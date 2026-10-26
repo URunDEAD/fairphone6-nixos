@@ -1,0 +1,21 @@
+  # fp6-network-client: outgoing IPv4/IPv6 TCP/UDP + TLS trust store.
+  abi <abi/5.0>,
+
+  include <abstractions/ssl_certs>
+  network inet stream,
+  network inet6 stream,
+  network inet dgram,
+  network inet6 dgram,
+  network netlink raw,
+  network netlink dgram,
+
+  @{run}/systemd/resolve/{,*} r,
+  @{run}/NetworkManager/{,*} r,
+  @{PROC}/@{pid}/net/** r,
+  @{PROC}/sys/net/** r,
+  /etc/ssl/** r,
+  /etc/pki/** r,
+  owner @{HOME}/.pki/ rw,
+  owner @{HOME}/.pki/** rwk,
+
+  include if exists <abstractions/fp6-network-client.d>

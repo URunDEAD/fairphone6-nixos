@@ -1,0 +1,27 @@
+# nuntium: MMS daemon (oFono push notifications -> fetch from the carrier's
+# MMSC over the MMS APN -> decode the MMS PDU -> hand to telepathy).
+# Parses untrusted network input. COMPLAIN by default (no SIM-side MMS test
+# in this round; the daemon only gets this profile when it is next started).
+abi <abi/5.0>,
+include <tunables/global>
+
+profile nuntium /nix/store/*-nuntium-*/bin/nuntium flags=(attach_disconnected, mediate_deleted) {
+  include <abstractions/fp6-nixos-base>
+  include <abstractions/fp6-network-client>
+
+  owner @{run}/user/@{uid}/bus rw,
+  @{run}/dbus/system_bus_socket rw,
+  dbus (send, receive) bus=session,
+  dbus (send, receive) bus=system,
+  unix (create, connect, send, receive, getattr, getopt, setopt, shutdown) type=stream,
+
+  owner @{HOME}/.local/share/nuntium/ rw,
+  owner @{HOME}/.local/share/nuntium/** rwk,
+  owner @{HOME}/.cache/nuntium/{,**} rwk,
+  owner @{HOME}/.config/nuntium/{,**} rwk,
+  owner /tmp/** rwk,
+  # Go runtime.
+  @{sys}/kernel/mm/transparent_hugepage/hpage_pmd_size r,
+
+  include if exists <local/nuntium>
+}

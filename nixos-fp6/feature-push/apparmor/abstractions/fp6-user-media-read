@@ -1,0 +1,12 @@
+  # fp6-user-media-read: read the user's media folders (open a file, play it).
+  abi <abi/5.0>,
+
+  owner @{HOME}/{Downloads,Music,Pictures,Videos,Documents}/ r,
+  owner @{HOME}/{Downloads,Music,Pictures,Videos,Documents}/** r,
+  # SD card (fp6SdAutomount) and other removable media.
+  /media/ r,
+  /media/** r,
+  @{run}/media/ r,
+  @{run}/media/** r,
+
+  include if exists <abstractions/fp6-user-media-read.d>

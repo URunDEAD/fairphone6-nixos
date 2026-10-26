@@ -1,0 +1,41 @@
+# Lomiri Camera (Qt5 QtMultimedia; also the barcode reader in --mode=barcode-reader).
+# COMPLAIN by default: the camera stack is still being developed and was not
+# exercised live in this round (camera agents own the sensor).
+abi <abi/5.0>,
+include <tunables/global>
+
+profile lomiri-camera-app /nix/store/*-lomiri-camera-app-*/bin/{.lomiri-camera-app-wrapped,lomiri-camera-app} flags=(attach_disconnected, mediate_deleted) {
+  include <abstractions/fp6-gui>
+  include <abstractions/fp6-audio>
+  include <abstractions/fp6-user-media-read>
+
+  /nix/store/*-lomiri-camera-app-*/bin/{.lomiri-camera-app-wrapped,lomiri-camera-app} mrix,
+  /nix/store/*-gstreamer-*/libexec/gstreamer-1.0/gst-plugin-scanner mrix,
+
+  # Camera + ISP + encoder nodes (CAMSS, sensor subdevs, Iris), DMA heaps.
+  /dev/ r,
+  /dev/video* rw,
+  /dev/media* rw,
+  /dev/v4l-subdev* rw,
+  /dev/dma_heap/* rw,
+  @{sys}/class/video4linux/{,**} r,
+  @{sys}/devices/platform/**/video4linux/** r,
+  @{sys}/devices/platform/**/media*/** r,
+  @{sys}/bus/media/{,**} r,
+  @{run}/udev/data/c81:* r,
+  @{run}/udev/data/c2[0-9][0-9]:* r,
+
+  owner @{HOME}/Pictures/ rw,
+  owner @{HOME}/Pictures/** rwk,
+  owner @{HOME}/Videos/ rw,
+  owner @{HOME}/Videos/** rwk,
+  owner @{HOME}/.config/camera.ubports/{,**} rwk,
+  owner @{HOME}/.cache/camera.ubports/{,**} rwk,
+  owner @{HOME}/.local/share/camera.ubports/{,**} rwk,
+  owner @{HOME}/.config/fp6-camera/{,**} r,
+  owner @{run}/user/@{uid}/camera.ubports/{,**} rwk,
+  owner "@{HOME}/.config/Unknown Organization/{,**}" rwkl,
+  owner /tmp/** rwk,
+
+  include if exists <local/lomiri-camera-app>
+}
