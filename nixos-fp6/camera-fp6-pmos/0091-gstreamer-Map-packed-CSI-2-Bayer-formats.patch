@@ -1,0 +1,77 @@
+From 47eec4951f4752b36a5fe07f939ca15a3619b6ec Mon Sep 17 00:00:00 2001
+From: Paul Schuldesz <paulschuldesz@gmail.com>
+Date: Mon, 26 Oct 2026 18:20:01 +0200
+Subject: [PATCH] gstreamer: Map packed CSI-2 Bayer formats for raw streams
+
+The simple pipeline's raw stream on the FP6 sensors is only offered as
+SxxxxN10_CSI2P. libcamerasrc only knew unpacked Bayer, so a raw pad could
+not negotiate. Map the packed 10/12-bit formats to video/x-bayer with
+"<order>10p"/"<order>12p" names, put the configured line stride in
+the caps (Bayer buffers carry no GstVideoMeta) and leave the colorimetry
+of raw streams out.
+---
+ src/gstreamer/gstlibcamera-utils.cpp | 34 +++++++++++++++++++++++++++-
+ 1 file changed, 33 insertions(+), 1 deletion(-)
+
+diff --git a/src/gstreamer/gstlibcamera-utils.cpp b/src/gstreamer/gstlibcamera-utils.cpp
+index 6541d478..57d792ab 100644
+--- a/src/gstreamer/gstlibcamera-utils.cpp
++++ b/src/gstreamer/gstlibcamera-utils.cpp
+@@ -43,6 +43,15 @@ static const struct {
+ 	{ GST_VIDEO_FORMAT_ENCODED, formats::SGBRG16 },
+ 	{ GST_VIDEO_FORMAT_ENCODED, formats::SGRBG16 },
+ 	{ GST_VIDEO_FORMAT_ENCODED, formats::SRGGB16 },
++	/* MIPI CSI-2 packed (raw streams of the simple pipeline's sensors) */
++	{ GST_VIDEO_FORMAT_ENCODED, formats::SBGGR10_CSI2P },
++	{ GST_VIDEO_FORMAT_ENCODED, formats::SGBRG10_CSI2P },
++	{ GST_VIDEO_FORMAT_ENCODED, formats::SGRBG10_CSI2P },
++	{ GST_VIDEO_FORMAT_ENCODED, formats::SRGGB10_CSI2P },
++	{ GST_VIDEO_FORMAT_ENCODED, formats::SBGGR12_CSI2P },
++	{ GST_VIDEO_FORMAT_ENCODED, formats::SGBRG12_CSI2P },
++	{ GST_VIDEO_FORMAT_ENCODED, formats::SGRBG12_CSI2P },
++	{ GST_VIDEO_FORMAT_ENCODED, formats::SRGGB12_CSI2P },
+ 
+ 	/* Monochrome */
+ 	{ GST_VIDEO_FORMAT_GRAY8, formats::R8 },
+@@ -285,6 +294,19 @@ static const struct {
+ 	{ formats::SGBRG16, "gbrg16le" },
+ 	{ formats::SGRBG16, "grbg16le" },
+ 	{ formats::SRGGB16, "rggb16le" },
++	/*
++	 * MIPI CSI-2 packed: 4 pixels in 5 bytes (10 bit) or 2 pixels in 3
++	 * bytes (12 bit), MSBs first, then the LSBs. No GStreamer element
++	 * knows these; the names follow the 10le/12le ones.
++	 */
++	{ formats::SBGGR10_CSI2P, "bggr10p" },
++	{ formats::SGBRG10_CSI2P, "gbrg10p" },
++	{ formats::SGRBG10_CSI2P, "grbg10p" },
++	{ formats::SRGGB10_CSI2P, "rggb10p" },
++	{ formats::SBGGR12_CSI2P, "bggr12p" },
++	{ formats::SGBRG12_CSI2P, "gbrg12p" },
++	{ formats::SGRBG12_CSI2P, "grbg12p" },
++	{ formats::SRGGB12_CSI2P, "rggb12p" },
+ };
+ 
+ static const gchar *
+@@ -419,7 +441,17 @@ gst_libcamera_stream_configuration_to_caps(const StreamConfiguration &stream_cfg
+ 			  "height", G_TYPE_INT, stream_cfg.size.height,
+ 			  nullptr);
+ 
+-	if (stream_cfg.colorSpace) {
++	/*
++	 * Bayer data carries no GstVideoMeta (the format is ENCODED for
++	 * GStreamer): tell the consumer the line stride of the configured
++	 * stream (packed formats are usually padded).
++	 */
++	const bool bayer = gst_structure_has_name(s, "video/x-bayer");
++	if (bayer && stream_cfg.stride)
++		gst_structure_set(s, "stride", G_TYPE_INT,
++				  static_cast<gint>(stream_cfg.stride), nullptr);
++
++	if (stream_cfg.colorSpace && !bayer) {
+ 		GstVideoColorimetry colorimetry = colorimetry_from_colorspace(stream_cfg.colorSpace.value(), transfer);
+ 		g_autofree gchar *colorimetry_str = gst_video_colorimetry_to_string(&colorimetry);
+ 
+-- 
+2.54.0
+

@@ -313,6 +313,7 @@ struct _Fp6LibcameraSrc
   gboolean got_frame;
   gint restarts;
   struct _Fp6Manual *manual;    /* MANUAL CONTROLS section (fp6camera-manual.c) */
+  struct _Fp6Phase2 *p2;        /* PHASE 2 section (fp6camera-phase2.c) */
 };
 
 /* MANUAL CONTROLS section hooks (defined in fp6camera-manual.c) */
@@ -328,6 +329,20 @@ static void fp6m_detach (Fp6LibcameraSrc * self);
 static gboolean fp6m_set_property (Fp6LibcameraSrc * self, guint id,
     const GValue * value);
 static gboolean fp6m_get_property (Fp6LibcameraSrc * self, guint id,
+    GValue * value);
+
+/* PHASE 2 section hooks (defined in fp6camera-phase2.c) */
+typedef struct _Fp6Phase2 Fp6Phase2;
+static Fp6Phase2 *fp6p2_new (Fp6LibcameraSrc * self);
+static void fp6p2_free (Fp6LibcameraSrc * self);
+static void fp6p2_class_init (GObjectClass * oc);
+static void fp6p2_build (Fp6LibcameraSrc * self, GstElement * cam,
+    GstElement * crop, const gchar * camera_name, const Fp6CamEntry * e,
+    gint idx);
+static void fp6p2_clear (Fp6LibcameraSrc * self);
+static gboolean fp6p2_set_property (Fp6LibcameraSrc * self, guint id,
+    const GValue * value);
+static gboolean fp6p2_get_property (Fp6LibcameraSrc * self, guint id,
     GValue * value);
 
 enum
@@ -375,6 +390,7 @@ lsrc_clear (Fp6LibcameraSrc * self)
   GList *children = g_list_copy (GST_BIN_CHILDREN (self));
 
   fp6m_detach (self);           /* MANUAL CONTROLS */
+  fp6p2_clear (self);           /* PHASE 2 */
   gst_ghost_pad_set_target (GST_GHOST_PAD (self->ghost), NULL);
   g_mutex_lock (&self->wd_lock);
   self->cam = NULL;
@@ -680,6 +696,7 @@ lsrc_build (Fp6LibcameraSrc * self)
   gst_ghost_pad_set_target (GST_GHOST_PAD (self->ghost), pad);
   gst_object_unref (pad);
   fp6m_attach (self, cam, crop, idx);   /* MANUAL CONTROLS */
+  fp6p2_build (self, cam, crop, camera_name, e, idx);   /* PHASE 2 */
   self->built = TRUE;
   return TRUE;
 }
@@ -718,6 +735,8 @@ lsrc_set_property (GObject * object, guint id, const GValue * value,
 
   if (fp6m_set_property (self, id, value))      /* MANUAL CONTROLS */
     return;
+  if (fp6p2_set_property (self, id, value))     /* PHASE 2 */
+    return;
   switch (id) {
     case LSRC_PROP_DEVICE:
       if (GST_STATE (self) != GST_STATE_NULL) {
@@ -745,6 +764,8 @@ lsrc_get_property (GObject * object, guint id, GValue * value,
 
   if (fp6m_get_property (self, id, value))      /* MANUAL CONTROLS */
     return;
+  if (fp6p2_get_property (self, id, value))     /* PHASE 2 */
+    return;
   switch (id) {
     case LSRC_PROP_DEVICE:
       g_value_set_string (value, self->device ? self->device : "primary");
@@ -763,6 +784,7 @@ static void
 lsrc_finalize (GObject * object)
 {
   Fp6LibcameraSrc *self = FP6_LIBCAMERA_SRC (object);
+  fp6p2_free (self);            /* PHASE 2 */
   fp6m_free (self);             /* MANUAL CONTROLS */
   g_free (self->device);
   g_mutex_clear (&self->wd_lock);
@@ -790,6 +812,7 @@ fp6_libcamera_src_class_init (Fp6LibcameraSrcClass * klass)
           "Digital zoom (centre crop, applied between buffers)", 1.0f,
           G_MAXFLOAT, 1.0f, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
   fp6m_class_init (oc);         /* MANUAL CONTROLS */
+  fp6p2_class_init (oc);        /* PHASE 2 */
 
   gst_element_class_add_static_pad_template (ec, &lsrc_template);
   gst_element_class_set_static_metadata (ec, "FP6 libcamera source",
@@ -808,12 +831,18 @@ fp6_libcamera_src_init (Fp6LibcameraSrc * self)
   g_mutex_init (&self->wd_lock);
   g_cond_init (&self->wd_cond);
   self->manual = fp6m_new (self);       /* MANUAL CONTROLS */
+  self->p2 = fp6p2_new (self);  /* PHASE 2 */
 }
 
 /* ------------------------------------------------------------------------ */
 /* MANUAL CONTROLS (FP6 Phase 1 pro mode): separate file, same unit         */
 /* ------------------------------------------------------------------------ */
 #include "fp6camera-manual.c"
+
+/* ------------------------------------------------------------------------ */
+/* PHASE 2 (computational / standard features): separate file, same unit   */
+/* ------------------------------------------------------------------------ */
+#include "fp6camera-phase2.c"
 
 /* ------------------------------------------------------------------------ */
 /* fp6camerabinsrc: runtime subclass of wrappercamerabinsrc                 */

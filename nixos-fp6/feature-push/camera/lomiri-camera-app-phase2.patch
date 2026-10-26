@@ -1,0 +1,293 @@
+diff --git a/CameraApp/fp6procontrols.cpp b/CameraApp/fp6procontrols.cpp
+index 15d872b..6384da3 100644
+--- a/CameraApp/fp6procontrols.cpp
++++ b/CameraApp/fp6procontrols.cpp
+@@ -10,6 +10,8 @@
+ #include <QDateTime>
+ #include <QDebug>
+ #include <QDir>
++#include <QFile>
++#include <QFileInfo>
+ #include <QRegularExpression>
+ #include <QtMath>
+ 
+@@ -89,6 +91,15 @@ SETTER(setAnalysis, m_analysis, int)
+ SETTER(setZebraLevel, m_zebraLevel, int)
+ #undef SETTER
+ 
++void Fp6ProControls::setRaw(bool v)
++{
++    if (m_raw == v)
++        return;
++    m_raw = v;
++    m_rawRestartAsked = false;
++    changed();
++}
++
+ /* Push every setting that differs from the element's. */
+ void Fp6ProControls::sync(void *p)
+ {
+@@ -96,13 +107,18 @@ void Fp6ProControls::sync(void *p)
+     gint64 exp = 0;
+     gint iso = 0, kelvin = 0, zebra = 0;
+     gfloat ev = 0, focus = -1;
+-    gboolean ae = FALSE, awb = FALSE, af = FALSE, uw = FALSE;
++    gboolean ae = FALSE, awb = FALSE, af = FALSE, uw = FALSE, raw = FALSE;
+     guint an = 0;
+ 
+     g_object_get(obj, "exposure-us", &exp, "iso", &iso, "ev", &ev,
+                  "wb-kelvin", &kelvin, "ae-lock", &ae, "awb-lock", &awb,
+                  "af-lock", &af, "focus", &focus, "ultrawide", &uw,
+                  "analysis", &an, "zebra-level", &zebra, NULL);
++    if (g_object_class_find_property(G_OBJECT_GET_CLASS(obj), "raw")) {
++        g_object_get(obj, "raw", &raw, NULL);
++        if (bool(raw) != m_raw)
++            g_object_set(obj, "raw", gboolean(m_raw), NULL);
++    }
+ 
+     const gint64 wantExp = qMax<gint64>(0, qint64(m_exposureUs));
+     if (exp != wantExp)
+@@ -170,6 +186,38 @@ void Fp6ProControls::poll()
+     m_afState = afState;
+     m_hasFocus = hasFocus;
+     m_activeLens = QString::fromUtf8(lens ? lens : "");
++
++    /* Phase 2: RAW */
++    if (g_object_class_find_property(G_OBJECT_GET_CLASS(obj), "raw-active")) {
++        gboolean rawActive = FALSE;
++        gint rawState = 0;
++        gchar *rawResult = nullptr, *rawError = nullptr, *sensor = nullptr;
++        g_object_get(obj, "raw-active", &rawActive, "raw-state", &rawState,
++                     "raw-result", &rawResult, "raw-error", &rawError,
++                     "sensor", &sensor, NULL);
++        m_rawActive = rawActive;
++        m_sensor = QString::fromUtf8(sensor ? sensor : "");
++        if (rawState != m_rawState) {
++            if (rawState == 3 && rawResult && !m_rawPending.isEmpty()
++                    && m_rawPending == QString::fromUtf8(rawResult)) {
++                m_rawDone = m_rawPending;
++                m_rawPending.clear();
++                tryPairRaw();
++            } else if (rawState == 4 && !m_rawPending.isEmpty()) {
++                m_rawPending.clear();
++                Q_EMIT rawFailed(QString::fromUtf8(rawError ? rawError : "failed"));
++            }
++            m_rawState = rawState;
++        }
++        /* the raw stream is chosen when the pipeline is built */
++        if (bool(rawActive) != m_raw && !m_rawRestartAsked && m_stackState == StackIdle) {
++            m_rawRestartAsked = true;
++            Q_EMIT restartNeeded();
++        }
++        g_free(rawResult);
++        g_free(rawError);
++        g_free(sensor);
++    }
+     Q_EMIT readoutChanged();
+ 
+     if (serial != m_analysisSerial) {
+@@ -301,6 +349,52 @@ ACTION(continueStack, "stack-continue")
+ ACTION(cancelStack, "stack-cancel")
+ #undef ACTION
+ 
++bool Fp6ProControls::captureRaw(const QString &photoDirectory, int rotate)
++{
++    GObject *obj = static_cast<GObject *>(element());
++    if (!obj)
++        return false;
++    const QString dir = QDir(photoDirectory).filePath(QStringLiteral("RAW"));
++    QDir().mkpath(dir);
++    const QString path = QDir(dir).filePath(
++        QStringLiteral("image%1.dng")
++            .arg(QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_hhmmsszzz"))));
++    gboolean ok = FALSE;
++    g_signal_emit_by_name(obj, "raw-capture", path.toUtf8().constData(),
++                          gint(((rotate % 360) + 360) % 360), &ok);
++    g_object_unref(obj);
++    if (ok) {
++        m_rawPending = path;
++        m_rawDone.clear();
++        m_rawJpeg.clear();
++    }
++    return ok;
++}
++
++void Fp6ProControls::pairRaw(const QString &jpegPath)
++{
++    if (m_rawPending.isEmpty() && m_rawDone.isEmpty())
++        return;
++    m_rawJpeg = jpegPath;
++    tryPairRaw();
++}
++
++/* both the DNG and the JPEG exist: give the DNG the JPEG's name (a DNG
++   whose JPEG never comes keeps its own timestamp name) */
++void Fp6ProControls::tryPairRaw()
++{
++    if (m_rawDone.isEmpty() || m_rawJpeg.isEmpty())
++        return;
++    QString path = m_rawDone;
++    const QString target = QDir(QFileInfo(m_rawDone).absolutePath())
++        .filePath(QFileInfo(m_rawJpeg).completeBaseName() + QStringLiteral(".dng"));
++    if (target != m_rawDone && !QFile::exists(target) && QFile::rename(m_rawDone, target))
++        path = target;
++    m_rawDone.clear();
++    m_rawJpeg.clear();
++    Q_EMIT rawSaved(path);
++}
++
+ double Fp6ProControls::parseShutter(const QString &text) const
+ {
+     QString t = text.trimmed().toLower().remove(QLatin1Char(' '));
+diff --git a/CameraApp/fp6procontrols.h b/CameraApp/fp6procontrols.h
+index 434a709..e1a7fce 100644
+--- a/CameraApp/fp6procontrols.h
++++ b/CameraApp/fp6procontrols.h
+@@ -62,6 +62,13 @@ class Fp6ProControls : public QObject
+     Q_PROPERTY(int stackDarkFrames READ stackDarkFrames NOTIFY stackChanged)
+     Q_PROPERTY(double stackElapsedMs READ stackElapsedMs NOTIFY stackChanged)
+ 
++    /* Phase 2: RAW (DNG next to the JPEG); "raw" takes effect when the
++       camera restarts (restartNeeded) */
++    Q_PROPERTY(bool raw READ raw WRITE setRaw NOTIFY settingsChanged)
++    Q_PROPERTY(bool rawActive READ rawActive NOTIFY readoutChanged)
++    Q_PROPERTY(int rawState READ rawState NOTIFY readoutChanged)
++    Q_PROPERTY(QString sensor READ sensor NOTIFY readoutChanged)
++
+ public:
+     enum StackState { StackIdle = 0, StackSettle, StackLight, StackWaitDark,
+                       StackDark, StackSaving, StackDone, StackError };
+@@ -116,6 +123,12 @@ public:
+     int stackDarkFrames() const { return m_stackDark; }
+     double stackElapsedMs() const;
+ 
++    bool raw() const { return m_raw; }
++    void setRaw(bool v);
++    bool rawActive() const { return m_rawActive; }
++    int rawState() const { return m_rawState; }
++    QString sensor() const { return m_sensor; }
++
+     Q_INVOKABLE void triggerAutofocus(double x = -1, double y = -1);
+     Q_INVOKABLE bool startStack(const QString &directory, double totalUs, int mode,
+                                 bool darkFrame, int orientation, int quality = 95);
+@@ -126,6 +139,12 @@ public:
+     Q_INVOKABLE double parseShutter(const QString &text) const;
+     Q_INVOKABLE QString formatShutter(double us) const;
+ 
++    /* RAW: DNG of the next raw frame into <photoDirectory>/RAW; rotate is
++       the clockwise display rotation (as for startStack). pairRaw() names
++       it after the JPEG the same shot produced. */
++    Q_INVOKABLE bool captureRaw(const QString &photoDirectory, int rotate);
++    Q_INVOKABLE void pairRaw(const QString &jpegPath);
++
+     /* overlay image for the "fp6pro" image provider */
+     static QImage overlayImage();
+ 
+@@ -139,6 +158,10 @@ Q_SIGNALS:
+     void stackChanged();
+     void stackFinished(const QString &path);
+     void stackFailed(const QString &error);
++    void rawSaved(const QString &path);
++    void rawFailed(const QString &error);
++    /* a setting needs the camera pipeline rebuilt (Unloaded -> Active) */
++    void restartNeeded();
+ 
+ private Q_SLOTS:
+     void poll();
+@@ -147,6 +170,7 @@ private:
+     void *element() const;           /* GObject*, new reference, or nullptr */
+     void sync(void *obj);
+     void changed();
++    void tryPairRaw();
+ 
+     QTimer m_timer;
+     bool m_available = false;
+@@ -175,6 +199,10 @@ private:
+     int m_stackState = 0, m_stackFrames = 0, m_stackTarget = 0, m_stackDark = 0;
+     double m_stackFrameUs = 0;
+     qint64 m_stackStartMs = 0;
++
++    bool m_raw = false, m_rawActive = false, m_rawRestartAsked = false;
++    int m_rawState = 0;
++    QString m_sensor, m_rawPending, m_rawDone, m_rawJpeg;
+ };
+ 
+ class Fp6OverlayProvider : public QQuickImageProvider
+diff --git a/qml/Viewfinder/ViewFinderOverlay.qml b/qml/Viewfinder/ViewFinderOverlay.qml
+index b765ed6..9841648 100644
+--- a/qml/Viewfinder/ViewFinderOverlay.qml
++++ b/qml/Viewfinder/ViewFinderOverlay.qml
+@@ -89,6 +89,8 @@ Item {
+         property bool proZebra: false
+         property bool proPeaking: false
+         property bool proLevel: false
++        // FP6 phase 2
++        property bool proRaw: false         // RAW (DNG) next to the JPEG in Pro mode
+ 
+         Component.onCompleted: {
+             if (!photoResolutions) photoResolutions = {}
+@@ -138,6 +140,8 @@ Item {
+     Binding { target: camera.pro; property: "aeLock"; value: proActive && proPanel.aeLock }
+     Binding { target: camera.pro; property: "awbLock"; value: proActive && proPanel.awbLock }
+     Binding { target: camera.pro; property: "afLock"; value: proActive && proPanel.afLock }
++    // Phase 2: RAW+JPEG (the raw stream only runs while it is wanted)
++    Binding { target: camera.pro; property: "raw"; value: proActive && settings.proRaw }
+     Binding { target: camera.pro; property: "analysis"
+         value: !proActive ? 0 : ((settings.proHistogram ? 1 : 0) | (settings.proZebra ? 2 : 0)
+                                  | (settings.proPeaking ? 4 : 0)) }
+@@ -153,6 +157,16 @@ Item {
+             console.log("Long exposure failed: " + error);
+             PopupUtils.open(captureFailedDialogComponent);
+         }
++        onRawSaved: console.log("RAW saved as " + path)
++        onRawFailed: console.log("RAW failed: " + error)
++        onRestartNeeded: viewFinderOverlay.restartCamera()
++    }
++
++    /* Rebuild the camera pipeline (lens or raw stream change). */
++    function restartCamera() {
++        if (camera.cameraState != Camera.ActiveState || proStacking) return;
++        camera.cameraState = Camera.UnloadedState;
++        lensRestart.restart();
+     }
+ 
+     function photoDirectory() {
+@@ -1124,6 +1138,11 @@ Item {
+                 if (!main.contentExportMode) {
+                     shootFeedback.start();
+                 }
++                // FP6: RAW+JPEG in Pro mode, DNG of the same moment
++                if (viewFinderOverlay.proActive && settings.proRaw && camera.pro.rawActive
++                        && !main.contentExportMode) {
++                    camera.pro.captureRaw(viewFinderOverlay.photoDirectory(), (360 - orientation) % 360);
++                }
+                 camera.photoCaptureInProgress = true;
+                 camera.imageCapture.setMetadata("Orientation", orientation);
+                 camera.imageCapture.setMetadata("Date", new Date());
+diff --git a/qml/Viewfinder/ViewFinderView.qml b/qml/Viewfinder/ViewFinderView.qml
+index 6404053..0798d24 100644
+--- a/qml/Viewfinder/ViewFinderView.qml
++++ b/qml/Viewfinder/ViewFinderView.qml
+@@ -158,6 +158,7 @@ FocusScope {
+                 if (main.contentExportMode)
+                     viewFinderExportConfirmation.mediaPath = path;
+ 
++                camera.pro.pairRaw(path);   // FP6: name the DNG after this JPEG
+                 viewFinderView.photoTaken(path);
+                 metricPhotos.increment();
+                 console.log("Picture saved as " + path);
+diff --git a/qml/components/Fp6ProPanel.qml b/qml/components/Fp6ProPanel.qml
+index 7ef68d6..156d668 100644
+--- a/qml/components/Fp6ProPanel.qml
++++ b/qml/components/Fp6ProPanel.qml
+@@ -302,6 +302,10 @@ Item {
+                         selected: settings.proLevel; onClicked: settings.proLevel = !settings.proLevel }
+                     Fp6ProChip { title: i18n.tr("grid"); value: settings.gridEnabled ? i18n.tr("on") : i18n.tr("off")
+                         selected: settings.gridEnabled; onClicked: settings.gridEnabled = !settings.gridEnabled }
++                    // Phase 2: DNG next to the JPEG (Pictures/.../RAW/)
++                    Fp6ProChip { title: i18n.tr("format"); value: settings.proRaw ? "RAW+JPEG" : "JPEG"
++                        selected: settings.proRaw; highlighted: settings.proRaw && !pro.rawActive
++                        onClicked: settings.proRaw = !settings.proRaw }
+                     Fp6ProChip { value: i18n.tr("Reset all")
+                         onClicked: {
+                             settings.proExposureUs = 0; settings.proIso = 0; settings.proEv = 0;

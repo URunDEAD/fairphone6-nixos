@@ -42,6 +42,9 @@ in
     # fp6libcamerasrc (gst-fp6camera fp6camera-manual.c) -> libcamera
     # (camera-fp6-pmos/0090-fp6-manual-controls.patch).
     ./lomiri-camera-app-pro-mode.patch
+    # phase2: RAW+JPEG (DNG via fp6libcamerasrc's raw stream) and the
+    # computational modes; see results/feature-push-20261024/camera/phase2.
+    ./lomiri-camera-app-phase2.patch
   ];
   nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ pkg-config ];
   buildInputs = old.buildInputs ++ [ gstFp6Camera libcamera gst_all_1.gst-libav glib ];
