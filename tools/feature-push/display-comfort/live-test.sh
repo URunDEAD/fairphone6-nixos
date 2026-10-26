@@ -41,12 +41,17 @@ attach|setup)
   for k in color-scheme gtk-theme text-scaling-factor; do
     echo "$k=$(dconf read /org/gnome/desktop/interface/$k)"; done > $T/dconf.before
   gsettings get com.lomiri.Shell light-mode > $T/lightmode.before
+  dconf dump /com/fairphone6/display-comfort/ > $T/dc.before
+  rm -f $T/session.env.before; cp -p ~/.config/fp6-display-comfort/session.env $T/session.env.before 2>/dev/null || true
   if [ "$1" = attach ]; then
+    "$0" login
     # The running shell already has the filter (started by an earlier setup).
     tr '\0' '\n' < /proc/$(pgrep -f "lomiri --mode=full" | head -1)/environ | grep -q "$PLUGIN" \
       || { echo "running shell has no filter plugin"; kill "$(cat $P)"; rm -f $P; exit 7; }
-    systemd-run --user --unit=fp6-dc-test --collect $DAEMON/bin/fp6-display-comfort run >/dev/null
-    systemctl --user is-active fp6-dc-test
+    # The installed build runs fp6-display-comfort.service itself.
+    systemctl --user is-active -q fp6-display-comfort \
+      || systemd-run --user --unit=fp6-dc-test --collect $DAEMON/bin/fp6-display-comfort run >/dev/null
+    systemctl --user is-active fp6-display-comfort fp6-dc-test || true
     exit 0
   fi
   # Shell side: patched ShellScreen.qml + plugin + schema, fresh QML cache.
@@ -113,7 +118,12 @@ EOF
     ( set -a; . /dev/stdin <<EOF
 $(systemctl --user show-environment)
 EOF
-      set +a; export QML2_IMPORT_PATH=$(ldd /nix/store/2wwhdilq54vnf32a1815n19v902skmb6-qtdeclarative-5.15.19-dev/bin/qmlscene | sed -n 's|.*=> \(/nix/store/[^/]*-qtdeclarative-5.15.19\)/lib/libQt5Quick.so.*|\1|p')/lib/qt-5.15.19/qml
+      set +a
+      QD=$(ldd /nix/store/2wwhdilq54vnf32a1815n19v902skmb6-qtdeclarative-5.15.19-dev/bin/qmlscene | sed -n 's|.*=> \(/nix/store/[^/]*-qtdeclarative-5.15.19\)/lib/libQt5Quick.so.*|\1|p')
+      for d in /nix/store/*-qtdeclarative-5.15.19-bin; do
+        f=$d/lib/qt-5.15.19/qml/QtQuick/Window.2/libwindowplugin.so
+        [ -f $f ] && ldd $f | grep -q "$QD/lib" && export QML2_IMPORT_PATH=$d/lib/qt-5.15.19/qml && break
+      done
       export QT_PLUGIN_PATH=$WL/lib/qt-5.15.19/plugins
       setsid -f sh -c "echo \$\$ > $T/load.pid; exec /nix/store/2wwhdilq54vnf32a1815n19v902skmb6-qtdeclarative-5.15.19-dev/bin/qmlscene $T/load.qml >$T/load.log 2>&1" </dev/null )
     sleep 4; pgrep -af qmlscene | cut -c1-120
@@ -126,30 +136,78 @@ sample)
   # GPU time of the shell from DRM fdinfo (per drm-client-id), shell CPU,
   # load client frame rate, battery power (USB-powered phone: indicative only).
   s=$2; pid=$(pgrep -f "lomiri --mode=full" | head -1); B=/sys/class/power_supply/qcom-battmgr-bat
-  gpu() { for f in /proc/$pid/fdinfo/*; do awk '/^drm-client-id/ {c=$2} /^drm-engine-gpu/ {print c, $2}' $f 2>/dev/null; done | sort -u | awk '{t+=$2} END {print t}'; }
-  g0=$(gpu); t0=$(awk '{print $14+$15}' /proc/$pid/stat); f0=$(grep -c . $T/load.log 2>/dev/null || echo 0)
-  e=0; n=0
+  gpu() { for f in /proc/$pid/fdinfo/*; do awk '/^drm-client-id/ {c=$2} /^drm-engine-gpu/ {print c, $2}' $f 2>/dev/null; done | sort -u; }
+  gpu > $T/g0; t0=$(awk '{print $14+$15}' /proc/$pid/stat)
+  e=0; n=0; fq=0
   for i in $(seq 1 $s); do
-    c=$(cat $B/current_now); v=$(cat $B/voltage_now)
-    e=$(awk -v e=$e -v c=$c -v v=$v 'BEGIN{print e + (c<0?-c:c)/1e6*v/1e6}'); n=$((n+1)); sleep 1
+    c=$(cat $B/current_now); v=$(cat $B/voltage_now); f=$(cat /sys/class/devfreq/3d00000.gpu/cur_freq)
+    e=$(awk -v e=$e -v c=$c -v v=$v 'BEGIN{print e + (c<0?-c:c)/1e6*v/1e6}'); fq=$((fq + f / 1000000)); n=$((n+1)); sleep 1
   done
-  g1=$(gpu); t1=$(awk '{print $14+$15}' /proc/$pid/stat)
-  echo "shell GPU busy: $(awk -v a=$g0 -v b=$g1 -v s=$s 'BEGIN{printf "%.2f %% (%.2f ms per second)", (b-a)/s/1e7, (b-a)/s/1e6}')"
+  gpu > $T/g1; t1=$(awk '{print $14+$15}' /proc/$pid/stat)
+  # Per DRM client present in both samples (clients come and go with app buffers).
+  echo "shell GPU busy: $(awk -v s=$s 'NR==FNR {a[$1]=$2; next} ($1 in a) {d+=$2-a[$1]} END {printf "%.2f %% (%.2f ms per second)", d/s/1e7, d/s/1e6}' $T/g0 $T/g1)"
+  echo "GPU clock mean: $((fq / n)) MHz"
   echo "shell CPU: $(awk -v a=$t0 -v b=$t1 -v s=$s 'BEGIN{printf "%.1f %% of one core", (b-a)/s}')"
   echo "load client fps (last reports): $(grep fps $T/load.log 2>/dev/null | tail -2 | tr '\n' ' ')"
   echo "battery avg power: $(awk -v e=$e -v n=$n 'BEGIN{printf "%.3f W", e/n}') ($(cat $B/status), USB $(cat /sys/class/power_supply/qcom-battmgr-usb/online))"
   ;;
+login)
+  # Greeter -> session without a DM restart (horizontal drag opens the cover).
+  if ! pgrep -f "lomiri --mode=full" >/dev/null; then
+    sudo_ gdbus call --system -d com.canonical.Unity.Screen -o /com/canonical/Unity/Screen \
+      -m com.canonical.Unity.Screen.setScreenPowerMode on 1 >/dev/null 2>&1 || true
+    sleep 1
+    sudo_ python3 /tmp/fp6-dc-in/touch.py swipe 1000 1800 150 1800 300 >/dev/null
+    sleep 2
+    sudo_ python3 /tmp/phone-type.py "$FP6_PW" >/dev/null
+    for i in $(seq 1 40); do pgrep -f "lomiri --mode=full" >/dev/null && break; sleep 1; done
+    sleep 8
+  fi
+  pgrep -af "lomiri --mode=full" | cut -c1-80
+  ;;
+keepon)
+  # Hold a keepDisplayOn request (fp6-lomiri-powerd) while measuring.
+  if [ "$2" = start ]; then
+    PY=$(ps -eo args | sed -n 's|^\(/nix/store/[^ ]*python3\) .*fp6_lomiri_powerd.py.*|\1|p' | head -1)
+    setsid -f sh -c "echo \$\$ > $T/keepon.pid; exec $PY -c 'import dbus,time; b=dbus.SystemBus(); o=b.get_object(\"com.canonical.Unity.Screen\",\"/com/canonical/Unity/Screen\"); print(o.keepDisplayOn(dbus_interface=\"com.canonical.Unity.Screen\"), flush=True); time.sleep(900)' >$T/keepon.log 2>&1" </dev/null
+    sudo_ gdbus call --system -d com.canonical.Unity.Screen -o /com/canonical/Unity/Screen \
+      -m com.canonical.Unity.Screen.setScreenPowerMode on 1 >/dev/null 2>&1 || true
+    sleep 1; cat $T/keepon.log
+  else
+    [ -s $T/keepon.pid ] && kill "$(cat $T/keepon.pid)" 2>/dev/null || true
+    rm -f $T/keepon.pid
+  fi
+  ;;
+settings)
+  # System Settings > Display Comfort (installed build), main page + sub page taps.
+  ( set -a; . /dev/stdin <<EOF
+$(systemctl --user show-environment)
+EOF
+    set +a; export APP_ID=lomiri-system-settings
+    setsid -f sh -c "echo \$\$ > $T/lss.pid; exec lomiri-system-settings display-comfort >$T/lss.log 2>&1" </dev/null )
+  sleep 8; "$0" shot settings-main
+  shift
+  for xy in "$@"; do
+    sudo_ python3 /tmp/fp6-dc-in/touch.py tap ${xy%,*} ${xy#*,} wait 300; sleep 2.5; "$0" shot settings-$(echo $xy | tr , x)
+  done
+  [ -s $T/lss.pid ] && kill "$(cat $T/lss.pid)" 2>/dev/null || true
+  rm -f $T/lss.pid
+  grep -i "display-comfort\|qml" $T/lss.log | grep -iv "image://theme" | head -10 || true
+  ;;
 teardown)
   "$0" load stop || true
+  "$0" keepon stop || true
   systemctl --user stop fp6-dc-test 2>/dev/null || true
   dconf reset -f /com/fairphone6/display-comfort/
+  [ -s $T/dc.before ] && dconf load /com/fairphone6/display-comfort/ < $T/dc.before
   cp -p $T/theme.ini.before ~/.config/lomiri-ui-toolkit/theme.ini
   if [ "$(cat $T/gtk3.before)" = none ]; then rm -f ~/.config/gtk-3.0/settings.ini; else cp -p $T/gtk3.before ~/.config/gtk-3.0/settings.ini; fi
   while IFS='=' read -r k v; do
     if [ -z "$v" ]; then dconf reset /org/gnome/desktop/interface/$k; else dconf write /org/gnome/desktop/interface/$k "$v"; fi
   done < $T/dconf.before
   gsettings set com.lomiri.Shell light-mode "$(cat $T/lightmode.before)"
-  rm -f ~/.config/fp6-display-comfort/session.env; rmdir ~/.config/fp6-display-comfort 2>/dev/null || true
+  if [ -f $T/session.env.before ]; then cp -p $T/session.env.before ~/.config/fp6-display-comfort/session.env
+  else rm -f ~/.config/fp6-display-comfort/session.env; rmdir ~/.config/fp6-display-comfort 2>/dev/null || true; fi
   rm -f $DROPIN; systemctl --user daemon-reload
   sudo_ umount $LOMIRI/share/lomiri/ShellScreen.qml || true
   findmnt | grep -c ShellScreen || true
