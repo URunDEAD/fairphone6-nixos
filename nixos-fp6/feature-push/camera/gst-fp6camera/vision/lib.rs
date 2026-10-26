@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 //
-// fp6-vision: panorama (sweep tracking + cylindrical stitching) and
-// document scanning (page detection + perspective correction) for the FP6
-// camera (camera phase 2). No dependencies; built with plain rustc as a
+// fp6-vision: panorama (sweep tracking + cylindrical stitching) for the
+// FP6 camera (camera phase 2). No dependencies; built with plain rustc as a
 // static library with a small C ABI (fp6-vision.h) that fp6libcamerasrc
 // (C, GStreamer) calls. All images are 8-bit RGB, tightly packed rows
 // unless a stride is given.

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later
  *
- * fp6-vision: C ABI of the Rust panorama / document-scan library
+ * fp6-vision: C ABI of the Rust panorama library
  * (vision/lib.rs, a rustc staticlib). Camera phase 2.
  */
 #ifndef FP6_VISION_H

@@ -15,7 +15,7 @@ stdenv.mkDerivation {
     runHook preBuild
     flags="$(pkg-config --cflags gstreamer-1.0 gstreamer-photography-1.0 gstreamer-video-1.0 gstreamer-tag-1.0)"
     libs="$(pkg-config --libs gstreamer-1.0 gstreamer-photography-1.0 gstreamer-video-1.0 gstreamer-tag-1.0) -lgstbasecamerabinsrc-1.0 -lm"
-    # panorama / document scan: Rust (no crates), static library with a C ABI
+    # panorama: Rust (no crates), static library with a C ABI
     rustc --edition 2021 --crate-type staticlib --crate-name fp6vision -C opt-level=3 \
       -C panic=abort -C codegen-units=1 -o libfp6vision.a vision/lib.rs
     # image processing (HDR/night/panorama ...): vectorised, separate object

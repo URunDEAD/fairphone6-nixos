@@ -1030,8 +1030,7 @@ fp6j_start (Fp6LibcameraSrc * self, const gchar * kind_name,
       break;
     }
     case KIND_PANORAMA:{
-      /* exposure, white balance and focus fixed for the whole sweep (seams)
-       * / at the moment of the tap (document) */
+      /* exposure, white balance and focus fixed for the whole sweep (seams) */
       static const gdouble focal[] = { 2400, 2840, 1500, 2300 };
       p->step_exp[0] = e0;
       p->step_gain[0] = g0;
