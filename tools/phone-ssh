@@ -1,0 +1,40 @@
+#!/bin/sh
+# SSH to the FP6 (user "user"), preferring the USB network link.
+#
+# Settings come from the environment or from local/phone.env (untracked):
+#   FP6_SSH_PASSWORD   login password (required unless you use SSH keys:
+#                      then set FP6_SSH_PASSWORD= and FP6_SSH_KEYS=1)
+#   FP6_SSH_ADDRESS    fallback address over Wi-Fi (default: none)
+#   FP6_SSH_USB        auto (default) | 1 (USB only) | 0 (never USB)
+#   FP6_SSH_USER       default: user
+# The phone's host key must already be in ~/.ssh/known_hosts under the alias
+# 172.16.42.1 (StrictHostKeyChecking=yes): connect once interactively first.
+set -eu
+here=$(cd "$(dirname "$0")/.." && pwd)
+if [ -r "$here/local/phone.env" ]; then
+  # shellcheck disable=SC1091
+  . "$here/local/phone.env"
+fi
+user=${FP6_SSH_USER:-user}
+address=${FP6_SSH_ADDRESS:-}
+usb_address=172.16.42.1   # postmarketOS / Mobile NixOS USB-network convention
+if [ "${FP6_SSH_USB:-auto}" != 0 ]; then
+  # The phone's gadget is 18d1:4ee3; the host side gets 172.16.42.2.
+  if ip route get "$usb_address" 2>/dev/null | grep -q "src 172.16.42.2"; then
+    address=$usb_address
+  elif [ "${FP6_SSH_USB:-auto}" = 1 ]; then
+    echo "phone-ssh: USB network link not found" >&2; exit 1
+  fi
+fi
+[ -n "$address" ] || { echo "phone-ssh: no USB link and FP6_SSH_ADDRESS unset" >&2; exit 1; }
+runtime=${XDG_RUNTIME_DIR:-/tmp}/fp6-ssh
+mkdir -p -m 700 "$runtime"
+set -- -o StrictHostKeyChecking=yes -o HostKeyAlias=$usb_address \
+  -o ConnectTimeout=8 -o ControlMaster=auto -o ControlPersist=600 \
+  -o ControlPath="$runtime/%C" -o ServerAliveInterval=15 "$user@$address" "$@"
+if [ "${FP6_SSH_KEYS:-0}" = 1 ]; then
+  exec ssh "$@"
+fi
+: "${FP6_SSH_PASSWORD:?set FP6_SSH_PASSWORD in the environment or local/phone.env}"
+SSHPASS=$FP6_SSH_PASSWORD; export SSHPASS
+exec sshpass -e ssh -o PubkeyAuthentication=no "$@"

@@ -1,0 +1,20 @@
+#!/bin/sh
+# Run a nix command against a remote aarch64 builder store, e.g.
+#   tools/nix-remote build --eval-store auto \
+#     --file nixos-fp6/feature-push/trial-lomiri-full-kernel6-fp6.nix \
+#     config.system.build.toplevel outputs.android-bootimg --no-link --print-out-paths
+#
+# Builder settings come from the environment or local/builder.env (untracked):
+#   FP6_BUILDER_STORE   e.g. ssh-ng://builder@arm-builder?ssh-key=/path/to/key
+#   FP6_BUILDER_SSHOPTS extra ssh options (optional)
+# Any aarch64-linux machine with Nix works (native ARM is much faster than
+# emulation). A local aarch64 machine can just use `nix build` directly.
+set -eu
+here=$(cd "$(dirname "$0")/.." && pwd)
+if [ -r "$here/local/builder.env" ]; then
+  # shellcheck disable=SC1091
+  . "$here/local/builder.env"
+fi
+: "${FP6_BUILDER_STORE:?set FP6_BUILDER_STORE in the environment or local/builder.env}"
+NIX_SSHOPTS="-oBatchMode=yes ${FP6_BUILDER_SSHOPTS:-}"; export NIX_SSHOPTS
+exec nix "$@" --store "$FP6_BUILDER_STORE"

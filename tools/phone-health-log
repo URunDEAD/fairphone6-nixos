@@ -1,0 +1,98 @@
+#!/usr/bin/env python3
+"""Collect low-load FP6 health samples over pinned SSH or locally on the phone.
+
+Examples:
+  tools/phone-health-log --count 1
+  tools/phone-health-log --count 61 --interval 60 --output results/hardware-baseline-hour.jsonl
+
+This does not start/stop services, write phone files or change radio/power state.
+Leave it attached to the terminal or explicitly run it under a host job manager.
+Each JSONL record includes host UTC time, phone time and unconverted sysfs data.
+No battery-life pass/fail or charging wattage is inferred from these readings.
+"""
+import argparse
+import datetime
+import json
+import os
+import pathlib
+import subprocess
+import sys
+import time
+
+
+def parse_sample(raw):
+    values = {}
+    current = None
+    for line in raw.splitlines():
+        if "\t" in line:
+            current, value = line.split("\t", 1)
+            values[current] = value
+        elif current is not None:
+            values[current] += "\n" + line
+    return values
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--count", type=int, default=1, help="number of samples (default: 1)")
+    parser.add_argument("--interval", type=float, default=60, help="seconds between sample starts (minimum: 5)")
+    parser.add_argument("--output", type=pathlib.Path, help="append JSONL to this host file (default: stdout)")
+    parser.add_argument("--max-bytes", type=int, default=8 * 1024 * 1024, help="rotate output above this size (default: 8 MiB; two backups)")
+    parser.add_argument("--local", action="store_true", help="run on the FP6 itself, without SSH")
+    args = parser.parse_args()
+    if args.count < 1 or args.interval < 5 or args.max_bytes < 16384:
+        parser.error("count must be positive, interval at least 5 seconds and max-bytes at least 16384")
+    project = pathlib.Path(__file__).resolve().parent.parent
+    if args.local:
+        compatible = pathlib.Path('/proc/device-tree/compatible').read_bytes().split(b'\0')
+        if b'fairphone,fp6' not in compatible:
+            parser.error('--local is restricted to the physical FP6')
+    payload = (project / "tools/phone-health-sample.sh").read_text()
+    destination = args.output.open("a", encoding="utf-8", buffering=1) if args.output else sys.stdout
+    failures = 0
+    next_sample = time.monotonic()
+    try:
+        for index in range(args.count):
+            if index:
+                time.sleep(max(0, next_sample - time.monotonic()))
+            started = time.monotonic()
+            record = {
+                "schema": "fp6-health-v1",
+                "sample": index + 1,
+                "host_time_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "transport": "local" if args.local else "ssh",
+            }
+            try:
+                result = subprocess.run(
+                    ["sh", "-s"] if args.local else [str(project / "tools/phone-ssh"), "sh", "-s"],
+                    input=payload, text=True, capture_output=True, timeout=30,
+                )
+                record["sample_exit_code" if args.local else "ssh_exit_code"] = result.returncode
+                record["values"] = parse_sample(result.stdout)
+                if result.stderr:
+                    record["stderr"] = result.stderr.strip()
+                if result.returncode:
+                    failures += 1
+            except (subprocess.TimeoutExpired, OSError) as error:
+                record["error"] = str(error)
+                failures += 1
+            record["sample_duration_seconds"] = round(time.monotonic() - started, 3)
+            encoded = json.dumps(record, sort_keys=True) + "\n"
+            if args.output and destination.tell() + len(encoded.encode()) > args.max_bytes:
+                destination.close()
+                older = pathlib.Path(str(args.output) + ".1")
+                if older.exists():
+                    os.replace(older, pathlib.Path(str(args.output) + ".2"))
+                os.replace(args.output, older)
+                destination = args.output.open("a", encoding="utf-8", buffering=1)
+            destination.write(encoded)
+            destination.flush()
+            next_sample = max(started + args.interval, time.monotonic())
+    finally:
+        if args.output:
+            destination.close()
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
