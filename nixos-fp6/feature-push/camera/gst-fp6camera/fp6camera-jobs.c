@@ -40,6 +40,7 @@ typedef enum
 {
   KIND_NONE = 0,
   KIND_HDR,
+  KIND_NIGHT,
 } Fp6JobKind;
 
 static const struct
@@ -48,6 +49,7 @@ static const struct
   Fp6JobKind kind;
 } fp6j_kinds[] = {
   {"hdr", KIND_HDR},
+  {"night", KIND_NIGHT},
 };
 
 typedef struct
@@ -63,6 +65,8 @@ typedef struct
 /* exposure above which handheld frames blur; brackets use gain instead */
 #define FP6J_HANDHELD_US 66000
 #define FP6J_MAX_GAIN 16.0
+/* night mode: longest handheld frame of the burst */
+#define FP6J_NIGHT_US 100000
 
 static void
 fp6j_frame_free (gpointer p)
@@ -249,6 +253,38 @@ oom:
   return NULL;
 }
 
+static Fp6Image *
+fp6j_process_night (Fp6LibcameraSrc * self, GPtrArray * frames,
+    const Fp6Progress * prog, gint * ref, GError ** err)
+{
+  guint n = frames->len;
+  Fp6Image **imgs = g_new0 (Fp6Image *, n), *out = NULL;
+  gint64 t0 = g_get_monotonic_time ();
+
+  for (guint i = 0; i < n; i++) {
+    Fp6Frame *f = g_ptr_array_index (frames, i);
+    imgs[i] = fp6j_frame_image (f);
+    /* the packed copy is no longer needed: keep the peak memory down */
+    g_clear_pointer (&f->data, g_free);
+    if (!imgs[i])
+      goto out;
+  }
+  fp6_progress (prog, 0.05);
+  {
+    Fp6Progress sub = fp6_progress_sub (prog, 0.05, 0.95);
+    out = fp6_night_merge (imgs, n, 1.0, ref, &sub);
+  }
+  GST_INFO_OBJECT (self, "night: merged %u frames (reference %d) in %.2f s",
+      n, *ref, (g_get_monotonic_time () - t0) / 1e6);
+out:
+  for (guint i = 0; i < n; i++)
+    fp6_image_free (imgs[i]);
+  g_free (imgs);
+  if (!out && !fp6_cancelled (prog))
+    g_set_error (err, GST_CORE_ERROR, GST_CORE_ERROR_FAILED, "out of memory");
+  return out;
+}
+
 static gpointer
 fp6j_worker (gpointer data)
 {
@@ -289,6 +325,17 @@ fp6j_worker (gpointer data)
           result = g_strdup (path);
       }
       break;
+    case KIND_NIGHT:{
+      gint r = 0;
+      img = fp6j_process_night (self, frames, &prog, &r, &err);
+      if (img) {
+        img = fp6j_apply_zoom (img, zoom);
+        if (fp6j_save (self, img, path, rotate, flip, quality, ref->exp_us,
+                ref->gain, "lomiri-camera-app (fp6 night)", &err))
+          result = g_strdup (path);
+      }
+      break;
+    }
     default:
       g_set_error (&err, GST_CORE_ERROR, GST_CORE_ERROR_FAILED,
           "unsupported job");
@@ -471,6 +518,7 @@ fp6j_probe (GstPad * pad, GstPadProbeInfo * pi, gpointer user)
 
   switch (p->job_kind) {
     case KIND_HDR:
+    case KIND_NIGHT:
       fp6j_step_frame (self, buf, now);
       break;
     default:
@@ -577,6 +625,26 @@ fp6j_start (Fp6LibcameraSrc * self, const gchar * kind_name,
         p->step_ev[i] = evs[i];
         fp6j_exposure_for_ev (e0, g0, evs[i], FP6J_HANDHELD_US, e_max,
             &p->step_exp[i], &p->step_gain[i]);
+      }
+      p->n_steps = frames;
+      break;
+    }
+    case KIND_NIGHT:{
+      /* a burst of moderately long frames (handheld), a little brighter
+       * than the auto exposure: the merge removes the extra noise */
+      gint frames = CLAMP ((gint) fp6j_param_double (s, "frames",
+              g0 >= 8 ? 10 : 8), 2, FP6J_MAX_STEPS);
+      gdouble boost = CLAMP (fp6j_param_double (s, "boost", 0.5), 0, 2);
+      gint64 cap = (gint64) fp6j_param_double (s, "max-exposure-us",
+          FP6J_NIGHT_US);
+      gdouble total = (gdouble) e0 * g0 * pow (2.0, boost);
+      gint64 e = CLAMP ((gint64) MIN (total, (gdouble) MAX (cap, e0)), 40,
+          e_max);
+      gdouble g = CLAMP (total / e, 1.0, MAX (g0, 1.0));
+      for (gint i = 0; i < frames; i++) {
+        p->step_ev[i] = boost;
+        p->step_exp[i] = e;
+        p->step_gain[i] = g;
       }
       p->n_steps = frames;
       break;

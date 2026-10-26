@@ -87,4 +87,16 @@ void fp6_align_mtb_ev (const Fp6Image * ref, const Fp6Image * img,
 Fp6Image *fp6_mertens (Fp6Image * const *imgs, const gint * dx,
     const gint * dy, gint n, const Fp6Progress * prog);
 
+/* translation of img against ref (same exposure), coarse-to-fine SAD */
+void fp6_align_translation (const Fp6Gray * ref, const Fp6Gray * img,
+    gint max_shift, gint * dx, gint * dy);
+
+/* Night mode: merge a burst of n similar frames. The sharpest of the
+ * first frames is the reference (*ref_out); the others are aligned to it
+ * (global translation, then per 64 px tile +-2 px), averaged in linear
+ * light with a per-pixel robustness weight (moving things and residual
+ * misalignment fall back to the reference) and multiplied by boost. */
+Fp6Image *fp6_night_merge (Fp6Image * const *imgs, gint n, gdouble boost,
+    gint * ref_out, const Fp6Progress * prog);
+
 #endif

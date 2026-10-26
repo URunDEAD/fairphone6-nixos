@@ -142,6 +142,70 @@ selftest (const gchar * outdir)
   for (gint i = 0; i < 3; i++)
     fp6_image_free (e[i]);
 
+  /* night: 8 noisy frames, shifted, one with a moving bright square */
+  {
+    Fp6Image *b[8], *res;
+    gint ref = -1;
+    gdouble m0, c0, s0, m1, c1, s1;
+    for (gint i = 0; i < 8; i++) {
+      b[i] = exposure (w, h, 0.5f, (i * 37) % 13 - 6, (i * 17) % 9 - 4, 0.06f,
+          100 + i);
+      if (i == 5)               /* something passing through one frame */
+        for (gint y = 200; y < 260; y++)
+          for (gint x = 300; x < 360; x++)
+            memset (b[i]->data + (gsize) y * b[i]->stride + 3 * x, 250, 3);
+    }
+    t0 = g_get_monotonic_time ();
+    res = fp6_night_merge (b, 8, 1.0, &ref, NULL);
+    printf ("night merge %dx%d x8: %.3f s, ref %d\n", w, h,
+        (g_get_monotonic_time () - t0) / 1e6, ref);
+    if (outdir && res) {
+      gchar *p = g_build_filename (outdir, "night-merged.ppm", NULL);
+      fp6_image_write_ppm (res, p);
+      g_free (p);
+      p = g_build_filename (outdir, "night-single.ppm", NULL);
+      fp6_image_write_ppm (b[ref], p);
+      g_free (p);
+    }
+    /* error against the noise-free reference frame (interior) */
+    {
+      Fp6Image *clean = exposure (w, h, 0.5f, (ref * 37) % 13 - 6,
+          (ref * 17) % 9 - 4, 0, 1);
+      gdouble e0 = 0, e1 = 0, cnt = 0;
+      for (gint y = 40; y < h - 40; y++)
+        for (gint x = 40; x < w - 40; x++)
+          for (gint c = 0; c < 3; c++) {
+            gsize o = (gsize) y * clean->stride + 3 * x + c;
+            gdouble a = clean->data[o], s1 = b[ref]->data[o], r = res->data[o];
+            e0 += (s1 - a) * (s1 - a);
+            e1 += (r - a) * (r - a);
+            cnt++;
+          }
+      s0 = sqrt (e0 / cnt);
+      s1 = sqrt (e1 / cnt);
+      fp6_image_free (clean);
+    }
+    m0 = m1 = 0;
+    printf ("night rms error single %.2f merged %.2f\n", s0, s1);
+    if (!res || s1 > 0.6 * s0) {
+      printf ("FAIL: night noise\n");
+      fails++;
+    }
+    /* the square of frame 5 must not ghost in */
+    if (res && ref != 5) {
+      region_stats (res, 310, 210, 350, 250, &m1, &c1, &s1);
+      region_stats (b[ref], 310, 210, 350, 250, &m0, &c0, &s0);
+      printf ("night ghost region single %.1f merged %.1f\n", m0, m1);
+      if (m1 > m0 + 10) {
+        printf ("FAIL: night ghost\n");
+        fails++;
+      }
+    }
+    fp6_image_free (res);
+    for (gint i = 0; i < 8; i++)
+      fp6_image_free (b[i]);
+  }
+
   /* rotation round trip */
   {
     Fp6Image *a = exposure (64, 48, 1.0f, 0, 0, 0, 9);

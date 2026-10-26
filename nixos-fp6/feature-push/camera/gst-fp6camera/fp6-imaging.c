@@ -841,3 +841,369 @@ fp6_mertens (Fp6Image * const *imgs, const gint * dx, const gint * dy,
   return out;
 }
 
+/* ------------------------------------------------------------------------ */
+/* translation alignment (same exposure): coarse-to-fine SAD                */
+
+static guint64
+sad_at (const Fp6Gray * a, const Fp6Gray * b, gint ox, gint oy, gint margin,
+    gint step)
+{
+  guint64 s = 0;
+  for (gint y = margin; y < a->h - margin; y += step) {
+    const guint8 *pa = a->d + (gsize) y * a->w;
+    const guint8 *pb = b->d + (gsize) (y + oy) * b->w + ox;
+    for (gint x = margin; x < a->w - margin; x += step)
+      s += abs ((gint) pa[x] - (gint) pb[x]);
+  }
+  return s;
+}
+
+void
+fp6_align_translation (const Fp6Gray * ref, const Fp6Gray * img,
+    gint max_shift, gint * dx, gint * dy)
+{
+  Fp6Gray *pr[12], *pi[12];
+  gint levels = 0, cx = 0, cy = 0;
+
+  while ((4 << levels) <= max_shift && levels < 8
+      && (MIN (ref->w, ref->h) >> (levels + 1)) >= 32)
+    levels++;
+  pr[0] = (Fp6Gray *) ref;
+  pi[0] = (Fp6Gray *) img;
+  for (gint l = 1; l <= levels; l++) {
+    pr[l] = fp6_gray_half (pr[l - 1]);
+    pi[l] = fp6_gray_half (pi[l - 1]);
+  }
+  for (gint l = levels; l >= 0; l--) {
+    gint r = l == levels ? 4 : 1, bx = 0, by = 0;
+    gint margin, step = l == 0 ? 2 : 1;
+    guint64 best = G_MAXUINT64;
+    cx *= 2;
+    cy *= 2;
+    if (l == levels)
+      cx = cy = 0;
+    margin = MAX (ABS (cx), ABS (cy)) + r + 1;
+    if (2 * margin + 8 >= MIN (pr[l]->w, pr[l]->h))
+      continue;
+    for (gint sy = -r; sy <= r; sy++)
+      for (gint sx = -r; sx <= r; sx++) {
+        guint64 e = sad_at (pr[l], pi[l], cx + sx, cy + sy, margin, step);
+        if (e < best || (e == best && sx == 0 && sy == 0)) {
+          best = e;
+          bx = sx;
+          by = sy;
+        }
+      }
+    cx += bx;
+    cy += by;
+  }
+  for (gint l = 1; l <= levels; l++) {
+    fp6_gray_free (pr[l]);
+    fp6_gray_free (pi[l]);
+  }
+  *dx = cx;
+  *dy = cy;
+}
+
+/* ------------------------------------------------------------------------ */
+/* night: burst merge                                                       */
+
+#define NM_TILE 64
+
+static gfloat nm_lin[256];
+static guint8 nm_enc[4096];
+
+static void
+nm_tables (void)
+{
+  static gsize once = 0;
+  if (g_once_init_enter (&once)) {
+    /* the soft ISP's output curve is sRGB (camera phase 0, 0018) */
+    for (gint i = 0; i < 256; i++) {
+      gdouble v = i / 255.0;
+      nm_lin[i] = v <= 0.04045 ? v / 12.92 : pow ((v + 0.055) / 1.055, 2.4);
+    }
+    for (gint i = 0; i < 4096; i++) {
+      gdouble l = i / 4095.0;
+      gdouble v = l <= 0.0031308 ? 12.92 * l : 1.055 * pow (l, 1 / 2.4) - 0.055;
+      nm_enc[i] = (guint8) CLAMP (lround (v * 255), 0, 255);
+    }
+    g_once_init_leave (&once, 1);
+  }
+}
+
+typedef struct
+{
+  const Fp6Image *ref, *img;
+  const Fp6Gray *gref, *gimg;
+  gint tw, th;                  /* tiles */
+  gint *tdx, *tdy;              /* per tile shift */
+  gint gdx, gdy;                /* global shift */
+  gint16 *diff;                 /* per pixel luma difference, w * h */
+  gfloat *acc, *wsum;           /* w * h * 3, w * h */
+  gfloat sigma;                 /* difference noise (luma codes) */
+  gfloat boost;
+  gfloat black;                 /* linear offset removed from the result */
+} NmJob;
+
+/* per tile: refine the global shift by +-2 px (full-resolution SAD) */
+static void
+nm_tiles (gint t0, gint t1, gpointer user)
+{
+  NmJob *j = user;
+  const Fp6Gray *a = j->gref, *b = j->gimg;
+  for (gint t = t0; t < t1; t++) {
+    gint tx = (t % j->tw) * NM_TILE, ty = (t / j->tw) * NM_TILE;
+    gint x1 = MIN (tx + NM_TILE, a->w), y1 = MIN (ty + NM_TILE, a->h);
+    guint64 best = G_MAXUINT64;
+    gint bx = j->gdx, by = j->gdy;
+    for (gint sy = -2; sy <= 2; sy++)
+      for (gint sx = -2; sx <= 2; sx++) {
+        gint ox = j->gdx + sx, oy = j->gdy + sy;
+        guint64 s = 0;
+        if (tx + ox < 0 || ty + oy < 0 || x1 + ox > b->w || y1 + oy > b->h)
+          continue;
+        for (gint y = ty; y < y1; y += 2) {
+          const guint8 *pa = a->d + (gsize) y * a->w;
+          const guint8 *pb = b->d + (gsize) (y + oy) * b->w + ox;
+          for (gint x = tx; x < x1; x += 2)
+            s += abs ((gint) pa[x] - (gint) pb[x]);
+        }
+        if (s < best || (s == best && sx == 0 && sy == 0)) {
+          best = s;
+          bx = ox;
+          by = oy;
+        }
+      }
+    j->tdx[t] = bx;
+    j->tdy[t] = by;
+  }
+}
+
+static inline void
+nm_shift (const NmJob * j, gint x, gint y, gint * sx, gint * sy)
+{
+  gint t = (y / NM_TILE) * j->tw + x / NM_TILE;
+  *sx = CLAMP (x + j->tdx[t], 0, j->img->w - 1);
+  *sy = CLAMP (y + j->tdy[t], 0, j->img->h - 1);
+}
+
+static void
+nm_diff (gint y0, gint y1, gpointer user)
+{
+  NmJob *j = user;
+  gint w = j->ref->w;
+  for (gint y = y0; y < y1; y++)
+    for (gint x = 0; x < w; x++) {
+      gint sx, sy;
+      nm_shift (j, x, y, &sx, &sy);
+      j->diff[(gsize) y * w + x] = (gint16) j->gimg->d[(gsize) sy * w + sx]
+          - (gint16) j->gref->d[(gsize) y * w + x];
+    }
+}
+
+/* accumulate one frame with a robustness weight from the 5x5 mean of the
+ * luma difference (local motion / misalignment -> weight 0) */
+static void
+nm_accumulate (gint y0, gint y1, gpointer user)
+{
+  NmJob *j = user;
+  gint w = j->ref->w, h = j->ref->h;
+  /* 5x5 mean of noise has sigma / 5; accept up to ~2.5 of those */
+  gfloat lo = 1.5f * j->sigma / 5.0f + 1.0f, hi = 4.0f * j->sigma / 5.0f + 2.0f;
+  for (gint y = y0; y < y1; y++) {
+    gint ya = MAX (y - 2, 0), yb = MIN (y + 2, h - 1);
+    for (gint x = 0; x < w; x++) {
+      gint xa = MAX (x - 2, 0), xb = MIN (x + 2, w - 1), sx, sy, n = 0;
+      gint sum = 0;
+      gfloat d, wt;
+      for (gint yy = ya; yy <= yb; yy++)
+        for (gint xx = xa; xx <= xb; xx++, n++)
+          sum += j->diff[(gsize) yy * w + xx];
+      d = fabsf ((gfloat) sum / n);
+      wt = d <= lo ? 1.0f : d >= hi ? 0.0f : (hi - d) / (hi - lo);
+      if (wt <= 0)
+        continue;
+      nm_shift (j, x, y, &sx, &sy);
+      {
+        const guint8 *p = j->img->data + (gsize) sy * j->img->stride + 3 * sx;
+        gfloat *a = j->acc + ((gsize) y * w + x) * 3;
+        a[0] += wt * nm_lin[p[0]];
+        a[1] += wt * nm_lin[p[1]];
+        a[2] += wt * nm_lin[p[2]];
+        j->wsum[(gsize) y * w + x] += wt;
+      }
+    }
+  }
+}
+
+static void
+nm_reference (gint y0, gint y1, gpointer user)
+{
+  NmJob *j = user;
+  gint w = j->ref->w;
+  for (gint y = y0; y < y1; y++) {
+    const guint8 *p = j->ref->data + (gsize) y * j->ref->stride;
+    gfloat *a = j->acc + (gsize) y * w * 3;
+    for (gint x = 0; x < w; x++) {
+      a[3 * x] = nm_lin[p[3 * x]];
+      a[3 * x + 1] = nm_lin[p[3 * x + 1]];
+      a[3 * x + 2] = nm_lin[p[3 * x + 2]];
+      j->wsum[(gsize) y * w + x] = 1.0f;
+    }
+  }
+}
+
+typedef struct
+{
+  const NmJob *j;
+  Fp6Image *out;
+} NmOut;
+
+static void
+nm_output (gint y0, gint y1, gpointer user)
+{
+  NmOut *o = user;
+  const NmJob *j = o->j;
+  gint w = o->out->w;
+  for (gint y = y0; y < y1; y++) {
+    guint8 *d = o->out->data + (gsize) y * o->out->stride;
+    const gfloat *a = j->acc + (gsize) y * w * 3;
+    const gfloat *ws = j->wsum + (gsize) y * w;
+    for (gint x = 0; x < w; x++) {
+      gfloat k = j->boost / ws[x], sc = 1.0f / (1.0f - j->black);
+      for (gint c = 0; c < 3; c++) {
+        gint i = (gint) ((a[3 * x + c] * k - j->black) * sc * 4095.0f + 0.5f);
+        d[3 * x + c] = nm_enc[CLAMP (i, 0, 4095)];
+      }
+    }
+  }
+}
+
+static gdouble
+gray_sharpness (const Fp6Gray * g)
+{
+  guint64 s = 0;
+  for (gint y = 1; y < g->h - 1; y += 2)
+    for (gint x = 1; x < g->w - 1; x += 2) {
+      const guint8 *p = g->d + (gsize) y * g->w + x;
+      gint gx = p[1] - p[-1], gy = p[g->w] - p[-g->w];
+      s += gx * gx + gy * gy;
+    }
+  return (gdouble) s;
+}
+
+static int
+cmp_i16 (const void *a, const void *b)
+{
+  return *(const gint16 *) a - *(const gint16 *) b;
+}
+
+Fp6Image *
+fp6_night_merge (Fp6Image * const *imgs, gint n, gdouble boost,
+    gint * ref_out, const Fp6Progress * prog)
+{
+  gint w = imgs[0]->w, h = imgs[0]->h, ref = 0;
+  Fp6Gray **g = g_new0 (Fp6Gray *, n);
+  NmJob j = { 0 };
+  NmOut o;
+  gdouble best = -1;
+  gboolean ok = TRUE;
+
+  nm_tables ();
+  for (gint i = 0; i < n; i++) {
+    g[i] = fp6_gray_from_image (imgs[i], 0);
+    /* reference: the sharpest of the first frames (least shake) */
+    if (i < MIN (n, 4)) {
+      Fp6Gray *half = fp6_gray_half (g[i]);
+      gdouble s = gray_sharpness (half);
+      fp6_gray_free (half);
+      if (s > best) {
+        best = s;
+        ref = i;
+      }
+    }
+  }
+  if (ref_out)
+    *ref_out = ref;
+  j.ref = imgs[ref];
+  j.gref = g[ref];
+  j.tw = (w + NM_TILE - 1) / NM_TILE;
+  j.th = (h + NM_TILE - 1) / NM_TILE;
+  j.tdx = g_new0 (gint, j.tw * j.th);
+  j.tdy = g_new0 (gint, j.tw * j.th);
+  j.diff = g_try_new (gint16, (gsize) w * h);
+  j.acc = g_try_new (gfloat, (gsize) w * h * 3);
+  j.wsum = g_try_new (gfloat, (gsize) w * h);
+  j.boost = boost > 0 ? boost : 1.0;
+  ok = j.diff && j.acc && j.wsum;
+  if (ok)
+    fp6_parallel_rows (h, nm_reference, &j);
+
+  for (gint i = 0; ok && i < n && !fp6_cancelled (prog); i++) {
+    if (i == ref || imgs[i]->w != w || imgs[i]->h != h)
+      continue;
+    j.img = imgs[i];
+    j.gimg = g[i];
+    {
+      Fp6Gray *a = fp6_gray_half (g[ref]), *b = fp6_gray_half (g[i]);
+      fp6_align_translation (a, b, 48, &j.gdx, &j.gdy);
+      j.gdx *= 2;
+      j.gdy *= 2;
+      fp6_gray_free (a);
+      fp6_gray_free (b);
+    }
+    fp6_parallel_rows (j.tw * j.th, nm_tiles, &j);
+    fp6_parallel_rows (h, nm_diff, &j);
+    /* noise of the difference: robust from the median absolute value */
+    {
+      gsize m = 0, cnt = ((gsize) w * h) / 97;
+      gint16 *s = g_new (gint16, cnt);
+      for (gsize k = 0; k < cnt; k++)
+        s[k] = (gint16) ABS (j.diff[k * 97]);
+      qsort (s, cnt, sizeof *s, cmp_i16);
+      m = cnt ? (gsize) s[cnt / 2] : 1;
+      g_free (s);
+      j.sigma = MAX (1.0f, (gfloat) m / 0.6745f);
+    }
+    if (g_getenv ("FP6_IMAGING_DEBUG"))
+      g_printerr ("night frame %d: shift %d,%d sigma %.2f\n", i, j.gdx, j.gdy,
+          j.sigma);
+    fp6_parallel_rows (h, nm_accumulate, &j);
+    fp6_progress (prog, (gdouble) (i + 1) / n * 0.9);
+  }
+  /* The ISP clips noise at black, so the mean of noisy dark pixels sits
+   * above black: averaging lifts and greys the shadows. Pull the darkest
+   * 0.5 % back down (bounded, so a scene without blacks is not darkened
+   * much). */
+  if (ok) {
+    guint hist[1024] = { 0 }, cnt = 0, acc = 0;
+    for (gsize k = 0; k < (gsize) w * h; k += 7) {
+      gfloat l = (j.acc[3 * k] + j.acc[3 * k + 1] + j.acc[3 * k + 2]) /
+          (3.0f * j.wsum[k]) * j.boost;
+      hist[CLAMP ((gint) (l * 1023 * 8), 0, 1023)]++;
+      cnt++;
+    }
+    for (gint b = 0; b < 1024; b++) {
+      acc += hist[b];
+      if (acc * 200 >= cnt) {
+        j.black = MIN (b / (1023.0f * 8), 0.01f);
+        break;
+      }
+    }
+  }
+  o.j = &j;
+  o.out = ok && !fp6_cancelled (prog) ? fp6_image_new (w, h) : NULL;
+  if (o.out)
+    fp6_parallel_rows (h, nm_output, &o);
+  fp6_progress (prog, 1.0);
+  for (gint i = 0; i < n; i++)
+    fp6_gray_free (g[i]);
+  g_free (g);
+  g_free (j.tdx);
+  g_free (j.tdy);
+  g_free (j.diff);
+  g_free (j.acc);
+  g_free (j.wsum);
+  return o.out;
+}
