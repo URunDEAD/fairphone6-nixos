@@ -1,0 +1,731 @@
+diff --git a/plugins/Lomiri/Launcher/appdrawermodel.cpp b/plugins/Lomiri/Launcher/appdrawermodel.cpp
+index 870a8b9..e548d59 100644
+--- a/plugins/Lomiri/Launcher/appdrawermodel.cpp
++++ b/plugins/Lomiri/Launcher/appdrawermodel.cpp
+@@ -31,6 +31,13 @@ static std::shared_ptr<LauncherItem> makeSharedLauncherItem(
+                 [] (LauncherItem *item) { item->deleteLater(); });
+ }
+ 
++static void setDrawerFolder(LauncherItem *item, const UalWrapper::AppInfo &info)
++{
++    item->m_folder = info.folder;
++    item->m_folderName = info.folderName;
++    item->m_folderIcon = info.folderIcon;
++}
++
+ AppDrawerModel::AppDrawerModel(QObject *parent):
+     AppDrawerModelInterface(parent),
+     m_ual(new UalWrapper(this)),
+@@ -67,11 +74,26 @@ QVariant AppDrawerModel::data(const QModelIndex &index, int role) const
+         return m_list.at(index.row())->keywords();
+     case RoleUsage:
+         return m_list.at(index.row())->popularity();
++    case RoleFolder:
++        return m_list.at(index.row())->m_folder;
++    case RoleFolderName:
++        return m_list.at(index.row())->m_folderName;
++    case RoleFolderIcon:
++        return m_list.at(index.row())->m_folderIcon;
+     }
+ 
+     return QVariant();
+ }
+ 
++QHash<int, QByteArray> AppDrawerModel::roleNames() const
++{
++    QHash<int, QByteArray> roles = AppDrawerModelInterface::roleNames();
++    roles.insert(RoleFolder, "folder");
++    roles.insert(RoleFolderName, "folderName");
++    roles.insert(RoleFolderIcon, "folderIcon");
++    return roles;
++}
++
+ void AppDrawerModel::appAdded(const QString &appId)
+ {
+     if (m_refreshing)
+@@ -88,6 +110,7 @@ void AppDrawerModel::appAdded(const QString &appId)
+     auto item = makeSharedLauncherItem(appId, info.name, info.icon, /* parent */ nullptr);
+     item->setKeywords(info.keywords);
+     item->setPopularity(info.popularity);
++    setDrawerFolder(item.get(), info);
+     m_list.append(std::move(item));
+     endInsertRows();
+ }
+@@ -137,7 +160,13 @@ void AppDrawerModel::appInfoChanged(const QString &appId)
+ 
+     UalWrapper::AppInfo info = m_ual->getApplicationInfo(appId);
+     item->setPopularity(info.popularity);
++    const bool folderChanged = item->m_folder != info.folder || item->m_folderName != info.folderName
++                               || item->m_folderIcon != info.folderIcon;
++    setDrawerFolder(item.get(), info);
+     Q_EMIT dataChanged(index(idx), index(idx), {AppDrawerModelInterface::RoleUsage});
++    if (folderChanged) {
++        Q_EMIT dataChanged(index(idx), index(idx), {RoleFolder, RoleFolderName, RoleFolderIcon});
++    }
+ }
+ 
+ bool AppDrawerModel::refreshing() {
+@@ -162,6 +191,7 @@ void AppDrawerModel::refresh() {
+             auto item = makeSharedLauncherItem(appId, info.name, info.icon, /* parent */ nullptr);
+             item->setKeywords(info.keywords);
+             item->setPopularity(info.popularity);
++            setDrawerFolder(item.get(), info);
+             item->moveToThread(thread);
+             list.append(std::move(item));
+         }
+diff --git a/plugins/Lomiri/Launcher/appdrawermodel.h b/plugins/Lomiri/Launcher/appdrawermodel.h
+index 2b10301..33fa81f 100644
+--- a/plugins/Lomiri/Launcher/appdrawermodel.h
++++ b/plugins/Lomiri/Launcher/appdrawermodel.h
+@@ -33,6 +33,10 @@ class AppDrawerModel: public AppDrawerModelInterface
+ public:
+     AppDrawerModel(QObject* parent = nullptr);
+ 
++    // Drawer folders (X-Lomiri-Folder). Looked up by name in AppDrawerProxyModel.
++    enum FolderRoles { RoleFolder = 100, RoleFolderName, RoleFolderIcon };
++    QHash<int, QByteArray> roleNames() const override;
++
+     int rowCount(const QModelIndex &parent) const override;
+     QVariant data(const QModelIndex &index, int role) const override;
+ 
+diff --git a/plugins/Lomiri/Launcher/launcheritem.h b/plugins/Lomiri/Launcher/launcheritem.h
+index 4c26fcb..a372929 100644
+--- a/plugins/Lomiri/Launcher/launcheritem.h
++++ b/plugins/Lomiri/Launcher/launcheritem.h
+@@ -85,6 +85,12 @@ private:
+     QuickListModel *m_quickList;
+     QuickListEntry m_quitAction;
+ 
++public:
++    // App drawer folder (desktop key X-Lomiri-Folder), set by AppDrawerModel.
++    QString m_folder;
++    QString m_folderName;
++    QString m_folderIcon;
++
+     friend class LauncherModel;
+     friend class AppDrawerModel;
+ };
+diff --git a/plugins/Lomiri/Launcher/ualwrapper.cpp b/plugins/Lomiri/Launcher/ualwrapper.cpp
+index a210f44..8639778 100644
+--- a/plugins/Lomiri/Launcher/ualwrapper.cpp
++++ b/plugins/Lomiri/Launcher/ualwrapper.cpp
+@@ -18,6 +18,9 @@
+ 
+ #include "ualwrapper.h"
+ 
++#include <QRegularExpression>
++#include <glib.h>
++
+ #include <lomiri-app-launch/registry.h>
+ using namespace lomiri::app_launch;
+ 
+@@ -44,6 +47,48 @@ QStringList UalWrapper::installedApps()
+     return appIds;
+ }
+ 
++// App drawer folders: an application's desktop entry may say
++//   X-Lomiri-Folder=Tools
++// and is then shown inside the drawer folder "Tools". The folder's (localised)
++// name and icon come from desktop-directories/Tools.directory (Name[xx]=, Icon=)
++// in the XDG data dirs, if present; otherwise the folder id is the name.
++static QString keyFileString(GKeyFile *kf, const char *key, bool localised)
++{
++    gchar *v = localised ? g_key_file_get_locale_string(kf, G_KEY_FILE_DESKTOP_GROUP, key, nullptr, nullptr)
++                         : g_key_file_get_string(kf, G_KEY_FILE_DESKTOP_GROUP, key, nullptr);
++    QString s = QString::fromUtf8(v).trimmed();
++    g_free(v);
++    return s;
++}
++
++static void readDrawerFolder(const QString &appId, UalWrapper::AppInfo &info)
++{
++    GKeyFile *kf = g_key_file_new();
++    QByteArray rel = QStringLiteral("applications/%1.desktop").arg(appId).toUtf8();
++    if (g_key_file_load_from_data_dirs(kf, rel.constData(), nullptr, G_KEY_FILE_NONE, nullptr)) {
++        info.folder = keyFileString(kf, "X-Lomiri-Folder", false);
++    }
++    g_key_file_free(kf);
++    if (info.folder.isEmpty()) {
++        return;
++    }
++    info.folderName = info.folder;
++    static const QRegularExpression safeId(QStringLiteral("^[A-Za-z0-9._-]+$"));
++    if (!safeId.match(info.folder).hasMatch()) {
++        return;
++    }
++    kf = g_key_file_new();
++    rel = QStringLiteral("desktop-directories/%1.directory").arg(info.folder).toUtf8();
++    if (g_key_file_load_from_data_dirs(kf, rel.constData(), nullptr, G_KEY_FILE_NONE, nullptr)) {
++        const QString name = keyFileString(kf, G_KEY_FILE_DESKTOP_KEY_NAME, true);
++        if (!name.isEmpty()) {
++            info.folderName = name;
++        }
++        info.folderIcon = keyFileString(kf, G_KEY_FILE_DESKTOP_KEY_ICON, false);
++    }
++    g_key_file_free(kf);
++}
++
+ UalWrapper::AppInfo UalWrapper::getApplicationInfo(const QString &appId)
+ {
+     AppInfo info;
+@@ -65,6 +110,7 @@ UalWrapper::AppInfo UalWrapper::getApplicationInfo(const QString &appId)
+             info.keywords << QString::fromStdString(keyword);
+         }
+         //info.popularity = ualApp->info()->popularity();
++        readDrawerFolder(appId, info);
+         info.valid = true;
+     } catch (const std::runtime_error &e) {
+         qWarning() << "lomiri-app-launch threw an exception getting app info for appId:" << appId << ":" << e.what();
+diff --git a/plugins/Lomiri/Launcher/ualwrapper.h b/plugins/Lomiri/Launcher/ualwrapper.h
+index 946c515..e1833c3 100644
+--- a/plugins/Lomiri/Launcher/ualwrapper.h
++++ b/plugins/Lomiri/Launcher/ualwrapper.h
+@@ -27,6 +27,10 @@ public:
+         QString icon;
+         QStringList keywords;
+         uint popularity = 0;
++        // X-Lomiri-Folder=<id>; name/icon from desktop-directories/<id>.directory
++        QString folder;
++        QString folderName;
++        QString folderIcon;
+     };
+ 
+     UalWrapper(QObject* parent = nullptr);
+diff --git a/plugins/Utils/appdrawerproxymodel.cpp b/plugins/Utils/appdrawerproxymodel.cpp
+index 35b4538..4df9da0 100644
+--- a/plugins/Utils/appdrawerproxymodel.cpp
++++ b/plugins/Utils/appdrawerproxymodel.cpp
+@@ -45,6 +45,15 @@ void AppDrawerProxyModel::setSource(QAbstractItemModel *source)
+         setSortRole(m_sortBy == SortByAToZ ? AppDrawerModelInterface::RoleName : AppDrawerModelInterface::RoleUsage);
+         connect(m_source, &QAbstractItemModel::rowsRemoved, this, &AppDrawerProxyModel::invalidate);
+         connect(m_source, &QAbstractItemModel::rowsInserted, this, &AppDrawerProxyModel::invalidate);
++        m_folderRole = m_source ? m_source->roleNames().key("folder", -1) : -1;
++        m_folderNameRole = m_source ? m_source->roleNames().key("folderName", -1) : -1;
++        if (m_folderRole >= 0) {
++            // A folder change of one app can change which row stands for the folder.
++            connect(m_source, &QAbstractItemModel::dataChanged, this,
++                    [this](const QModelIndex &, const QModelIndex &, const QVector<int> &roles) {
++                if (roles.contains(m_folderRole)) invalidate();
++            });
++        }
+         Q_EMIT sourceChanged();
+     }
+ }
+@@ -86,9 +95,14 @@ void AppDrawerProxyModel::setFilterString(const QString &filterString)
+ {
+     const QString filterStringOptimised = removeDiacritics(filterString);
+     if (m_filterString != filterStringOptimised) {
++        const bool wasCollapsed = foldersCollapsed();
+         m_filterString = filterStringOptimised;
+         Q_EMIT filterStringChanged();
+-        invalidateFilter();
++        if (wasCollapsed != foldersCollapsed()) {
++            invalidate(); // folder tiles come and go: sort keys change too
++        } else {
++            invalidateFilter();
++        }
+     }
+ }
+ 
+@@ -112,6 +126,48 @@ int AppDrawerProxyModel::count() const
+     return rowCount();
+ }
+ 
++void AppDrawerProxyModel::setCollapseFolders(bool collapse)
++{
++    if (m_collapseFolders != collapse) {
++        m_collapseFolders = collapse;
++        Q_EMIT collapseFoldersChanged();
++        invalidate();
++    }
++}
++
++void AppDrawerProxyModel::setFolderFilter(const QString &folder)
++{
++    if (m_folderFilter != folder) {
++        m_folderFilter = folder;
++        Q_EMIT folderFilterChanged();
++        invalidateFilter();
++    }
++}
++
++bool AppDrawerProxyModel::foldersCollapsed() const
++{
++    // Searching always lists the apps themselves, also those inside folders.
++    return m_collapseFolders && m_folderRole >= 0 && m_filterString.isEmpty();
++}
++
++QString AppDrawerProxyModel::folderOf(int sourceRow) const
++{
++    return m_folderRole < 0 ? QString()
++        : m_source->data(m_source->index(sourceRow, 0), m_folderRole).toString();
++}
++
++bool AppDrawerProxyModel::lessThan(const QModelIndex &left, const QModelIndex &right) const
++{
++    if (foldersCollapsed() && sortRole() == AppDrawerModelInterface::RoleName) {
++        auto key = [this](const QModelIndex &i) {
++            const bool folder = !m_source->data(i, m_folderRole).toString().isEmpty();
++            return m_source->data(i, folder ? m_folderNameRole : int(AppDrawerModelInterface::RoleName)).toString();
++        };
++        return QString::localeAwareCompare(key(left), key(right)) < 0;
++    }
++    return QSortFilterProxyModel::lessThan(left, right);
++}
++
+ QVariant AppDrawerProxyModel::data(const QModelIndex &index, int role) const
+ {
+     QModelIndex idx = mapToSource(index);
+@@ -119,6 +175,9 @@ QVariant AppDrawerProxyModel::data(const QModelIndex &index, int role) const
+         QString name = m_source->data(idx, AppDrawerModelInterface::RoleName).toString();
+         return name.length() > 0 ? QString(name.at(0)).toUpper() : QChar();
+     }
++    if (role == Qt::UserRole + 1) {
++        return foldersCollapsed() && !folderOf(idx.row()).isEmpty();
++    }
+     return m_source->data(idx, role);
+ }
+ 
+@@ -127,6 +186,7 @@ QHash<int, QByteArray> AppDrawerProxyModel::roleNames() const
+     if (m_source) {
+         QHash<int, QByteArray> roles = m_source->roleNames();
+         roles.insert(Qt::UserRole, "letter");
++        roles.insert(Qt::UserRole + 1, "folderTile");
+         return roles;
+     }
+     return QHash<int, QByteArray>();
+@@ -136,6 +196,21 @@ bool AppDrawerProxyModel::filterAcceptsRow(int source_row, const QModelIndex &so
+ {
+     Q_UNUSED(source_parent)
+ 
++    if (!m_folderFilter.isEmpty() && folderOf(source_row) != m_folderFilter) {
++        return false;
++    }
++    if (foldersCollapsed()) {
++        // The first source row of a folder stands for the whole folder.
++        const QString folder = folderOf(source_row);
++        if (!folder.isEmpty()) {
++            for (int r = 0; r < source_row; r++) {
++                if (folderOf(r) == folder) {
++                    return false;
++                }
++            }
++        }
++    }
++
+     if (m_group == GroupByAToZ && source_row > 0) {
+         QString currentName = m_source->data(m_source->index(source_row, 0), AppDrawerModelInterface::RoleName).toString();
+         QChar currentLetter = currentName.length() > 0 ? currentName.at(0) : QChar();
+diff --git a/plugins/Utils/appdrawerproxymodel.h b/plugins/Utils/appdrawerproxymodel.h
+index 88ce5f7..a54e382 100644
+--- a/plugins/Utils/appdrawerproxymodel.h
++++ b/plugins/Utils/appdrawerproxymodel.h
+@@ -29,6 +29,11 @@ class AppDrawerProxyModel: public QSortFilterProxyModel
+     Q_PROPERTY(QString filterString READ filterString WRITE setFilterString NOTIFY filterStringChanged)
+     Q_PROPERTY(SortBy sortBy READ sortBy WRITE setSortBy NOTIFY sortByChanged)
+     Q_PROPERTY(int count READ count NOTIFY countChanged)
++    // Drawer folders (source roles "folder"/"folderName"): with collapseFolders
++    // and no filterString, each folder is one row (role "folderTile" true, sorted
++    // by folder name); folderFilter keeps only the apps of that folder.
++    Q_PROPERTY(bool collapseFolders READ collapseFolders WRITE setCollapseFolders NOTIFY collapseFoldersChanged)
++    Q_PROPERTY(QString folderFilter READ folderFilter WRITE setFolderFilter NOTIFY folderFilterChanged)
+ 
+ public:
+     enum GroupBy {
+@@ -62,6 +67,11 @@ public:
+ 
+     int count() const;
+ 
++    bool collapseFolders() const { return m_collapseFolders; }
++    void setCollapseFolders(bool collapse);
++    QString folderFilter() const { return m_folderFilter; }
++    void setFolderFilter(const QString &folder);
++
+     QVariant data(const QModelIndex &index, int role) const override;
+     QHash<int, QByteArray> roleNames() const override;
+     QString removeDiacritics(const QString &input) const;
+@@ -70,6 +80,7 @@ public:
+ 
+ protected:
+     bool filterAcceptsRow(int source_row, const QModelIndex &source_parent) const override;
++    bool lessThan(const QModelIndex &left, const QModelIndex &right) const override;
+ 
+ Q_SIGNALS:
+     void sourceChanged();
+@@ -78,6 +89,8 @@ Q_SIGNALS:
+     void filterStringChanged();
+     void sortByChanged();
+     void countChanged();
++    void collapseFoldersChanged();
++    void folderFilterChanged();
+ 
+ private:
+     QAbstractItemModel* m_source = nullptr;
+@@ -85,4 +98,11 @@ private:
+     QString m_filterLetter;
+     QString m_filterString;
+     SortBy m_sortBy = SortByAToZ;
++
++    bool foldersCollapsed() const;
++    QString folderOf(int sourceRow) const;
++    bool m_collapseFolders = false;
++    QString m_folderFilter;
++    int m_folderRole = -1;
++    int m_folderNameRole = -1;
+ };
+diff --git a/qml/Launcher/Drawer.qml b/qml/Launcher/Drawer.qml
+index aafe1f7..4fe0df0 100644
+--- a/qml/Launcher/Drawer.qml
++++ b/qml/Launcher/Drawer.qml
+@@ -85,6 +85,7 @@ FocusScope {
+     }
+ 
+     Keys.onEscapePressed: {
++        if (folderOverlay.opened) { folderOverlay.close(); return; }
+         root.hideRequested()
+     }
+ 
+@@ -108,6 +109,7 @@ FocusScope {
+             }
+ 
+             if (fullyClosed) {
++                folderOverlay.close();
+                 searchField.text = "";
+                 appList.currentIndex = 0;
+                 searchField.focus = false;
+@@ -205,6 +207,7 @@ FocusScope {
+             source: appDrawerModel
+             filterString: searchField.displayText
+             sortBy: AppDrawerProxyModel.SortByAToZ
++            collapseFolders: true
+         }
+ 
+         Connections {
+@@ -239,6 +242,7 @@ FocusScope {
+                     }
+                     placeholderText: i18n.tr("Search…")
+                     z: 100
++                    onDisplayTextChanged: if (displayText !== "") folderOverlay.close()
+ 
+                     KeyNavigation.down: appList
+ 
+@@ -281,6 +285,16 @@ FocusScope {
+                     appDrawerModel.refresh();
+                 }
+             }
++
++            DrawerFolder {
++                id: folderOverlay
++                objectName: "drawerFolder"
++                anchors.fill: parent
++                appModel: appDrawerModel
++                lightMode: root.lightMode
++                delegateWidth: root.delegateWidth
++                delegate: drawerDelegateComponent
++            }
+         }
+ 
+         Component {
+@@ -292,10 +306,12 @@ FocusScope {
+                 objectName: "drawerItem_" + model.appId
+ 
+                 readonly property bool focused: index === GridView.view.currentIndex && GridView.view.activeFocus
++                readonly property bool folderTile: model.folderTile === true
+ 
+-                onClicked: root.applicationSelected(model.appId)
++                onClicked: folderTile ? folderOverlay.open(model.folder, model.folderName, drawerDelegate)
++                                      : root.applicationSelected(model.appId)
+                 onPressAndHold: {
+-                  if (model.appId.includes(".")) { // Open OpenStore page if app is a click
++                  if (!folderTile && model.appId.includes(".")) { // Open OpenStore page if app is a click
+                     var splitAppId = model.appId.split("_");
+                     Qt.openUrlExternally("https://open-store.io/app/" + model.appId.replace("_" + splitAppId[splitAppId.length-1],"") + "/");
+                   }
+@@ -319,10 +335,21 @@ FocusScope {
+                             id: sourceImage
+                             asynchronous: true
+                             sourceSize.width: appIcon.width
+-                            source: model.icon
++                            source: drawerDelegate.folderTile ? "" : model.icon
+                         }
+                         sourceFillMode: LomiriShape.PreserveAspectCrop
+ 
++                        Loader {
++                            anchors.fill: parent
++                            active: drawerDelegate.folderTile
++                            sourceComponent: DrawerFolderIcon {
++                                appModel: appDrawerModel
++                                folder: model.folder
++                                folderIcon: model.folderIcon
++                                lightMode: root.lightMode
++                            }
++                        }
++
+                         StyledItem {
+                             styleName: "FocusShape"
+                             anchors.fill: parent
+@@ -335,7 +362,7 @@ FocusScope {
+ 
+                     Label {
+                         id: label
+-                        text: model.name
++                        text: drawerDelegate.folderTile ? model.folderName : model.name
+                         width: parent.width
+                         anchors.horizontalCenter: parent.horizontalCenter
+                         horizontalAlignment: Text.AlignHCenter
+@@ -376,7 +403,7 @@ FocusScope {
+                                     maximumLineCount: 3
+                                     elide: Text.ElideRight
+                                     anchors.centerIn: parent
+-                                    text: model.name
++                                    text: label.text
+                                     fontSize: "small"
+                                 }
+                             }
+diff --git a/qml/Launcher/DrawerFolder.qml b/qml/Launcher/DrawerFolder.qml
+new file mode 100644
+index 0000000..3c2d02c
+--- /dev/null
++++ b/qml/Launcher/DrawerFolder.qml
+@@ -0,0 +1,141 @@
++/*
++ * Copyright (C) 2026 Paul Schuldesz
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; version 3.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++import QtQuick 2.15
++import Lomiri.Components 1.3
++import Utils 0.1
++
++// An open app drawer folder (desktop key X-Lomiri-Folder): the folder's apps
++// in a panel above the drawer grid, with the drawer's own app delegate.
++// Tapping outside the panel, Escape, typing a search (search lists the apps
++// of folders directly) or closing the drawer closes it.
++Item {
++    id: root
++
++    property var appModel
++    property bool lightMode: false
++    property real delegateWidth: units.gu(10)
++    property alias delegate: grid.delegate
++
++    readonly property bool opened: state === "open"
++    // Kept while the close animation runs; cleared once hidden.
++    property string folder: ""
++    property string title: ""
++
++    function open(folderId, name, tile) {
++        folder = folderId;
++        title = name;
++        if (tile) {
++            var c = tile.mapToItem(root, tile.width / 2, tile.height / 2);
++            panel.originX = c.x;
++            panel.originY = c.y;
++        }
++        grid.positionViewAtBeginning();
++        state = "open";
++    }
++
++    function close() {
++        state = "";
++    }
++
++    visible: opacity > 0
++    enabled: opened
++    opacity: 0
++    onVisibleChanged: if (!visible) folder = ""
++
++    states: State {
++        name: "open"
++        PropertyChanges { target: root; opacity: 1 }
++        PropertyChanges { target: panel; progress: 1 }
++    }
++    transitions: Transition {
++        LomiriNumberAnimation { properties: "opacity,progress"; duration: LomiriAnimation.FastDuration }
++    }
++
++    // Tap outside the panel closes the folder.
++    MouseArea {
++        anchors.fill: parent
++        onClicked: root.close()
++        onWheel: wheel.accepted = true
++    }
++
++    Rectangle {
++        anchors.fill: parent
++        color: root.lightMode ? Qt.rgba(0, 0, 0, 0.15) : Qt.rgba(0, 0, 0, 0.45)
++    }
++
++    Rectangle {
++        id: panel
++        objectName: "drawerFolderPanel"
++
++        readonly property int columns: Math.max(1, Math.min(4, grid.count,
++            Math.floor((root.width - units.gu(4)) / root.delegateWidth)))
++        readonly property int rows: Math.max(1, Math.ceil(grid.count / columns))
++        // Grows out of the folder tile.
++        property real originX: root.width / 2
++        property real originY: root.height / 2
++        property real progress: 0
++
++        width: columns * root.delegateWidth + units.gu(2)
++        height: Math.min(root.height - units.gu(6),
++                         titleLabel.height + units.gu(4) + rows * units.gu(11))
++        x: (root.width - width) / 2 + (originX - root.width / 2) * (1 - progress)
++        y: (root.height - height) / 2 + (originY - root.height / 2) * (1 - progress)
++        scale: 0.3 + 0.7 * progress
++        radius: units.gu(2)
++        color: root.lightMode ? LomiriColors.porcelain : LomiriColors.jet
++
++        // Taps on the panel itself do not close the folder.
++        MouseArea { anchors.fill: parent }
++
++        Label {
++            id: titleLabel
++            objectName: "drawerFolderTitle"
++            anchors { left: parent.left; right: parent.right; top: parent.top; margins: units.gu(1.5) }
++            horizontalAlignment: Text.AlignHCenter
++            elide: Text.ElideRight
++            fontSize: "large"
++            text: root.title
++        }
++
++        GridView {
++            id: grid
++            objectName: "drawerFolderAppList"
++            anchors {
++                top: titleLabel.bottom
++                topMargin: units.gu(1.5)
++                left: parent.left
++                leftMargin: units.gu(1)
++                right: parent.right
++                rightMargin: units.gu(1)
++                bottom: parent.bottom
++            }
++            clip: true
++            interactive: contentHeight > height
++            cellWidth: root.delegateWidth
++            cellHeight: units.gu(11)
++            currentIndex: -1
++            model: root.folder !== "" ? folderApps : null
++        }
++    }
++
++    AppDrawerProxyModel {
++        id: folderApps
++        source: root.appModel
++        folderFilter: root.folder
++        sortBy: AppDrawerProxyModel.SortByAToZ
++    }
++}
+diff --git a/qml/Launcher/DrawerFolderIcon.qml b/qml/Launcher/DrawerFolderIcon.qml
+new file mode 100644
+index 0000000..6bbd04c
+--- /dev/null
++++ b/qml/Launcher/DrawerFolderIcon.qml
+@@ -0,0 +1,79 @@
++/*
++ * Copyright (C) 2026 Paul Schuldesz
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; version 3.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++import QtQuick 2.15
++import Lomiri.Components 1.3
++import Utils 0.1
++
++// Icon of an app drawer folder tile: the first four apps of the folder as
++// small icons on a translucent plate, or the folder's own Icon= (from its
++// desktop-directories/<folder>.directory) when it has one.
++Item {
++    id: root
++
++    property var appModel
++    property string folder
++    property string folderIcon
++    property bool lightMode: false
++
++    readonly property string iconSource: folderIcon === "" ? ""
++        : folderIcon.charAt(0) === "/" ? "file://" + folderIcon
++        : "image://theme/" + folderIcon
++
++    LomiriShape {
++        anchors.fill: parent
++        radius: "medium"
++        borderSource: 'undefined'
++        backgroundColor: root.lightMode ? Qt.rgba(0, 0, 0, 0.18) : Qt.rgba(1, 1, 1, 0.22)
++        source: Image {
++            asynchronous: true
++            sourceSize.width: root.width
++            source: root.iconSource
++        }
++        sourceFillMode: LomiriShape.PreserveAspectCrop
++    }
++
++    Grid {
++        anchors.centerIn: parent
++        visible: root.iconSource === ""
++        columns: 2
++        spacing: units.gu(0.5)
++
++        Repeater {
++            model: root.iconSource === "" ? folderApps : null
++            delegate: LomiriShape {
++                visible: index < 4
++                width: units.gu(2.25)
++                height: 7.5 / 8 * width
++                radius: "small"
++                borderSource: 'undefined'
++                source: Image {
++                    asynchronous: true
++                    sourceSize.width: units.gu(2.25)
++                    source: model.icon
++                }
++                sourceFillMode: LomiriShape.PreserveAspectCrop
++            }
++        }
++    }
++
++    AppDrawerProxyModel {
++        id: folderApps
++        source: root.appModel
++        folderFilter: root.folder
++        sortBy: AppDrawerProxyModel.SortByAToZ
++    }
++}
+diff --git a/tests/plugins/Lomiri/Launcher/ualwrapper.h b/tests/plugins/Lomiri/Launcher/ualwrapper.h
+index 362fcd6..2d0af42 100644
+--- a/tests/plugins/Lomiri/Launcher/ualwrapper.h
++++ b/tests/plugins/Lomiri/Launcher/ualwrapper.h
+@@ -29,6 +29,10 @@ public:
+         QString icon;
+         QStringList keywords;
+         uint popularity = 0;
++        // Must match plugins/Lomiri/Launcher/ualwrapper.h (appdrawermodel.cpp includes that one).
++        QString folder;
++        QString folderName;
++        QString folderIcon;
+     };
+ 
+     UalWrapper(QObject* parent = nullptr);
