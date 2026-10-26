@@ -22,3 +22,25 @@ kernel7 candidates (staged 2026-10-26; NOT in kernel6, whose pinned drv is uncha
     dmesg | grep -E "IC boot done|no reset report|eph_probe <|zxz Product ID"
   Then confirm touch, double-tap-to-wake (lp_mode), suspend/resume and the
   firmware version line work as before.
+
+0002-power-supply-qcom_battmgr-charge-control-errors-and-disable.patch
+  (battery agent, 2026-10-26; feature push battery section)
+  qcom_battmgr charge control on kernel6 works from userspace
+  (charge_control_{start,end}_threshold on qcom-battmgr-bat; live: the
+  firmware reads back 85/90 after a write), but:
+   * set_charge_{start,end}_threshold() return 0 even when the
+     BATTMGR_CHG_CTRL_LIMIT_EN GLINK request fails -> now return ret.
+   * every write sends enable=1; there is no way back to the firmware boot
+     state (reports 70/80, enable=0, charges to 100 %). With the patch an
+     end threshold of 100 sends enable=0. UNVERIFIED that the ADSP firmware
+     treats enable=0 as "limit off" (expected from the request layout).
+  Apply AFTER ../misc/0001-power-supply-qcom_battmgr-report-charge-in-uAh-on-SM8350-family.patch
+  (kernel6 order). fp6-batteryd (nixos-fp6/feature-push/battery) works
+  without it; with it, "Off" in Settings restores the true stock state.
+  Compile check (external module against the kernel6 7.2.0-fp6-nixos6
+  headers, W=1, no warnings in the changed code): battmgr-compile-check.nix ->
+    /nix/store/xjlvkz7nr37a7rmnr03zfp2mvirfj9mx-fp6-kernel7-candidate-battmgr-compile-check-63289f441152-nixos6
+  To check on the first kernel7 boot: write 80 then 100 to
+  charge_control_end_threshold while charging below 80 % and confirm the
+  current returns (no 95 % hysteresis); a write while the ADSP is down must
+  now fail with an error instead of succeeding.

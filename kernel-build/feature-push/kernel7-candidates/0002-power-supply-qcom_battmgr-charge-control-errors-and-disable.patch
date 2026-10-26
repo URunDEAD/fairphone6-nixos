@@ -1,0 +1,63 @@
+From: FP6 feature-push (battery agent)
+Date: Mon, 26 Oct 2026 22:00:00 +0200
+Subject: [PATCH] power: supply: qcom_battmgr: report charge-control write
+ errors; 100 % end threshold disables the limit
+
+Two issues in the charge-control thresholds (seen while adding the FP6
+charge limit on kernel6, 7.2.0-fp6-nixos6):
+
+ * qcom_battmgr_set_charge_start_threshold() and
+   qcom_battmgr_set_charge_end_threshold() always return 0. A failed
+   BATTMGR_CHG_CTRL_LIMIT_EN request (GLINK down, firmware -EIO) is silently
+   reported to userspace as success; only the cached values stay stale.
+   Return the request's result.
+
+ * Every write sends enable = 1. There is no way back to the firmware's boot
+   state (enable = 0; on FP6 it reports 70/80 but charges to 100 %): writing
+   100 becomes "limit 100 % with recharge below 100 - delta". Treat an end
+   threshold of 100 % (CHARGE_CTRL_END_THR_MAX) as "no limit" and send
+   enable = 0.
+
+Applies on top of ../misc/0001-power-supply-qcom_battmgr-report-charge-in-uAh-on-SM8350-family.patch
+(kernel6 order). NOT built into kernel6 (pinned). Userspace (fp6-batteryd)
+works without it: it never writes before a limit is chosen and verifies
+every write by readback.
+---
+--- a/drivers/power/supply/qcom_battmgr.c
++++ b/drivers/power/supply/qcom_battmgr.c
+@@ -666,11 +666,16 @@
+ static int qcom_battmgr_set_charge_control(struct qcom_battmgr *battmgr,
+ 					   u32 target_soc, u32 delta_soc)
+ {
++	/*
++	 * An end threshold of 100 % is no limit: send enable = 0, which is the
++	 * firmware's own boot state, instead of a 100 % "limit" with a delta.
++	 */
++	bool enable = target_soc < CHARGE_CTRL_END_THR_MAX;
+ 	struct qcom_battmgr_charge_ctrl_request request = {
+ 		.hdr.owner = cpu_to_le32(PMIC_GLINK_OWNER_BATTMGR),
+ 		.hdr.type = cpu_to_le32(PMIC_GLINK_REQ_RESP),
+ 		.hdr.opcode = cpu_to_le32(BATTMGR_CHG_CTRL_LIMIT_EN),
+-		.enable = cpu_to_le32(1),
++		.enable = cpu_to_le32(enable),
+ 		.target_soc = cpu_to_le32(target_soc),
+ 		.delta_soc = cpu_to_le32(delta_soc),
+ 	};
+@@ -708,7 +713,7 @@
+ 		battmgr->info.charge_ctrl_end = target_soc;
+ 	}
+ 
+-	return 0;
++	return ret;
+ }
+ 
+ static int qcom_battmgr_set_charge_end_threshold(struct qcom_battmgr *battmgr, int end_soc)
+@@ -729,7 +734,7 @@
+ 		battmgr->info.charge_ctrl_end = end_soc;
+ 	}
+ 
+-	return 0;
++	return ret;
+ }
+ 
+ static int qcom_battmgr_charge_control_thresholds_init(struct qcom_battmgr *battmgr)
