@@ -12,6 +12,8 @@
 #    (StartLimitBurst=3 in 60 s could then leave MMS dead until next login).
 #  * log the MMSC's X-Mms-Response-Text next to ResponseStatus (diagnostics).
 #  * getContextProperties logged "Cannot get properties ... <nil>" on success.
+#  * outgoing parts get RFC 2392 Content-IDs "<id>" so receivers (Android
+#    SmilHelper: "<" + cid + ">") resolve the SMIL "cid:" image/text refs.
 { config, lib, pkgs, ... }:
 let
   base = pkgs.callPackage ../../nuntium-package.nix { };

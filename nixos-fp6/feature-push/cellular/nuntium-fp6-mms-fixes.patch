@@ -12,6 +12,22 @@ index 2d7e7d9..4f597ca 100644
  	var status string
  	switch mSendConf.Status() {
  	case nil:
+diff --git a/mms/attachments.go b/mms/attachments.go
+index 96c1827..0680f73 100644
+--- a/mms/attachments.go
++++ b/mms/attachments.go
+@@ -87,6 +87,11 @@ func NewAttachment(id, contentType, filePath string) (*Attachment, error) {
+ 			return nil, err
+ 		}
+ 		ct.ContentId = start
++	} else if id != "" && !strings.HasPrefix(id, "<") {
++		// RFC 2392: SMIL "cid:foo" refers to the part whose Content-ID is
++		// "<foo>". Android's SmilHelper looks parts up as "<" + cid + ">",
++		// so a bare Content-ID leaves the image unresolved on receivers.
++		ct.ContentId = "<" + id + ">"
+ 	}
+ 	return ct, nil
+ }
 diff --git a/ofono/modem.go b/ofono/modem.go
 index 5c2ac58..63e4c3d 100644
 --- a/ofono/modem.go
