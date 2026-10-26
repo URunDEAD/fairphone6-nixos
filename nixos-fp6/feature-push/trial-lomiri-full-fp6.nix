@@ -15,6 +15,7 @@ let
       ./camera/lomiri-camera-fp6.nix
       ./network/network-fp6.nix
       ./cellular/cellular-fp6.nix
+      ./ims/ims-fp6.nix
       ./misc/rtc-offset-fp6.nix
       ./misc/sd-automount-fp6.nix
       ./misc/power-suspend-policy-fp6.nix
@@ -50,6 +51,7 @@ let
         hardware.fp6Camera.enableSnapshot = lib.mkForce false;
         hardware.fairphone6.network.enable = true;
         services.fp6Cellular.enable = true;
+        services.fp6Ims.enable = true;
         services.fp6RtcOffset.enable = true;
         services.fp6SdAutomount.enable = true;
         # Guarded mode: no suspend until UFS hibern8 resume failures are fixed.
