@@ -49,6 +49,7 @@
       export DEVICEINFO_DEVICE_PATH=/etc/deviceinfo/devices
       export MIR_SERVER_ADD_WAYLAND_EXTENSIONS=zwp_input_panel_v1:zwp_input_method_v1
       export QT_PLUGIN_PATH=${pkgs.maliit-framework}/${pkgs.libsForQt5.qtbase.qtPluginPrefix}:''${QT_PLUGIN_PATH:-}
+      ${config.hardware.fairphone6.lomiriGreeterWrapperPre or ""}
       exec ${lib.getExe' pkgs.lomiri.lomiri "lomiri-greeter-wrapper"} "$@"
     ''}
   '';

@@ -32,6 +32,8 @@ let
     (lib.concatMapStrings (m: "blacklist ${m}\n") background);
 in
 {
+  imports = [ ./lomiri-qmlcache-fp6.nix ];
+
   options.hardware.fairphone6.bootSpeed = {
     enable = lib.mkEnableOption "FP6 boot-time optimizations (stage-1 background module loading)";
     backgroundModules = lib.mkOption {
