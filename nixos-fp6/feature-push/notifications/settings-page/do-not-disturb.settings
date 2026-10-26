@@ -1,0 +1,30 @@
+{
+    "icon": "night-mode",
+    "name": "Do Not Disturb",
+    "translations": "lomiri-system-settings",
+    "category": "personal",
+    "priority": 6,
+    "form-factors": [
+        "phone",
+        "tablet"
+    ],
+    "keywords": [
+        "do not disturb",
+        "dnd",
+        "silent",
+        "quiet",
+        "focus",
+        "schedule",
+        "bedtime",
+        "sleep",
+        "night",
+        "greyscale",
+        "notifications",
+        "history",
+        "exceptions",
+        "favourites"
+    ],
+    "has-dynamic-keywords": false,
+    "has-dynamic-visibility": false,
+    "page-component": "PageComponent.qml"
+}

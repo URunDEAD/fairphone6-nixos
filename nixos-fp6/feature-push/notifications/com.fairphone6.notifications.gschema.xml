@@ -1,0 +1,140 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- FP6 Do Not Disturb, bedtime mode and notification history.
+     Written by the Settings page / status-bar menu (user keys) and by
+     fp6-notifyd (the "effective" keys at the end), read by Lomiri. -->
+<schemalist>
+  <schema id="com.fairphone6.notifications" path="/com/fairphone6/notifications/">
+    <!-- Do Not Disturb -->
+    <key name="dnd-manual" type="s">
+      <choices><choice value="none"/><choice value="on"/><choice value="off"/></choices>
+      <default>"none"</default>
+      <summary>Manual Do Not Disturb override</summary>
+      <description>"on"/"off" from the switch; lasts until the next schedule start or end, then "none" (the schedules decide).</description>
+    </key>
+    <key name="dnd-manual-since" type="x">
+      <default>0</default>
+      <summary>Unix time of the last manual switch</summary>
+    </key>
+    <key name="dnd-schedules" type="s">
+      <default>'[{"name":"Nights","enabled":false,"days":[1,2,3,4,5,6,7],"start":"22:00","end":"07:00"},{"name":"Weekdays","enabled":false,"days":[1,2,3,4,5],"start":"09:00","end":"17:00"}]'</default>
+      <summary>Schedules (JSON list)</summary>
+      <description>name, enabled, days (1 = Monday .. 7 = Sunday, the day the window starts), start and end ("HH:MM"; an end before the start is the next morning).</description>
+    </key>
+    <key name="dnd-calls-from" type="s">
+      <choices><choice value="everyone"/><choice value="contacts"/><choice value="favourites"/><choice value="nobody"/></choices>
+      <default>"favourites"</default>
+      <summary>Calls that still ring during Do Not Disturb</summary>
+    </key>
+    <key name="dnd-messages-from" type="s">
+      <choices><choice value="everyone"/><choice value="contacts"/><choice value="favourites"/><choice value="nobody"/></choices>
+      <default>"favourites"</default>
+      <summary>Messages (SMS/MMS) that still alert during Do Not Disturb</summary>
+    </key>
+    <key name="dnd-repeat-callers" type="b">
+      <default>true</default>
+      <summary>A second call from the same number within 15 minutes rings</summary>
+    </key>
+    <key name="dnd-allowed-numbers" type="as">
+      <default>[]</default>
+      <summary>Phone numbers that always ring / alert</summary>
+    </key>
+    <key name="dnd-allowed-apps" type="as">
+      <default>[]</default>
+      <summary>Apps (notification app names) whose notifications still show</summary>
+    </key>
+    <key name="dnd-hide-popups" type="b">
+      <default>true</default>
+      <summary>Hide notification bubbles of silenced notifications</summary>
+    </key>
+    <key name="dnd-no-wake" type="b">
+      <default>true</default>
+      <summary>Silenced notifications do not turn the screen on</summary>
+    </key>
+
+    <!-- Bedtime -->
+    <key name="bedtime-enabled" type="b">
+      <default>false</default>
+      <summary>Bedtime mode on a schedule</summary>
+    </key>
+    <key name="bedtime-start" type="s">
+      <default>"22:30"</default>
+    </key>
+    <key name="bedtime-end" type="s">
+      <default>"07:00"</default>
+    </key>
+    <key name="bedtime-days" type="ai">
+      <default>[1,2,3,4,5,6,7]</default>
+      <summary>Days bedtime starts (1 = Monday .. 7 = Sunday)</summary>
+    </key>
+    <key name="bedtime-manual" type="s">
+      <choices><choice value="none"/><choice value="on"/><choice value="off"/></choices>
+      <default>"none"</default>
+      <summary>Manual bedtime override (status-bar switch), until the next bedtime start or end</summary>
+    </key>
+    <key name="bedtime-manual-since" type="x">
+      <default>0</default>
+    </key>
+    <key name="bedtime-dnd" type="b">
+      <default>true</default>
+      <summary>Bedtime turns Do Not Disturb on</summary>
+    </key>
+    <key name="bedtime-greyscale" type="b">
+      <default>true</default>
+      <summary>Bedtime turns the screen grey (display-comfort greyscale)</summary>
+    </key>
+    <key name="bedtime-dim-wallpaper" type="b">
+      <default>true</default>
+      <summary>Bedtime dims the wallpaper</summary>
+    </key>
+    <key name="bedtime-dim-level" type="d">
+      <range min="0.0" max="0.9"/>
+      <default>0.6</default>
+      <summary>How dark the wallpaper gets at bedtime (0 = unchanged)</summary>
+    </key>
+
+    <!-- Notification history (off by default) -->
+    <key name="history-enabled" type="b">
+      <default>false</default>
+      <summary>Keep a notification history (app, title, time)</summary>
+      <description>Turning it off deletes the history.</description>
+    </key>
+    <key name="history-body" type="b">
+      <default>false</default>
+      <summary>Also keep the notification text (message contents)</summary>
+    </key>
+    <key name="history-retention-days" type="i">
+      <range min="1" max="365"/>
+      <default>7</default>
+    </key>
+    <key name="history-exclude-apps" type="as">
+      <default>[]</default>
+      <summary>Apps never recorded</summary>
+    </key>
+    <key name="history-clear" type="i">
+      <default>0</default>
+      <summary>Counter: any change clears the history</summary>
+    </key>
+
+    <!-- Written by fp6-notifyd -->
+    <key name="dnd-active" type="b">
+      <default>false</default>
+      <summary>Effective Do Not Disturb state (read by Lomiri)</summary>
+    </key>
+    <key name="dnd-reason" type="s">
+      <default>""</default>
+      <summary>"manual", "schedule:NAME", "bedtime" or ""</summary>
+    </key>
+    <key name="bedtime-active" type="b">
+      <default>false</default>
+    </key>
+    <key name="wallpaper-dim" type="d">
+      <range min="0.0" max="0.9"/>
+      <default>0.0</default>
+      <summary>Black overlay opacity on the wallpaper (read by Lomiri)</summary>
+    </key>
+    <key name="status-file" type="s">
+      <default>""</default>
+      <summary>fp6-notifyd status JSON (history, apps seen) for the Settings page</summary>
+    </key>
+  </schema>
+</schemalist>

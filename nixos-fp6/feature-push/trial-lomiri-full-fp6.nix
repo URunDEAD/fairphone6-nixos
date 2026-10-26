@@ -48,8 +48,14 @@ let
       ({ ... }: { imports = [ ./sensor-apps/sensor-apps-fp6.nix ]; hardware.fairphone6.sensorApps.enable = true; })
       ./lomiri-session/lomiri-session-fp6.nix
       ./lomiri-drawer-folders/lomiri-drawer-folders-fp6.nix
+      # Charge limit, adaptive charging, battery saver, battery history/usage
+      # (fp6-batteryd + Battery settings pages). results/feature-push-20261024/battery/README.md
+      ({ ... }: { imports = [ ./battery/battery-fp6.nix ]; hardware.fairphone6.battery.enable = true; })
       ./app-ready/app-ready-fp6.nix
       ./screen-capture/screen-capture-fp6.nix
+      ({ ... }: { imports = [ ./display-comfort/display-comfort-fp6.nix ]; hardware.fairphone6.displayComfort.enable = true; })
+      ({ ... }: { imports = [ ./notifications/notifications-fp6.nix ]; hardware.fairphone6.notifications.enable = false; })
+      ({ ... }: { imports = [ ./privacy-lock/privacy-lock-fp6.nix ]; hardware.fairphone6.privacyLock.enable = true; })
       ({ lib, options, ... }: {
         # fp6-lomiri-powerd replaces the manual-only brightness bridge.
         # lomiri-gpu-fp6.nix restates it at mkOverride 10.

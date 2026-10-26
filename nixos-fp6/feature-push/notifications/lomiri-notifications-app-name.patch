@@ -1,0 +1,26 @@
+diff --git a/src/NotificationServer.cpp b/src/NotificationServer.cpp
+index e17137f..3eeb6b4 100644
+--- a/src/NotificationServer.cpp
++++ b/src/NotificationServer.cpp
+@@ -318,6 +318,9 @@ unsigned int NotificationServer::Notify(const QString &app_name, uint replaces_i
+     notification->setBody(body);
+     notification->setIcon(app_icon);
+     notification->setSummary(summary);
++    // FP6 (nixos-fp6/feature-push/notifications): the shell's Do Not
++    // Disturb filter needs the sender's app name, which the model lacks.
++    hints.insert(QStringLiteral("x-fp6-app-name"), app_name);
+     notification->setHints(hints);
+ 
+     QVariant secondaryIcon =
+diff --git a/test/notificationservertest.cpp b/test/notificationservertest.cpp
+index 4877a47..a0113e6 100644
+--- a/test/notificationservertest.cpp
++++ b/test/notificationservertest.cpp
+@@ -96,6 +96,7 @@ void expectNotification(const NotificationDataList& notifications, int index, in
+             .setAppIcon("image://theme/icon " + name)
+             .setBody("body " + name)
+             .setSummary("summary " + name)
++            .setHints({{QStringLiteral("x-fp6-app-name"), QStringLiteral("my app")}})
+             .setExpireTimeout(5000)
+         );
+ }

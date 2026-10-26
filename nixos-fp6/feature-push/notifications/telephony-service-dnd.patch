@@ -1,0 +1,134 @@
+diff --git a/approver/approver.cpp b/approver/approver.cpp
+index 557626d..d7dcc31 100644
+--- a/approver/approver.cpp
++++ b/approver/approver.cpp
+@@ -35,6 +35,7 @@
+ #include "protocol.h"
+ #include "protocolmanager.h"
+ #include "tonegenerator.h"
++#include "fp6dnd.h"
+ #include "telepathyhelper.h"
+ #include "accountentry.h"
+ 
+@@ -594,6 +595,10 @@ bool Approver::showSnapDecision(const Tp::ChannelDispatchOperationPtr dispatchOp
+         }
+     }
+ 
++    // FP6 Do Not Disturb: silenced calls still show (no ringtone, vibration, screen wake).
++    const bool fp6Alert = Fp6Dnd::shouldAlert(QStringLiteral("call"), id, contact);
++    notify_notification_set_hint_string(notification, "x-fp6-dnd", Fp6Dnd::hint(fp6Alert));
++
+     mPendingSnapDecision = notification;
+ 
+     GError *error = NULL;
+@@ -606,12 +611,12 @@ bool Approver::showSnapDecision(const Tp::ChannelDispatchOperationPtr dispatchOp
+ 
+     if (hasCalls) {
+         ToneGenerator::instance()->playWaitingTone();
+-    } else {
++    } else if (fp6Alert) {
+         // play a ringtone
+         Ringtone::instance()->playIncomingCallSound(ringTone);
+     }
+ 
+-    if (!hasCalls && GreeterContacts::instance()->incomingCallVibrate()) {
++    if (fp6Alert && !hasCalls && GreeterContacts::instance()->incomingCallVibrate()) {
+         mVibrateEffect.setDuration(2000);
+         mVibrateEffect.start();
+         mVibrateTimer.start();
+diff --git a/indicator/textchannelobserver.cpp b/indicator/textchannelobserver.cpp
+index 0db3afd..e8925d8 100644
+--- a/indicator/textchannelobserver.cpp
++++ b/indicator/textchannelobserver.cpp
+@@ -31,6 +31,7 @@
+ #include "config.h"
+ #include "contactutils.h"
+ #include "ringtone.h"
++#include "fp6dnd.h"
+ #include "telepathyhelper.h"
+ #include "phoneutils.h"
+ #include "accountentry.h"
+@@ -616,10 +617,15 @@ void TextChannelObserver::showNotificationForMessage(const Tp::TextChannelPtr ch
+     // add the message to the messaging menu (use hex format to avoid invalid characters)
+     QByteArray token(message.messageToken().toUtf8());
+ 
++    // FP6 Do Not Disturb: silenced messages still notify (no sound, vibration, screen wake).
++    const bool fp6Alert = Fp6Dnd::shouldAlert(QStringLiteral("message"), telepathyContact->id(), contact);
++
+     // if the message was already read, just play the ringtone and return
+     // ignore logic if we are in greeter mode
+     if (!mUnreadMessages.contains(token) && !GreeterContacts::isGreeterMode()) {
+-        Ringtone::instance()->playIncomingMessageSound();
++        if (fp6Alert) {
++            Ringtone::instance()->playIncomingMessageSound();
++        }
+         return;
+     }
+ 
+@@ -715,6 +721,7 @@ void TextChannelObserver::showNotificationForMessage(const Tp::TextChannelPtr ch
+     notify_notification_set_hint_string(notification,
+                                         "x-lomiri-switch-to-application",
+                                         "true");
++    notify_notification_set_hint_string(notification, "x-fp6-dnd", Fp6Dnd::hint(fp6Alert));
+ 
+     g_signal_connect(notification, "closed", G_CALLBACK(notification_closed), &mNotifications);
+ 
+@@ -724,7 +731,9 @@ void TextChannelObserver::showNotificationForMessage(const Tp::TextChannelPtr ch
+         g_error_free (error);
+     }
+ 
+-    Ringtone::instance()->playIncomingMessageSound();
++    if (fp6Alert) {
++        Ringtone::instance()->playIncomingMessageSound();
++    }
+ }
+ 
+ void TextChannelObserver::updateNotifications(const QContact &contact)
+diff --git a/liblomiritelephonyservice/fp6dnd.h b/liblomiritelephonyservice/fp6dnd.h
+new file mode 100644
+index 0000000..73c7633
+--- /dev/null
++++ b/liblomiritelephonyservice/fp6dnd.h
+@@ -0,0 +1,42 @@
++/*
++ * FP6 Do Not Disturb (nixos-fp6/feature-push/notifications): ask fp6-notifyd
++ * whether an incoming call / message may ring, vibrate and wake the screen.
++ * Returns true (alert as usual) when DND is off, fp6-notifyd is not running
++ * or does not answer within 400 ms.
++ */
++#ifndef FP6DND_H
++#define FP6DND_H
++
++#include <QDBusConnection>
++#include <QDBusMessage>
++#include <QContact>
++#include <QContactFavorite>
++#include <QString>
++
++namespace Fp6Dnd {
++
++inline bool shouldAlert(const QString &kind, const QString &id, const QtContacts::QContact &contact)
++{
++    QDBusMessage msg = QDBusMessage::createMethodCall(QStringLiteral("com.fairphone6.Dnd"),
++                                                      QStringLiteral("/com/fairphone6/Dnd"),
++                                                      QStringLiteral("com.fairphone6.Dnd"),
++                                                      QStringLiteral("ShouldAlert"));
++    msg.setAutoStartService(false);
++    const bool isContact = !contact.isEmpty();
++    const bool isFavourite = isContact && contact.detail<QtContacts::QContactFavorite>().isFavorite();
++    msg << kind << id << isContact << isFavourite;
++    const QDBusMessage reply = QDBusConnection::sessionBus().call(msg, QDBus::Block, 400);
++    if (reply.type() != QDBusMessage::ReplyMessage || reply.arguments().isEmpty()) {
++        return true;
++    }
++    return reply.arguments().first().toBool();
++}
++
++inline const char *hint(bool alert)
++{
++    return alert ? "allowed" : "silenced";
++}
++
++}
++
++#endif
