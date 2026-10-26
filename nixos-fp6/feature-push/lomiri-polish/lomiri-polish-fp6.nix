@@ -96,18 +96,24 @@ let
               readonly property real cameraCutoutRightWidth: width < height ? (width - cameraCutoutGap) / 2 : width
               // FP6: indicators that do not fit right of the hole continue left of it.
               // cameraCutoutUsed = width taken right of the hole by the items that fit there.
+              // cameraCutoutExtent = distance from the right edge to the leftmost drawn item
+              // (the indicators drag/tap area is widened to it).
               property real cameraCutoutUsed: 0
+              property real cameraCutoutExtent: 0
               property var cameraCutoutItems: []
               function cameraCutoutUpdate() {
-                  var used = 0;
+                  var used = 0, extent = 0;
                   for (var i = 0; i < cameraCutoutItems.length; i++) {
                       var it = cameraCutoutItems[i];
                       if (it.fp6FitsRight && it.width > 0) used = Math.max(used, it.fp6DistRight);
+                      if (!it.hidden && it.width > 0) extent = Math.max(extent, it.fp6DistRight + it.fp6Shift);
                   }
                   cameraCutoutUsed = used;
+                  cameraCutoutExtent = extent;
               }' \
             --replace-fail '            overFlowWidth: width - appMenuClear' \
-              '            overFlowWidth: Math.min(width - appMenuClear, root.cameraCutoutRightWidth)' \
+              '            overFlowWidth: Math.min(width - appMenuClear, root.cameraCutoutRightWidth)
+                      dragOverFlowWidth: Math.min(width - appMenuClear, Math.max(overFlowWidth, root.cameraCutoutExtent))' \
             --replace-fail '                readonly property bool overflow: parent.width - (x - __indicators.rowContentX) > __indicators.overFlowWidth' \
               '                // FP6: an item that does not fit right of the camera hole is drawn
                 // left of it (shifted past the gap); it is hidden only when it would
@@ -126,6 +132,8 @@ let
                 onFp6DistRightChanged: Qt.callLater(root.cameraCutoutUpdate)
                 onFp6FitsRightChanged: Qt.callLater(root.cameraCutoutUpdate)
                 onWidthChanged: Qt.callLater(root.cameraCutoutUpdate)
+                onFp6ShiftChanged: Qt.callLater(root.cameraCutoutUpdate)
+                onHiddenChanged: Qt.callLater(root.cameraCutoutUpdate)
                 Component.onCompleted: {
                     root.cameraCutoutItems.push(indicatorItem);
                     Qt.callLater(root.cameraCutoutUpdate);
@@ -136,6 +144,63 @@ let
                     Qt.callLater(root.cameraCutoutUpdate);
                 }
                 transform: Translate { x: -indicatorItem.fp6Shift }'
+          # The drag/tap area covers the items drawn left of the hole too, and a
+          # press there selects the item drawn under it, not its unshifted slot.
+          substituteInPlace qml/Panel/PanelMenu.qml \
+            --replace-fail '    property alias overFlowWidth: bar.overFlowWidth' \
+              '    property alias overFlowWidth: bar.overFlowWidth
+              property real dragOverFlowWidth: overFlowWidth // FP6: camera cutout' \
+            --replace-fail '        width: root.overFlowWidth + root.menuContentX' \
+              '        width: root.dragOverFlowWidth + root.menuContentX' \
+            --replace-fail '                touchPressTime = new Date().getTime();' \
+              '                touchPressTime = new Date().getTime();
+                          // FP6: collapsed bar, items left of the camera hole are shifted
+                          bar.fp6PressAt(mapToItem(bar, touchPosition.x, 0).x);'
+          substituteInPlace qml/Panel/PanelItemRow.qml \
+            --replace-fail '        var item = row.itemAt(x + row.contentX, y);
+                  return item && item.hasOwnProperty("ownIndex") ? item : null;' \
+              '        // FP6: items left of the camera hole are drawn shifted (fp6Shift);
+                  // hit-test them where they are drawn.
+                  var cx = x + row.contentX;
+                  for (var i = 0; i < row.contentItem.children.length; i++) {
+                      var c = row.contentItem.children[i];
+                      if (c.hasOwnProperty("ownIndex") && c.hasOwnProperty("fp6Shift") && c.fp6Shift > 0 &&
+                              c.width > 0 && cx >= c.x - c.fp6Shift && cx < c.x - c.fp6Shift + c.width)
+                          return c;
+                  }
+                  var item = row.itemAt(cx, y);
+                  if (item && item.hasOwnProperty("fp6Shift") && item.fp6Shift > 0) return null;
+                  return item && item.hasOwnProperty("ownIndex") ? item : null;' \
+            --replace-fail '    function selectItemAt(lateralPosition) {
+                  var item = indicatorAt(lateralPosition, 0);' \
+              '    // FP6: the shifted item drawn under the finger when the collapsed bar was
+              // pressed; the next selection uses it (the bar is expanded by then and the
+              // shift is gone), and fp6PressShift realigns the expanded row to the finger.
+              property var fp6PressItem: null
+              property real fp6PressShift: 0
+              function fp6PressAt(x) {
+                  var item = indicatorAt(x, 0);
+                  fp6PressItem = (item && item.fp6Shift > 0 && item.opacity > 0 && item.enabled) ? item : null;
+                  fp6PressShift = fp6PressItem ? fp6PressItem.fp6Shift : 0;
+              }
+          
+              function selectItemAt(lateralPosition) {
+                  if (fp6PressItem) {
+                      row.currentIndex = fp6PressItem.ownIndex;
+                      fp6PressItem = null;
+                      return;
+                  }
+                  fp6PressShift = 0;
+                  var item = indicatorAt(lateralPosition, 0);'
+          substituteInPlace qml/Panel/PanelBar.qml \
+            --replace-fail '    function selectPreviousItem() {' \
+              '    function fp6PressAt(lateralPosition) { // FP6: camera cutout
+                  row.fp6PressAt(root.mapToItem(row, lateralPosition, 0).x);
+              }
+          
+              function selectPreviousItem() {' \
+            --replace-fail '                originalDistanceFromEdge = initialItem ? (row.width - initialItem.x - initialItem.width/2) : -1;' \
+              '                originalDistanceFromEdge = initialItem ? (row.width - initialItem.x - initialItem.width/2 + row.fp6PressShift) : -1;'
         '' + lib.optionalString cfg.sessionIndicatorLogout ''
           # FP6: keep "Log Out…" of the session indicator on phones too.
           substituteInPlace qml/Panel/Indicators/IndicatorMenuItemFactory.qml \
