@@ -1,0 +1,143 @@
+From 6632cc20bf26ea83abbc4ff5b9cfaa2c8024ca40 Mon Sep 17 00:00:00 2001
+From: Paul Schuldesz <paulschuldesz@gmail.com>
+Date: Mon, 26 Oct 2026 16:42:20 +0200
+Subject: [PATCH 19/21] libcamera: software_isp: Make the AF sharpness window
+ configurable
+
+The sharpness metric was gathered over a fixed centre fifth of the frame,
+so tap-to-focus could only ever focus on the centre. Carry the window
+(edges in 1/1024 of the statistics window, default the centre fifth) in
+DebayerParams, which the IPA fills every frame, and apply it to the CPU
+statistics before each frame.
+---
+ .../internal/software_isp/debayer_params.h    |  9 ++++++
+ .../internal/software_isp/swstats_cpu.h       |  4 +++
+ src/libcamera/software_isp/debayer_cpu.cpp    |  1 +
+ src/libcamera/software_isp/swstats_cpu.cpp    | 29 +++++++++++++++----
+ 4 files changed, 37 insertions(+), 6 deletions(-)
+
+diff --git a/include/libcamera/internal/software_isp/debayer_params.h b/include/libcamera/internal/software_isp/debayer_params.h
+index 6772b43b..63b52fea 100644
+--- a/include/libcamera/internal/software_isp/debayer_params.h
++++ b/include/libcamera/internal/software_isp/debayer_params.h
+@@ -12,6 +12,9 @@
+ 
+ #include <stdint.h>
+ 
++#include <array>
++#include <stdint.h>
++
+ #include "libcamera/internal/matrix.h"
+ #include "libcamera/internal/vector.h"
+ 
+@@ -25,6 +28,12 @@ struct DebayerParams {
+ 	float gamma = 1.0;
+ 	float contrastExp = 1.0;
+ 	RGB<float> gains = RGB<float>({ 1.0, 1.0, 1.0 });
++	/*
++	 * Autofocus sharpness window: left, top, right, bottom edges in
++	 * 1/kAfWindowScale of the statistics window. Default: centre fifth.
++	 */
++	static constexpr unsigned int kAfWindowScale = 1024;
++	std::array<uint16_t, 4> afWindow = { 410, 410, 614, 614 };
+ };
+ 
+ } /* namespace libcamera */
+diff --git a/include/libcamera/internal/software_isp/swstats_cpu.h b/include/libcamera/internal/software_isp/swstats_cpu.h
+index df399d71..3f66680c 100644
+--- a/include/libcamera/internal/software_isp/swstats_cpu.h
++++ b/include/libcamera/internal/software_isp/swstats_cpu.h
+@@ -11,6 +11,7 @@
+ 
+ #pragma once
+ 
++#include <array>
+ #include <stdint.h>
+ #include <vector>
+ 
+@@ -54,6 +55,7 @@ public:
+ 
+ 	int configure(const StreamConfiguration &inputCfg, unsigned int statsBufferCount = 1);
+ 	void setWindow(const Rectangle &window);
++	void setSharpnessWindow(const std::array<uint16_t, 4> &window);
+ 	void startFrame(uint32_t frame);
+ 	void finishFrame(uint32_t frame, uint32_t bufferId);
+ 	void processFrame(uint32_t frame, uint32_t bufferId, MappedFrameBuffer &input);
+@@ -114,6 +116,8 @@ private:
+ 	unsigned int ySkipMask_;
+ 
+ 	Rectangle window_;
++	/* Sharpness window edges (left, top, right, bottom) in 1/1024 */
++	std::array<unsigned int, 4> sharpWindow_ = { 410, 410, 614, 614 };
+ 
+ 	Size patternSize_;
+ 
+diff --git a/src/libcamera/software_isp/debayer_cpu.cpp b/src/libcamera/software_isp/debayer_cpu.cpp
+index 4fcdb3c0..05aa1d7b 100644
+--- a/src/libcamera/software_isp/debayer_cpu.cpp
++++ b/src/libcamera/software_isp/debayer_cpu.cpp
+@@ -1127,6 +1127,7 @@ void DebayerCpu::process(uint32_t frame, FrameBuffer *input, FrameBuffer *output
+ 		return;
+ 	}
+ 
++	stats_->setSharpnessWindow(params.afWindow);
+ 	stats_->startFrame(frame);
+ 
+ 	workPendingMutex_.lock();
+diff --git a/src/libcamera/software_isp/swstats_cpu.cpp b/src/libcamera/software_isp/swstats_cpu.cpp
+index ed32c47d..29919b0e 100644
+--- a/src/libcamera/software_isp/swstats_cpu.cpp
++++ b/src/libcamera/software_isp/swstats_cpu.cpp
+@@ -175,8 +175,9 @@ static constexpr unsigned int kGreenYMul = 150; /* 0.587 * 256 */
+ static constexpr unsigned int kBlueYMul = 29; /* 0.114 * 256 */
+ 
+ /*
+- * The sharpness metric is only gathered over the centre fifth of the frame,
+- * which is where the subject an autofocus run should focus on normally is.
++ * The sharpness metric is only gathered over the autofocus window, by default
++ * the centre fifth of the frame, which is where the subject an autofocus run
++ * should focus on normally is (see setSharpnessWindow()).
+  * \a lineLength is the upper bound of the sampling loop of the caller, in the
+  * units that loop counts in (pixels or bytes depending on the format).
+  */
+@@ -191,10 +192,10 @@ static constexpr unsigned int kBlueYMul = 29; /* 0.114 * 256 */
+ 	uint64_t sharpness = 0;           \
+ 	uint64_t sharpSumG = 0;           \
+ 	unsigned int sharpCount = 0;      \
+-	const unsigned int sharpXBegin = (lineLength) * 2 / 5;              \
+-	const unsigned int sharpXEnd = (lineLength) * 3 / 5;                \
+-	const bool sharpRow = y >= window_.height * 2 / 5 &&                \
+-			      y < window_.height * 3 / 5;                   \
++	const unsigned int sharpXBegin = (lineLength) * sharpWindow_[0] / 1024; \
++	const unsigned int sharpXEnd = (lineLength) * sharpWindow_[2] / 1024;   \
++	const bool sharpRow = y >= window_.height * sharpWindow_[1] / 1024 &&   \
++			      y < window_.height * sharpWindow_[3] / 1024;      \
+ 	uint32_t zSumR = 0;               \
+ 	uint32_t zSumG = 0;               \
+ 	uint32_t zSumB = 0;               \
+@@ -446,6 +447,22 @@ void SwStatsCpu::statsGBRG12PLine0(const uint8_t *src[], unsigned int y, SwIspSt
+ 	SWSTATS_FINISH_LINE_STATS()
+ }
+ 
++/**
++ * \brief Set the window the sharpness metric is gathered over
++ * \param[in] window Left, top, right and bottom edges in 1/1024 of the
++ * statistics window
++ *
++ * Invalid (empty or out of range) windows are ignored.
++ */
++void SwStatsCpu::setSharpnessWindow(const std::array<uint16_t, 4> &window)
++{
++	if (window[0] >= window[2] || window[1] >= window[3] ||
++	    window[2] > 1024 || window[3] > 1024)
++		return;
++
++	sharpWindow_ = { window[0], window[1], window[2], window[3] };
++}
++
+ /**
+  * \brief Reset state to start statistics gathering for a new frame
+  * \param[in] frame The frame number
+-- 
+2.54.0
+

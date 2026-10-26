@@ -1,0 +1,326 @@
+From b972240e622608a3225fac36f30f2ed1e7470e87 Mon Sep 17 00:00:00 2001
+From: Paul Schuldesz <paulschuldesz@gmail.com>
+Date: Mon, 26 Oct 2026 16:42:20 +0200
+Subject: [PATCH 20/21] ipa: simple: af: Tap to focus, AF windows, steadier
+ continuous AF
+
+* AfTrigger start/cancel now also work in continuous mode, so an
+  application can request focus on demand (tap to focus) without
+  leaving continuous AF.
+* Support AfMetering/AfWindows: the first window (sensor output pixels)
+  becomes the sharpness window, grown to at least 1/8 of the frame so
+  the metric does not get noisy; AfMeteringAuto restores the centre.
+* Continuous AF no longer re-sweeps while the scene is still changing:
+  after focus loss it waits until consecutive stats frames agree within
+  12% for 3 frames (at most 30 frames) and only then sweeps, instead of
+  sweeping a moving scene and settling on a wrong position.
+* A sweep whose maximum is within 15% of its minimum (flat, textureless
+  scene) reports AfStateFailed instead of AfStateFocused.
+---
+ src/ipa/simple/algorithms/af.cpp | 158 ++++++++++++++++++++++++++++---
+ src/ipa/simple/algorithms/af.h   |  24 +++++
+ 2 files changed, 171 insertions(+), 11 deletions(-)
+
+diff --git a/src/ipa/simple/algorithms/af.cpp b/src/ipa/simple/algorithms/af.cpp
+index 6c951038..fb2619ca 100644
+--- a/src/ipa/simple/algorithms/af.cpp
++++ b/src/ipa/simple/algorithms/af.cpp
+@@ -35,7 +35,21 @@ constexpr uint32_t kSettleSkipLong = 3;
+ /* Relative sharpness change that makes a settled scene worth re-focusing. */
+ constexpr double kFocusLossThreshold = 0.3;
+ /* Consecutive stats frames that change must persist for before re-focusing. */
+-constexpr uint32_t kFocusLossFrames = 4;
++constexpr uint32_t kFocusLossFrames = 3;
++/*
++ * After a scene change, continuous AF waits until consecutive stats frames
++ * agree within kStableThreshold for kStableFrames frames (the user stopped
++ * panning) before sweeping, or kStableTimeout frames at most.
++ */
++constexpr double kStableThreshold = 0.12;
++constexpr uint32_t kStableFrames = 3;
++constexpr uint32_t kStableTimeout = 30;
++/* A sweep whose maximum is within this ratio of its minimum found no peak. */
++constexpr double kFlatSweepRatio = 1.15;
++/* Smallest AF window edge, in 1/1024 of the frame. */
++constexpr unsigned int kMinWindow = 128;
++/* The default AF window: the centre fifth of the frame. */
++constexpr std::array<uint16_t, 4> kDefaultWindow = { 410, 410, 614, 614 };
+ /*
+  * Focus continuously by default: applications that know nothing about AF never
+  * send an AfMode or an AfTrigger, and they are the ones this exists for.
+@@ -45,7 +59,9 @@ constexpr int32_t kDefaultAfMode = controls::AfModeContinuous;
+ } /* namespace */
+ 
+ Af::Af()
+-	: steps_(0)
++	: steps_(0), waitStable_(false), prevSharp_(0), stableCount_(0),
++	  waitFrames_(0), sharpnessMin_(0), failed_(false),
++	  window_(kDefaultWindow)
+ {
+ }
+ 
+@@ -59,6 +75,12 @@ int Af::init(IPAContext &context,
+ 		ControlInfo(controls::AfTriggerValues,
+ 			    ControlValue(static_cast<int32_t>(controls::AfTriggerStart)));
+ 	context.ctrlMap[&controls::LensPosition] = ControlInfo(0.0f, 100.0f, 50.0f);
++	context.ctrlMap[&controls::AfMetering] =
++		ControlInfo(controls::AfMeteringValues,
++			    ControlValue(static_cast<int32_t>(controls::AfMeteringAuto)));
++	context.ctrlMap[&controls::AfWindows] =
++		ControlInfo(Rectangle{}, Rectangle(65535, 65535, 65535, 65535),
++			    Rectangle{});
+ 	return 0;
+ }
+ 
+@@ -69,6 +91,9 @@ int Af::configure(IPAContext &context,
+ 	context.activeState.knobs.focus_sweep = false;
+ 	context.activeState.knobs.focus_pos = 0;
+ 	context.configuration.focus.skip = kSettleSkipLong;
++	waitStable_ = false;
++	failed_ = false;
++	window_ = kDefaultWindow;
+ 
+ 	/*
+ 	 * Start focusing as soon as the camera streams. Applications that do
+@@ -110,16 +135,87 @@ void Af::queueRequest(typename Module::Context &context,
+ 			<< "Setting focus position to " << lensPosition.value();
+ 	}
+ 
++	const auto &metering = controls.get(controls::AfMetering);
++	const auto &windows = controls.get(controls::AfWindows);
++	if (metering.has_value() && metering.value() == controls::AfMeteringAuto)
++		setWindow(context, nullptr);
++	else if (windows.has_value() && !windows->empty() &&
++		 (metering.value_or(controls::AfMeteringWindows) ==
++		  controls::AfMeteringWindows))
++		setWindow(context, &(*windows)[0]);
++
++	/*
++	 * A trigger starts a sweep in auto mode and also in continuous mode
++	 * (tap to focus: focus on the given window now rather than waiting
++	 * for a scene change); cancel stops a running sweep where it is.
++	 */
+ 	const auto &afTrigger = controls.get(controls::AfTrigger);
+ 	if (afTrigger.has_value() &&
+-	    context.activeState.knobs.af_mode == controls::AfModeAuto) {
+-		if (afTrigger.value() == controls::AfTriggerStart)
++	    context.activeState.knobs.af_mode != controls::AfModeManual) {
++		if (afTrigger.value() == controls::AfTriggerStart) {
+ 			restart(context);
+-		else
++		} else if (context.activeState.knobs.focus_sweep.value_or(false)) {
+ 			context.activeState.knobs.focus_sweep = false;
++			context.configuration.focus.settled = false;
++			waitStable_ = false;
++		}
+ 	}
+ }
+ 
++/*
++ * Set the sharpness window from an AfWindows rectangle in sensor output
++ * pixels, or back to the default centre window. Tiny windows are grown
++ * around their centre: too few samples make the sharpness metric noisy.
++ */
++void Af::setWindow(IPAContext &context, const Rectangle *window)
++{
++	if (!window) {
++		if (window_ != kDefaultWindow)
++			LOG(IPASoftAutoFocus, Debug) << "AF window: default";
++		window_ = kDefaultWindow;
++		return;
++	}
++
++	const Size &size = context.sensorInfo.outputSize;
++	if (size.isNull() || window->isNull())
++		return;
++
++	auto edge = [](int64_t v, unsigned int full) {
++		return static_cast<int>(std::clamp<int64_t>(v * 1024 / full, 0, 1024));
++	};
++	int l = edge(window->x, size.width);
++	int t = edge(window->y, size.height);
++	int r = edge(static_cast<int64_t>(window->x) + window->width, size.width);
++	int b = edge(static_cast<int64_t>(window->y) + window->height, size.height);
++
++	auto grow = [](int &lo, int &hi) {
++		const int min = kMinWindow;
++		if (hi - lo >= min)
++			return;
++		const int c = std::clamp((lo + hi) / 2, min / 2, 1024 - min / 2);
++		lo = c - min / 2;
++		hi = c + min / 2;
++	};
++	grow(l, r);
++	grow(t, b);
++
++	std::array<uint16_t, 4> w = { static_cast<uint16_t>(l), static_cast<uint16_t>(t),
++				      static_cast<uint16_t>(r), static_cast<uint16_t>(b) };
++	if (w != window_)
++		LOG(IPASoftAutoFocus, Debug)
++			<< "AF window: " << l << "," << t << " - " << r << "," << b
++			<< " /1024 from " << window->toString();
++	window_ = w;
++}
++
++void Af::prepare([[maybe_unused]] IPAContext &context,
++		 [[maybe_unused]] const uint32_t frame,
++		 [[maybe_unused]] IPAFrameContext &frameContext,
++		 DebayerParams *params)
++{
++	params->afWindow = window_;
++}
++
+ void Af::updateFocus(IPAContext &context, IPAFrameContext &frameContext,
+ 		     [[maybe_unused]] double exposureMSV)
+ {
+@@ -144,6 +240,9 @@ void Af::restart(IPAContext &context)
+ 	focus.skip = kSettleSkipLong;
+ 	focus.settled = false;
+ 	focus.lossCount = 0;
++	waitStable_ = false;
++	sharpnessMin_ = UINT64_MAX;
++	failed_ = false;
+ 	context.activeState.knobs.focus_pos = 0;
+ 	context.activeState.knobs.focus_sweep = true;
+ 	LOG(IPASoftAutoFocus, Info) << "Starting focus sweep";
+@@ -190,25 +289,58 @@ void Af::step(IPAContext &context, double &focus_pos, uint64_t sharp, bool &swee
+ 			return;
+ 		}
+ 
++		if (waitStable_) {
++			/*
++			 * The scene changed: wait for it to hold still (the
++			 * user stopped moving the phone) before sweeping, so
++			 * the sweep does not measure a moving target.
++			 */
++			const bool stable = utils::abs_diff(sharp, prevSharp_) <=
++					    prevSharp_ * kStableThreshold;
++			prevSharp_ = sharp;
++			stableCount_ = stable ? stableCount_ + 1 : 0;
++			if (stableCount_ < kStableFrames && ++waitFrames_ < kStableTimeout)
++				return;
++
++			LOG(IPASoftAutoFocus, Info)
++				<< "Scene stable after " << waitFrames_ << " frames";
++			restart(context);
++			return;
++		}
++
+ 		if (++focus.lossCount < kFocusLossFrames)
+ 			return;
+ 
+ 		LOG(IPASoftAutoFocus, Info)
+ 			<< "Focus lost: " << sharp << " vs "
+ 			<< focus.sharpness_max;
+-		restart(context);
++		waitStable_ = true;
++		prevSharp_ = sharp;
++		stableCount_ = 0;
++		waitFrames_ = 0;
+ 		return;
+ 	}
+ 
++	if (focus.step == kCoarseStep)
++		sharpnessMin_ = std::min(sharpnessMin_, sharp);
++
+ 	if (sharp > focus.sharpness_max) {
+ 		focus.sharpness_max = sharp;
+ 		focus.focus_max_pos = focus_pos;
+ 	}
+ 
++	/*
++	 * The coarse sweep always covers the whole travel: stopping after the
++	 * first peak would lock onto the background (swept first, from the
++	 * infinity end) behind a closer subject.
++	 */
+ 	focus_pos += focus.step;
+ 	if (focus_pos > focus.start && focus_pos < focus.stop)
+ 		return;
+ 
++	if (focus.step == kCoarseStep)
++		failed_ = focus.sharpness_max < sharpnessMin_ * kFlatSweepRatio;
++
+ 	/* Sweep phase over, narrow the range around the best position. */
+ 	focus.start = std::clamp(focus.focus_max_pos - focus.step, 0.0, 100.0);
+ 	focus.stop = std::clamp(focus.focus_max_pos + focus.step, 0.0, 100.0);
+@@ -232,7 +364,8 @@ void Af::step(IPAContext &context, double &focus_pos, uint64_t sharp, bool &swee
+ 	focus.settled = false;
+ 	LOG(IPASoftAutoFocus, Info)
+ 		<< "Sweep end. Best focus: " << focus.focus_max_pos
+-		<< " after " << steps_ << " frames";
++		<< " after " << steps_ << " frames"
++		<< (failed_ ? " (no clear peak)" : "");
+ }
+ 
+ void Af::process(IPAContext &context,
+@@ -254,10 +387,13 @@ void Af::process(IPAContext &context,
+ 	updateFocus(context, frameContext, 0);
+ 
+ 	int32_t afState = controls::AfStateIdle;
+-	if (context.activeState.knobs.af_mode != controls::AfModeManual)
+-		afState = context.activeState.knobs.focus_sweep.value()
+-				  ? controls::AfStateScanning
+-				  : controls::AfStateFocused;
++	if (context.activeState.knobs.af_mode != controls::AfModeManual) {
++		if (context.activeState.knobs.focus_sweep.value())
++			afState = controls::AfStateScanning;
++		else
++			afState = failed_ ? controls::AfStateFailed
++					  : controls::AfStateFocused;
++	}
+ 
+ 	metadata.set(controls::AfState, afState);
+ 	metadata.set(controls::LensPosition,
+diff --git a/src/ipa/simple/algorithms/af.h b/src/ipa/simple/algorithms/af.h
+index 0e0f1942..7136a769 100644
+--- a/src/ipa/simple/algorithms/af.h
++++ b/src/ipa/simple/algorithms/af.h
+@@ -7,6 +7,11 @@
+ 
+ #pragma once
+ 
++#include <array>
++#include <stdint.h>
++
++#include <libcamera/geometry.h>
++
+ #include "algorithm.h"
+ 
+ namespace libcamera {
+@@ -26,6 +31,9 @@ public:
+ 			  typename Module::FrameContext &frameContext,
+ 			  const ControlList &controls)
+ 		override;
++	void prepare(IPAContext &context, const uint32_t frame,
++		     IPAFrameContext &frameContext,
++		     DebayerParams *params) override;
+ 	void process(IPAContext &context, const uint32_t frame,
+ 		     IPAFrameContext &frameContext,
+ 		     const SwIspStats *stats,
+@@ -36,7 +44,23 @@ private:
+ 	void step(IPAContext &context, double &focus_pos, uint64_t sharp, bool &sweep);
+ 	void restart(IPAContext &context);
+ 
++	void setWindow(IPAContext &context, const Rectangle *window);
++
+ 	unsigned int steps_;
++
++	/* Continuous AF: waiting for the scene to hold still before a sweep */
++	bool waitStable_;
++	uint64_t prevSharp_;
++	uint32_t stableCount_;
++	uint32_t waitFrames_;
++
++	/* Coarse sweep: the lowest sample */
++	uint64_t sharpnessMin_;
++	/* The last sweep found no clear maximum (flat scene) */
++	bool failed_;
++
++	/* Sharpness window, 1/1024 of the frame: left, top, right, bottom */
++	std::array<uint16_t, 4> window_;
+ };
+ 
+ } /* namespace ipa::soft::algorithms */
+-- 
+2.54.0
+
