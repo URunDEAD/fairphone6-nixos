@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=NixOS Mobile
+Description=Minimal NixOS logo boot and shutdown animation
+ModuleName=script
+
+[script]
+ImageDir=@out@
+ScriptFile=@out@/nixos-mobile.script

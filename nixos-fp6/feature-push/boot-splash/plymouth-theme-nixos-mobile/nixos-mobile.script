@@ -1,0 +1,83 @@
+// NixOS Mobile — minimal boot / shutdown animation for Plymouth (script module)
+// Sprites are 464x446 RGBA at 25 fps; they are scaled to the screen width below.
+
+Window.SetBackgroundTopColor(0.0196, 0.0275, 0.0510);    // #05070D
+Window.SetBackgroundBottomColor(0.0196, 0.0275, 0.0510);
+
+W = Window.GetWidth();
+H = Window.GetHeight();
+
+// The logo block is 290/390 of the screen width in the design.
+SW = Math.Int(W * 0.744);
+SH = Math.Int(SW * 446 / 464);
+X = Window.GetX() + Math.Int((W - SW) / 2);
+Y = Window.GetY() + Math.Int((H - SH) / 2);
+
+FPS = 25;          // sprite frame rate
+TICK = 50;         // Plymouth calls the refresh function ~50 times per second
+
+N_INTRO = 66;
+N_LOOP = 60;
+N_SHUT = 112;
+
+mode = Plymouth.GetMode();
+shutting_down = (mode == "shutdown" || mode == "reboot");
+
+fun load(prefix, n) {
+  for (i = 0; i < n; i++)
+    local.arr[i] = Image(prefix + i + ".png").Scale(global.SW, global.SH);
+  return local.arr;
+}
+
+logo = Sprite();
+logo.SetPosition(X, Y, 1);
+
+if (shutting_down) {
+  frames = load("shutdown-", N_SHUT);
+  white = Image("white.png");
+  crt = Sprite();
+  crt.SetZ(2);
+  crt.SetOpacity(0);
+} else {
+  intro = load("intro-", N_INTRO);
+  loop = load("loop-", N_LOOP);
+}
+
+tick = 0;
+
+fun lerp(a, b, p) {
+  if (p < 0) p = 0;
+  if (p > 1) p = 1;
+  return a + (b - a) * p;
+}
+
+fun refresh_callback() {
+  global.tick++;
+  f = Math.Int(global.tick * global.FPS / global.TICK);
+  t = global.tick / global.TICK;   // seconds since start
+
+  if (global.shutting_down) {
+    if (f < global.N_SHUT) global.logo.SetImage(global.frames[f]);
+    else global.logo.SetOpacity(0);
+
+    // Flash to pale white, then collapse to a line, then a dot (CRT power-off).
+    if (t >= 4.48) {
+      w = global.W;
+      h = global.H;
+      if (t >= 4.62) { h = lerp(global.H, global.H * 0.004, (t - 4.62) / 0.42); Window.SetBackgroundTopColor(0, 0, 0); Window.SetBackgroundBottomColor(0, 0, 0); }
+      if (t >= 5.04) w = lerp(global.W, global.W * 0.003, (t - 5.04) / 0.42);
+      w = Math.Int(w); if (w < 2) w = 2;
+      h = Math.Int(h); if (h < 2) h = 2;
+      global.crt.SetImage(global.white.Scale(w, h));
+      global.crt.SetPosition(Window.GetX() + Math.Int((global.W - w) / 2), Window.GetY() + Math.Int((global.H - h) / 2), 2);
+      o = lerp(0, 1, (t - 4.48) / 0.28);
+      if (t >= 5.46) o = lerp(1, 0, (t - 5.46) / 0.42);
+      global.crt.SetOpacity(o);
+    }
+  } else {
+    if (f < global.N_INTRO) global.logo.SetImage(global.intro[f]);
+    else global.logo.SetImage(global.loop[(f - global.N_INTRO) % global.N_LOOP]);
+  }
+}
+
+Plymouth.SetRefreshFunction(refresh_callback);

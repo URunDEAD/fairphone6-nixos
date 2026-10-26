@@ -67,8 +67,13 @@ in
     };
     theme = lib.mkOption {
       type = lib.types.str;
-      default = "spinner";
-      description = "Plymouth theme (a theme shipped by pkgs.plymouth).";
+      default = "nixos-mobile";
+      description = ''
+        Plymouth theme. "nixos-mobile" is the user-made boot/shutdown
+        animation in ./plymouth-theme-nixos-mobile (NixOS logo spins in, glow
+        loop until the greeter; outro plus CRT collapse on shutdown/reboot).
+        Any theme shipped by pkgs.plymouth (e.g. "spinner") also works.
+      '';
     };
     logoWidth = lib.mkOption {
       type = lib.types.ints.positive;
@@ -112,6 +117,8 @@ in
         enable = true;
         theme = cfg.theme;
         logo = logo;
+        themePackages = lib.optional (cfg.theme == "nixos-mobile")
+          (pkgs.callPackage ./plymouth-theme-nixos-mobile { });
       };
       # gdm.nix pattern: LightDM quits Plymouth itself (deactivate + quit
       # --retain-splash after the greeter's display server is ready). Without
