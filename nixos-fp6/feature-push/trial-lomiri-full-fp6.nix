@@ -45,6 +45,7 @@ let
       ./netbird/netbird-fp6.nix
       ./apparmor/apparmor-fp6.nix
       ./adb/adb-fp6.nix
+      ({ ... }: { imports = [ ./sensor-apps/sensor-apps-fp6.nix ]; hardware.fairphone6.sensorApps.enable = true; })
       ./lomiri-session/lomiri-session-fp6.nix
       ./lomiri-drawer-folders/lomiri-drawer-folders-fp6.nix
       ({ lib, options, ... }: {

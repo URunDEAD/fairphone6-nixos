@@ -1,0 +1,34 @@
+# FP6 sensor apps (one launcher binary for the 8 apps). Complain mode by
+# default (sensor-apps-fp6.nix); denials show up with fp6-apparmor-denials.
+abi <abi/5.0>,
+include <tunables/global>
+
+profile fp6-sensor-apps /nix/store/*-fp6-sensor-apps-*/bin/{.fp6-sensor-tools-wrapped,fp6-sensor-tools} flags=(attach_disconnected, mediate_deleted) {
+  include <abstractions/fp6-gui>
+  include <abstractions/fp6-audio>
+
+  /nix/store/*-fp6-sensor-apps-*/bin/* mrix,
+  # PipeWire capture for the sound meter, iio-sensor-proxy query (dashboard)
+  /nix/store/*/bin/{pw-record,pw-cat,.pw-cat-wrapped,gdbus} mrix,
+
+  # IIO sysfs (read only) and the panel's DT node (ruler)
+  /sys/bus/iio/devices/ r,
+  /sys/bus/iio/devices/** r,
+  /sys/devices/**/iio:device*/** r,
+  /sys/firmware/devicetree/base/** r,
+
+  # location switch state, satellite feed, GeoClue (QtPositioning)
+  /run/fp6-gnss/ r,
+  /run/fp6-gnss-sky/sky.sock rw,
+  owner @{HOME}/.config/fp6-location/enabled r,
+  owner @{HOME}/.local/share/qtposition-geoclue2{,/**} rwk,
+
+  # settings, calibration, opt-in pressure log
+  owner @{HOME}/.config/fp6-sensor-apps/{,**} rwk,
+  owner @{HOME}/.config/fp6-*/{,**} rwk,
+  owner @{HOME}/.local/state/fp6-sensor-apps/{,**} rwk,
+  owner @{HOME}/.cache/fp6-*/{,**} rwk,
+  owner @{HOME}/.local/share/fp6-*/{,**} rwk,
+
+  include if exists <local/fp6-sensor-apps>
+}

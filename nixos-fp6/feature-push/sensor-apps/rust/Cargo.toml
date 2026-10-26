@@ -1,0 +1,27 @@
+[package]
+name = "fp6-sensors"
+version = "0.1.0"
+edition = "2021"
+description = "Sensor maths and IIO/PipeWire/NMEA backends for the FP6 Lomiri sensor apps"
+license = "GPL-3.0-or-later"
+
+# No external crates: the whole backend is std-only, so the Nix build needs
+# no vendored dependencies.
+
+[lib]
+name = "fp6_sensors"
+crate-type = ["staticlib", "rlib"]
+
+[[bin]]
+name = "fp6-gnss-skyfeed"
+path = "src/bin/skyfeed.rs"
+
+[[bin]]
+name = "fp6-sensor-cli"
+path = "src/bin/cli.rs"
+
+[profile.release]
+opt-level = 2
+panic = "abort"
+lto = true
+codegen-units = 1
