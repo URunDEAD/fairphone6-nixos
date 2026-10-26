@@ -7,12 +7,17 @@
 #       PROBE_LOG (libcamera log levels, default "*:WARN,IPASoft*:DEBUG,SoftwareIsp:INFO")
 set -eu
 dev=$1; secs=$2; out=$3; size=${4:-}
-if pgrep -f lomiri-camera-app >/dev/null; then echo "camera app running; abort" >&2; exit 3; fi
+busy=$(pgrep -af '[l]omiri-camera-app|[g]st-launch-1.0|/bin/[c]am( |$)|[q]cam|[f]p6camera-selftest' || true)
+if [ -n "$busy" ]; then echo "camera busy: $busy" >&2; exit 3; fi
 mkdir -p "$out"; rm -f "$out"/f*.rgb
 w=$(readlink -f /run/current-system/sw/bin/lomiri-camera-app)
 plug=${PROBE_GST_PLUGINS:-$(head -c 20000 "$w" | tr -c '[:print:]' '\n' | grep -o "/nix/store/[^:' ]*/lib/gstreamer-1.0" | sort -u | tr '\n' ':')}
 ipa=${PROBE_IPA_CONFIG:-$(head -c 20000 "$w" | tr -c '[:print:]' '\n' | grep -o "/nix/store/[^:' ]*/share/libcamera/ipa" | sort -u | head -1)}
 conf=${PROBE_CONF:-/etc/fp6-camera/camera.conf}
+# PROBE_LIBCAMERA=/nix/store/...-libcamera-...: test another libcamera build
+if [ -n "${PROBE_LIBCAMERA:-}" ]; then
+  plug=$(echo "$plug" | tr ':' '\n' | grep -v libcamera | tr '\n' ':')$PROBE_LIBCAMERA/lib/gstreamer-1.0
+fi
 caps=""
 [ -n "$size" ] && caps="! video/x-raw,width=${size%x*},height=${size#*x}"
 export GST_PLUGIN_SYSTEM_PATH_1_0="$plug" GST_REGISTRY="$out/registry.bin" \
@@ -20,7 +25,14 @@ export GST_PLUGIN_SYSTEM_PATH_1_0="$plug" GST_REGISTRY="$out/registry.bin" \
   LIBCAMERA_LOG_LEVELS="${PROBE_LOG:-*:WARN,IPASoft*:DEBUG,SoftwareIsp:INFO}" \
   GST_DEBUG="${PROBE_GST_DEBUG:-fp6*:4}"
 echo "plugins=$plug ipa=$ipa conf=$conf" > "$out/env.txt"
-timeout -s INT "$secs" gst-launch-1.0 -e fp6libcamerasrc device="$dev" $caps ! \
+# PROBE_LIBCAMERASRC="af-mode=manual lens-position=40": use a bare libcamerasrc
+# (camera-name=DEVICE, BGRx at WxH) with these extra properties instead.
+if [ -n "${PROBE_LIBCAMERASRC:-}" ]; then
+  src="libcamerasrc camera-name=$dev $PROBE_LIBCAMERASRC ! video/x-raw,format=BGRx,width=${size%x*},height=${size#*x}"
+else
+  src="fp6libcamerasrc device=$dev $caps"
+fi
+timeout -s INT "$secs" gst-launch-1.0 -e $src ! \
   videoconvert ! video/x-raw,format=RGB ! \
   multifilesink location="$out/f%05d.rgb" max-files=3 > "$out/gst.log" 2> "$out/lc.log" || true
 ls "$out"/f*.rgb | tail -1 > "$out/last.txt"
