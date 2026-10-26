@@ -1,5 +1,5 @@
 diff --git a/CameraApp/fp6procontrols.cpp b/CameraApp/fp6procontrols.cpp
-index 15d872b..6384da3 100644
+index 15d872b..9275d73 100644
 --- a/CameraApp/fp6procontrols.cpp
 +++ b/CameraApp/fp6procontrols.cpp
 @@ -10,6 +10,8 @@
@@ -47,7 +47,7 @@ index 15d872b..6384da3 100644
  
      const gint64 wantExp = qMax<gint64>(0, qint64(m_exposureUs));
      if (exp != wantExp)
-@@ -170,6 +186,38 @@ void Fp6ProControls::poll()
+@@ -170,6 +186,70 @@ void Fp6ProControls::poll()
      m_afState = afState;
      m_hasFocus = hasFocus;
      m_activeLens = QString::fromUtf8(lens ? lens : "");
@@ -83,13 +83,86 @@ index 15d872b..6384da3 100644
 +        g_free(rawError);
 +        g_free(sensor);
 +    }
++
++    /* Phase 2: capture jobs */
++    if (g_object_class_find_property(G_OBJECT_GET_CLASS(obj), "job-state")) {
++        gint js = 0, jf = 0, jt = 0;
++        gdouble jp = 0;
++        gchar *jk = nullptr, *jr = nullptr, *je = nullptr;
++        g_object_get(obj, "job-state", &js, "job-progress", &jp, "job-frames", &jf,
++                     "job-target-frames", &jt, "job-kind", &jk, "job-result", &jr,
++                     "job-error", &je, NULL);
++        const bool change = js != m_jobState || jf != m_jobFrames || jt != m_jobTarget
++            || std::fabs(jp - m_jobProgress) > 0.004;
++        const int old = m_jobState;
++        m_jobState = js;
++        m_jobFrames = jf;
++        m_jobTarget = jt;
++        m_jobProgress = jp;
++        m_jobKind = QString::fromUtf8(jk ? jk : "");
++        if (change)
++            Q_EMIT jobChanged();
++        if (js != old && (js == JobDone || js == JobError)) {
++            if (js == JobDone)
++                Q_EMIT jobFinished(m_jobKind, QString::fromUtf8(jr ? jr : "")
++                                       .split(QLatin1Char('\n'), QString::SkipEmptyParts));
++            else
++                Q_EMIT jobFailed(m_jobKind, QString::fromUtf8(je ? je : "failed"));
++            /* acknowledge: back to idle */
++            g_signal_emit_by_name(obj, "job-cancel");
++        }
++        g_free(jk);
++        g_free(jr);
++        g_free(je);
++    }
      Q_EMIT readoutChanged();
  
      if (serial != m_analysisSerial) {
-@@ -301,6 +349,52 @@ ACTION(continueStack, "stack-continue")
+@@ -301,6 +381,93 @@ ACTION(continueStack, "stack-continue")
  ACTION(cancelStack, "stack-cancel")
  #undef ACTION
  
++bool Fp6ProControls::startJob(const QString &kind, const QString &directory,
++                              int rotate, int quality, const QString &params)
++{
++    GObject *obj = static_cast<GObject *>(element());
++    if (!obj)
++        return false;
++    QDir().mkpath(directory);
++    const QString suffix = kind.toUpper();
++    const QString path = QDir(directory).filePath(
++        QStringLiteral("image%1_%2.jpg")
++            .arg(QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_hhmmsszzz")))
++            .arg(suffix));
++    gboolean ok = FALSE;
++    g_signal_emit_by_name(obj, "job-start", kind.toUtf8().constData(),
++                          path.toUtf8().constData(), gint(((rotate % 360) + 360) % 360),
++                          gint(quality), params.toUtf8().constData(), &ok);
++    g_object_unref(obj);
++    if (ok)
++        poll();
++    return ok;
++}
++
++void Fp6ProControls::stopJob()
++{
++    GObject *obj = static_cast<GObject *>(element());
++    if (!obj)
++        return;
++    g_signal_emit_by_name(obj, "job-stop");
++    g_object_unref(obj);
++}
++
++void Fp6ProControls::cancelJob()
++{
++    GObject *obj = static_cast<GObject *>(element());
++    if (!obj)
++        return;
++    g_signal_emit_by_name(obj, "job-cancel");
++    g_object_unref(obj);
++    poll();
++}
++
 +bool Fp6ProControls::captureRaw(const QString &photoDirectory, int rotate)
 +{
 +    GObject *obj = static_cast<GObject *>(element());
@@ -140,10 +213,10 @@ index 15d872b..6384da3 100644
  {
      QString t = text.trimmed().toLower().remove(QLatin1Char(' '));
 diff --git a/CameraApp/fp6procontrols.h b/CameraApp/fp6procontrols.h
-index 434a709..e1a7fce 100644
+index 434a709..e540d77 100644
 --- a/CameraApp/fp6procontrols.h
 +++ b/CameraApp/fp6procontrols.h
-@@ -62,6 +62,13 @@ class Fp6ProControls : public QObject
+@@ -62,6 +62,21 @@ class Fp6ProControls : public QObject
      Q_PROPERTY(int stackDarkFrames READ stackDarkFrames NOTIFY stackChanged)
      Q_PROPERTY(double stackElapsedMs READ stackElapsedMs NOTIFY stackChanged)
  
@@ -154,10 +227,18 @@ index 434a709..e1a7fce 100644
 +    Q_PROPERTY(int rawState READ rawState NOTIFY readoutChanged)
 +    Q_PROPERTY(QString sensor READ sensor NOTIFY readoutChanged)
 +
++    /* Phase 2: capture jobs (HDR, ...) processed in the background */
++    Q_PROPERTY(int jobState READ jobState NOTIFY jobChanged)
++    Q_PROPERTY(QString jobKind READ jobKind NOTIFY jobChanged)
++    Q_PROPERTY(double jobProgress READ jobProgress NOTIFY jobChanged)
++    Q_PROPERTY(int jobFrames READ jobFrames NOTIFY jobChanged)
++    Q_PROPERTY(int jobTargetFrames READ jobTargetFrames NOTIFY jobChanged)
++    Q_PROPERTY(bool jobBusy READ jobBusy NOTIFY jobChanged)
++
  public:
      enum StackState { StackIdle = 0, StackSettle, StackLight, StackWaitDark,
                        StackDark, StackSaving, StackDone, StackError };
-@@ -116,6 +123,12 @@ public:
+@@ -116,6 +131,21 @@ public:
      int stackDarkFrames() const { return m_stackDark; }
      double stackElapsedMs() const;
  
@@ -167,10 +248,19 @@ index 434a709..e1a7fce 100644
 +    int rawState() const { return m_rawState; }
 +    QString sensor() const { return m_sensor; }
 +
++    enum JobState { JobIdle = 0, JobCapture, JobProcess, JobDone, JobError };
++    Q_ENUM(JobState)
++    int jobState() const { return m_jobState; }
++    QString jobKind() const { return m_jobKind; }
++    double jobProgress() const { return m_jobProgress; }
++    int jobFrames() const { return m_jobFrames; }
++    int jobTargetFrames() const { return m_jobTarget; }
++    bool jobBusy() const { return m_jobState == JobCapture || m_jobState == JobProcess; }
++
      Q_INVOKABLE void triggerAutofocus(double x = -1, double y = -1);
      Q_INVOKABLE bool startStack(const QString &directory, double totalUs, int mode,
                                  bool darkFrame, int orientation, int quality = 95);
-@@ -126,6 +139,12 @@ public:
+@@ -126,6 +156,19 @@ public:
      Q_INVOKABLE double parseShutter(const QString &text) const;
      Q_INVOKABLE QString formatShutter(double us) const;
  
@@ -180,10 +270,17 @@ index 434a709..e1a7fce 100644
 +    Q_INVOKABLE bool captureRaw(const QString &photoDirectory, int rotate);
 +    Q_INVOKABLE void pairRaw(const QString &jpegPath);
 +
++    /* Start a capture job of the element (kind: hdr ...) writing into
++       directory; rotate as for startStack; params a GstStructure string. */
++    Q_INVOKABLE bool startJob(const QString &kind, const QString &directory,
++                              int rotate, int quality, const QString &params = QString());
++    Q_INVOKABLE void stopJob();
++    Q_INVOKABLE void cancelJob();
++
      /* overlay image for the "fp6pro" image provider */
      static QImage overlayImage();
  
-@@ -139,6 +158,10 @@ Q_SIGNALS:
+@@ -139,6 +182,13 @@ Q_SIGNALS:
      void stackChanged();
      void stackFinished(const QString &path);
      void stackFailed(const QString &error);
@@ -191,10 +288,13 @@ index 434a709..e1a7fce 100644
 +    void rawFailed(const QString &error);
 +    /* a setting needs the camera pipeline rebuilt (Unloaded -> Active) */
 +    void restartNeeded();
++    void jobChanged();
++    void jobFinished(const QString &kind, const QStringList &paths);
++    void jobFailed(const QString &kind, const QString &error);
  
  private Q_SLOTS:
      void poll();
-@@ -147,6 +170,7 @@ private:
+@@ -147,6 +197,7 @@ private:
      void *element() const;           /* GObject*, new reference, or nullptr */
      void sync(void *obj);
      void changed();
@@ -202,7 +302,7 @@ index 434a709..e1a7fce 100644
  
      QTimer m_timer;
      bool m_available = false;
-@@ -175,6 +199,10 @@ private:
+@@ -175,6 +226,14 @@ private:
      int m_stackState = 0, m_stackFrames = 0, m_stackTarget = 0, m_stackDark = 0;
      double m_stackFrameUs = 0;
      qint64 m_stackStartMs = 0;
@@ -210,11 +310,15 @@ index 434a709..e1a7fce 100644
 +    bool m_raw = false, m_rawActive = false, m_rawRestartAsked = false;
 +    int m_rawState = 0;
 +    QString m_sensor, m_rawPending, m_rawDone, m_rawJpeg;
++
++    int m_jobState = 0, m_jobFrames = 0, m_jobTarget = 0;
++    double m_jobProgress = 0;
++    QString m_jobKind;
  };
  
  class Fp6OverlayProvider : public QQuickImageProvider
 diff --git a/qml/Viewfinder/ViewFinderOverlay.qml b/qml/Viewfinder/ViewFinderOverlay.qml
-index b765ed6..9841648 100644
+index b765ed6..92d79e6 100644
 --- a/qml/Viewfinder/ViewFinderOverlay.qml
 +++ b/qml/Viewfinder/ViewFinderOverlay.qml
 @@ -89,6 +89,8 @@ Item {
@@ -235,13 +339,37 @@ index b765ed6..9841648 100644
      Binding { target: camera.pro; property: "analysis"
          value: !proActive ? 0 : ((settings.proHistogram ? 1 : 0) | (settings.proZebra ? 2 : 0)
                                   | (settings.proPeaking ? 4 : 0)) }
-@@ -153,6 +157,16 @@ Item {
+@@ -153,6 +157,40 @@ Item {
              console.log("Long exposure failed: " + error);
              PopupUtils.open(captureFailedDialogComponent);
          }
++        onJobFinished: {
++            for (var i = 0; i < paths.length; i++) {
++                console.log(kind + " saved as " + paths[i]);
++                if (paths[i].match(/\.(mp4|mkv|webm)$/i))
++                    viewFinderView.videoShot(paths[i]);
++                else
++                    viewFinderView.photoTaken(paths[i]);
++            }
++            if (photoRollHint.necessary && !main.transfer) photoRollHint.enable();
++        }
++        onJobFailed: {
++            console.log(kind + " failed: " + error);
++            PopupUtils.open(captureFailedDialogComponent);
++        }
 +        onRawSaved: console.log("RAW saved as " + path)
 +        onRawFailed: console.log("RAW failed: " + error)
 +        onRestartNeeded: viewFinderOverlay.restartCamera()
++    }
++
++    /* FP6 phase 2: the photo-mode capture job a tap of the shutter starts
++       ("" = a normal camerabin photo) */
++    function fp6JobKind() {
++        if (main.contentExportMode || !camera.pro.available
++                || camera.captureMode != Camera.CaptureStillImage || proActive)
++            return "";
++        if (settings.hdrEnabled) return "hdr";
++        return "";
 +    }
 +
 +    /* Rebuild the camera pipeline (lens or raw stream change). */
@@ -252,7 +380,39 @@ index b765ed6..9841648 100644
      }
  
      function photoDirectory() {
-@@ -1124,6 +1138,11 @@ Item {
+@@ -615,7 +653,7 @@ Item {
+             onOpenedChanged: optionsOverlayLoader.item.closeValueSelector()
+             enabled: camera.videoRecorder.recorderState == CameraRecorder.StoppedState
+                      && !camera.photoCaptureInProgress && !camera.timedCaptureInProgress
+-                     && !viewFinderOverlay.proStacking
++                     && !viewFinderOverlay.proStacking && !camera.pro.jobBusy
+             opacity: enabled ? 1.0 : 0.3
+             property bool ready: optionsOverlayLoader.status == Loader.Ready
+ 
+@@ -714,7 +752,8 @@ Item {
+                     property string label: i18n.tr("HDR")
+                     property bool isToggle: true
+                     property int selectedIndex: bottomEdge.indexForValue(hdrOptionsModel, settings.hdrEnabled)
+-                    property bool available: camera.advanced.hasHdr
++                    // FP6: exposure fusion in fp6libcamerasrc (phase 2)
++                    property bool available: camera.advanced.hasHdr || camera.pro.available
+                     property bool visible: camera.captureMode === Camera.CaptureStillImage
+                     property bool showInIndicators: true
+ 
+@@ -1120,10 +1159,24 @@ Item {
+                                            viewFinderOverlay.encodingQualityPercent())) {
+                     PopupUtils.open(captureFailedDialogComponent);
+                 }
++            } else if (viewFinderOverlay.fp6JobKind() !== "") {
++                // FP6 phase 2: bracketed / multi-frame capture in the element
++                if (camera.pro.jobBusy) return;   // one at a time (progress shown)
++                shootFeedback.start();
++                if (!camera.pro.startJob(viewFinderOverlay.fp6JobKind(), viewFinderOverlay.photoDirectory(),
++                                         (360 - orientation) % 360,
++                                         viewFinderOverlay.encodingQualityPercent(), "")) {
++                    PopupUtils.open(captureFailedDialogComponent);
++                }
+             } else {
                  if (!main.contentExportMode) {
                      shootFeedback.start();
                  }
@@ -264,6 +424,46 @@ index b765ed6..9841648 100644
                  camera.photoCaptureInProgress = true;
                  camera.imageCapture.setMetadata("Orientation", orientation);
                  camera.imageCapture.setMetadata("Date", new Date());
+@@ -1235,7 +1288,7 @@ Item {
+             onClicked: controls.changeRecordMode()
+             enabled: camera.videoRecorder.recorderState == CameraRecorder.StoppedState && !main.contentExportMode
+                      && !camera.photoCaptureInProgress && !camera.timedCaptureInProgress
+-                     && !viewFinderOverlay.proStacking
++                     && !viewFinderOverlay.proStacking && !camera.pro.jobBusy
+         }
+ 
+         ShootButton {
+@@ -1320,7 +1373,7 @@ Item {
+             customRotation: main.staticRotationAngle
+             enabled: !camera.switchInProgress && camera.videoRecorder.recorderState == CameraRecorder.StoppedState
+                      && !camera.photoCaptureInProgress && !camera.timedCaptureInProgress
+-                     && !viewFinderOverlay.proStacking
++                     && !viewFinderOverlay.proStacking && !camera.pro.jobBusy
+             iconName: "camera-flip"
+             onClicked: controls.switchCamera()
+         }
+@@ -1388,7 +1441,7 @@ Item {
+             spacing: units.gu(1)
+             visible: camera.position !== Camera.FrontFace && !main.contentExportMode
+                      && camera.videoRecorder.recorderState == CameraRecorder.StoppedState
+-                     && !viewFinderOverlay.proStacking
++                     && !viewFinderOverlay.proStacking && !camera.pro.jobBusy
+             enabled: !viewFinderOverlay.proStacking && !camera.switchInProgress
+             rotation: main.staticRotationAngle
+             Fp6ProChip { value: "0.6×"; selected: camera.pro.ultrawide
+@@ -1466,6 +1519,12 @@ Item {
+             visible: viewFinderOverlay.proActive && settings.proLevel
+         }
+ 
++        Fp6JobFeedback {
++            anchors { horizontalCenter: parent.horizontalCenter; top: parent.top; topMargin: units.gu(9) }
++            pro: camera.pro
++            rotation: main.staticRotationAngle
++        }
++
+         Fp6LongExposureFeedback {
+             anchors.fill: parent
+             pro: camera.pro
 diff --git a/qml/Viewfinder/ViewFinderView.qml b/qml/Viewfinder/ViewFinderView.qml
 index 6404053..0798d24 100644
 --- a/qml/Viewfinder/ViewFinderView.qml
@@ -276,6 +476,77 @@ index 6404053..0798d24 100644
                  viewFinderView.photoTaken(path);
                  metricPhotos.increment();
                  console.log("Picture saved as " + path);
+diff --git a/qml/components/Fp6JobFeedback.qml b/qml/components/Fp6JobFeedback.qml
+new file mode 100644
+index 0000000..9777f1b
+--- /dev/null
++++ b/qml/components/Fp6JobFeedback.qml
+@@ -0,0 +1,65 @@
++/*
++ * FP6 phase 2: progress of a capture job (HDR, night, ...) of
++ * fp6libcamerasrc. Capturing shows "hold still"; processing runs in the
++ * background while the viewfinder stays live.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; version 3.
++ */
++import QtQuick 2.12
++import Lomiri.Components 1.3
++
++Item {
++    id: fb
++    property var pro
++    readonly property int state: pro ? pro.jobState : 0
++    visible: state === 1 || state === 2
++    implicitWidth: units.gu(28)
++    implicitHeight: column.height + units.gu(1.5)
++
++    function kindLabel(k) {
++        switch (k) {
++        case "hdr": return i18n.tr("HDR");
++        case "night": return i18n.tr("Night");
++        case "bracket": return i18n.tr("Bracket");
++        case "timelapse": return i18n.tr("Timelapse");
++        case "panorama": return i18n.tr("Panorama");
++        case "document": return i18n.tr("Document");
++        }
++        return k;
++    }
++
++    Rectangle {
++        anchors.fill: parent
++        radius: units.gu(1)
++        color: Qt.rgba(0, 0, 0, 0.55)
++    }
++    Column {
++        id: column
++        anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter
++                  margins: units.gu(1) }
++        spacing: units.gu(0.5)
++        Label {
++            width: parent.width
++            horizontalAlignment: Text.AlignHCenter
++            color: "white"
++            font.weight: Font.DemiBold
++            text: fb.state === 1
++                  ? (pro.jobTargetFrames > 0
++                     ? i18n.tr("%1: hold still (%2/%3)").arg(fb.kindLabel(pro.jobKind))
++                       .arg(pro.jobFrames).arg(pro.jobTargetFrames)
++                     : i18n.tr("%1: %2 frames").arg(fb.kindLabel(pro.jobKind)).arg(pro.jobFrames))
++                  : i18n.tr("Processing %1… %2%").arg(fb.kindLabel(pro.jobKind))
++                    .arg(Math.round(pro.jobProgress * 100))
++        }
++        ProgressBar {
++            width: parent.width
++            visible: !(fb.state === 1 && pro.jobTargetFrames === 0)   // open ended (timelapse)
++            height: units.gu(0.5)
++            minimumValue: 0
++            maximumValue: 1
++            value: pro ? pro.jobProgress : 0
++        }
++    }
++}
 diff --git a/qml/components/Fp6ProPanel.qml b/qml/components/Fp6ProPanel.qml
 index 7ef68d6..156d668 100644
 --- a/qml/components/Fp6ProPanel.qml

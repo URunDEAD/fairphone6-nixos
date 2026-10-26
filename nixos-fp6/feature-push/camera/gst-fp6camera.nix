@@ -15,9 +15,11 @@ stdenv.mkDerivation {
     runHook preBuild
     flags="$(pkg-config --cflags gstreamer-1.0 gstreamer-photography-1.0 gstreamer-video-1.0 gstreamer-tag-1.0)"
     libs="$(pkg-config --libs gstreamer-1.0 gstreamer-photography-1.0 gstreamer-video-1.0 gstreamer-tag-1.0) -lgstbasecamerabinsrc-1.0 -lm"
+    # image processing (HDR/night/panorama ...): vectorised, separate object
+    $CC -c -fPIC -O3 -ffast-math -Wall $(pkg-config --cflags glib-2.0) -o fp6-imaging.o fp6-imaging.c
     $CC -shared -fPIC -O2 -Wall \
       -DFP6CAM_CAMERABIN_PLUGIN='"${gst_all_1.gst-plugins-bad}/lib/gstreamer-1.0/libgstcamerabin.so"'  -Werror=implicit-function-declaration \
-      -Werror=incompatible-pointer-types $flags -o libgstfp6camera.so fp6camera.c fp6-dng.c $libs
+      -Werror=incompatible-pointer-types $flags -o libgstfp6camera.so fp6camera.c fp6-dng.c fp6-imaging.o $libs
     $CC -O2 -Wall $flags $(pkg-config --cflags gstreamer-pbutils-1.0) -o fp6camera-selftest \
       fp6camera-selftest.c $libs $(pkg-config --libs gstreamer-pbutils-1.0)
     # manual controls / long exposure from the command line (live camera)
@@ -29,6 +31,8 @@ stdenv.mkDerivation {
     # offline DNG writer check (install check)
     $CC -O2 -Wall $(pkg-config --cflags glib-2.0) -o fp6-dng-selftest fp6-dng-selftest.c fp6-dng.c \
       $(pkg-config --libs glib-2.0) -lm
+    $CC -O2 -Wall $(pkg-config --cflags glib-2.0) -o fp6-imaging-test fp6-imaging-test.c fp6-imaging.o \
+      $(pkg-config --libs glib-2.0) -lm
     runHook postBuild
   '';
   installPhase = ''
@@ -38,6 +42,7 @@ stdenv.mkDerivation {
     install -Dm755 fp6-long-exposure $out/bin/fp6-long-exposure
     install -Dm755 fp6-capture $out/bin/fp6-capture
     install -Dm755 fp6-dng-selftest $out/libexec/fp6-dng-selftest
+    install -Dm755 fp6-imaging-test $out/bin/fp6-imaging-test
     # softISP tuning for the sensors the libcamera package has none for;
     # used through LIBCAMERA_IPA_CONFIG_PATH=$out/share/libcamera/ipa
     install -Dm644 -t $out/share/libcamera/ipa/simple tuning/ov13b10.yaml tuning/fp6-s5kkd1.yaml
@@ -72,10 +77,12 @@ stdenv.mkDerivation {
     done
     timeout 60 $out/libexec/fp6camera-selftest
     # phase 2: properties, DNG writer (decoded by dcraw, tags by exiftool)
-    for p in raw-active raw-format raw-state raw-capture sensor; do
+    for p in raw-active raw-format raw-state raw-capture sensor job-state \
+        job-progress job-result job-start job-stop job-cancel; do
       ${lib.getBin gst_all_1.gstreamer}/bin/gst-inspect-1.0 fp6libcamerasrc | grep -q "$p" \
         || { echo "fp6libcamerasrc lacks $p" >&2; exit 1; }
     done
+    $out/bin/fp6-imaging-test selftest $TMPDIR
     $out/libexec/fp6-dng-selftest $TMPDIR/t.dng
     raw-identify -v $TMPDIR/t.dng | tee $TMPDIR/dcraw.txt
     grep -qi "filter pattern: *BG/*GR" $TMPDIR/dcraw.txt

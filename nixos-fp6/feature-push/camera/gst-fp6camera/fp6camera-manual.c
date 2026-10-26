@@ -160,6 +160,14 @@ struct _Fp6Manual
   gboolean fdl_known;           /* FrameDurationLimits seen in metadata */
   gboolean has_focus;           /* built camera has a focus lens */
   gchar *flip;                  /* videoflip method after the probe point */
+
+  /* PHASE 2 capture jobs (fp6camera-jobs.c): fixed exposure/WB/focus for
+   * a bracket or burst, like a stack, while ovr is set */
+  gboolean ovr;
+  gint64 ovr_exp_us;
+  gdouble ovr_gain;
+  gdouble ovr_gr, ovr_gb;       /* <= 0: keep the AWB running */
+  gfloat ovr_lens;              /* < 0: keep autofocus */
 };
 
 static GWeakRef fp6m_active_ref;
@@ -313,12 +321,19 @@ fp6m_stacking (Fp6Manual * m)
   return m->st >= STK_SETTLE && m->st <= STK_DARK;
 }
 
+/* a stack or a phase 2 capture job holds the camera settings */
+static gboolean
+fp6m_forced (Fp6Manual * m)
+{
+  return fp6m_stacking (m) || m->ovr;
+}
+
 static gboolean
 fp6m_anything_manual (Fp6Manual * m)
 {
   return m->exposure_us > 0 || m->iso > 0 || fabsf (m->ev) > 0.01f
       || m->wb_kelvin > 0 || m->ae_lock || m->awb_lock || m->af_lock
-      || m->focus >= 0 || fp6m_stacking (m);
+      || m->focus >= 0 || fp6m_forced (m);
 }
 
 /* AfMode values (libcamera control_ids) */
@@ -332,6 +347,7 @@ fp6m_apply_locked (Fp6Manual * m)
 {
   GstElement *cam = m->cam;
   gboolean stacking = fp6m_stacking (m);
+  gboolean ovr = m->ovr && !stacking;
   gint64 exp;
   gdouble gain;
 
@@ -344,7 +360,7 @@ fp6m_apply_locked (Fp6Manual * m)
 
   /* exposure time: value first, then the mode (see 0090: the IPA keeps the
    * last ExposureTime it received, in any mode) */
-  exp = stacking ? m->st_frame_us : m->exposure_us;
+  exp = stacking ? m->st_frame_us : ovr ? m->ovr_exp_us : m->exposure_us;
   if (!stacking && exp > 0)
     exp = MIN (exp, fp6m_max_exposure_locked (m));
   if (exp <= 0 && (m->ae_lock || stacking))
@@ -356,7 +372,8 @@ fp6m_apply_locked (Fp6Manual * m)
     gst_util_set_object_arg (G_OBJECT (cam), "exposure-time-mode", "auto");
   }
 
-  gain = stacking ? m->st_gain : (m->iso > 0 ? m->iso / 100.0 : 0);
+  gain = stacking ? m->st_gain : ovr ? m->ovr_gain
+      : (m->iso > 0 ? m->iso / 100.0 : 0);
   if (gain <= 0 && (m->ae_lock || stacking))
     gain = fp6m_get_float (cam, "analogue-gain");
   if (gain > 0) {
@@ -369,7 +386,10 @@ fp6m_apply_locked (Fp6Manual * m)
   g_object_set (cam, "exposure-value", m->ev, NULL);
 
   /* white balance */
-  if (m->wb_kelvin > 0 && fp6m_has_prop (cam, "colour-temperature")) {
+  if (ovr && m->ovr_gr > 0 && m->ovr_gb > 0) {
+    fp6m_set_gains (cam, m->ovr_gr, m->ovr_gb);
+    g_object_set (cam, "awb-enable", FALSE, NULL);
+  } else if (m->wb_kelvin > 0 && fp6m_has_prop (cam, "colour-temperature")) {
     g_object_set (cam, "colour-temperature", m->wb_kelvin, NULL);
     g_object_set (cam, "awb-enable", FALSE, NULL);
   } else if (m->awb_lock || stacking) {
@@ -383,7 +403,12 @@ fp6m_apply_locked (Fp6Manual * m)
   }
 
   /* focus */
-  if (m->focus >= 0 || m->af_lock) {
+  if (ovr && m->ovr_lens >= 0 && m->has_focus) {
+    gst_util_set_object_arg (G_OBJECT (cam), "af-mode", "manual");
+    g_object_set (cam, "lens-position", CLAMP (m->ovr_lens, 0.0f, 100.0f),
+        NULL);
+    m->sent_af_mode = FP6M_AF_MANUAL;
+  } else if (m->focus >= 0 || m->af_lock) {
     gfloat pos = m->focus >= 0 ? m->focus * 100.0f
         : fp6m_get_float (cam, "lens-position");
     gst_util_set_object_arg (G_OBJECT (cam), "af-mode", "manual");
@@ -399,7 +424,7 @@ fp6m_apply_locked (Fp6Manual * m)
       "%.2f, ev %.1f, wb %d K%s, focus %.2f%s%s%s", exp, gain, m->ev,
       m->wb_kelvin, m->awb_lock ? " (locked)" : "", m->focus,
       m->ae_lock ? " ae-lock" : "", m->af_lock ? " af-lock" : "",
-      stacking ? " [stack]" : "");
+      stacking ? " [stack]" : ovr ? " [job]" : "");
 }
 
 /* Sensor output size the AF windows refer to (0020: AfWindows are in
@@ -676,6 +701,7 @@ typedef struct
   gint orientation, quality, iso;
   gdouble exposure_s;
   gchar *flip;                  /* videoflip method or NULL */
+  const gchar *software;        /* EXIF Software, NULL = long exposure */
 } Fp6SaveJob;
 
 static gboolean
@@ -742,7 +768,8 @@ fp6m_save_jpeg (Fp6SaveJob * job, GError ** err)
       GST_TAG_DATE_TIME, now,
       GST_TAG_DEVICE_MANUFACTURER, "Fairphone",
       GST_TAG_DEVICE_MODEL, "FP6",
-      GST_TAG_APPLICATION_NAME, "lomiri-camera-app (fp6 long exposure)", NULL);
+      GST_TAG_APPLICATION_NAME, job->software ? job->software :
+      "lomiri-camera-app (fp6 long exposure)", NULL);
   if (job->iso > 0)
     gst_tag_list_add (tags, GST_TAG_MERGE_REPLACE,
         GST_TAG_CAPTURING_ISO_SPEED, job->iso, NULL);
@@ -1080,7 +1107,7 @@ fp6m_stack_start (Fp6LibcameraSrc * self, const gchar * path, gint64 total_us,
   gint target;
 
   g_mutex_lock (&m->lock);
-  if (!m->cam || !path || !*path || fp6m_stacking (m) || m->st == STK_SAVING) {
+  if (!m->cam || !path || !*path || fp6m_forced (m) || m->st == STK_SAVING) {
     g_mutex_unlock (&m->lock);
     return FALSE;
   }
@@ -1314,7 +1341,7 @@ fp6m_set_property (Fp6LibcameraSrc * self, guint id, const GValue * value)
       break;
   }
   /* while stacking the stack settings stay; they are restored after */
-  if (apply && !fp6m_stacking (m))
+  if (apply && !fp6m_forced (m))
     fp6m_apply_locked (m);
   g_mutex_unlock (&m->lock);
   return TRUE;

@@ -9,6 +9,8 @@
  *   fp6camera-raw.c   RAW/DNG: optional second libcamerasrc pad with the
  *                     sensor's packed Bayer stream; "raw-capture" writes the
  *                     next raw frame as DNG in a background thread.
+ *   fp6camera-jobs.c  capture jobs on the processed stream (HDR ...),
+ *                     processed by fp6-imaging.c in a background thread.
  */
 
 #include "fp6-dng.h"
@@ -24,6 +26,13 @@ enum
   FP6P2_PROP_RAW_RESULT,
   FP6P2_PROP_RAW_ERROR,
   FP6P2_PROP_SENSOR,
+  FP6P2_PROP_JOB_STATE,
+  FP6P2_PROP_JOB_KIND,
+  FP6P2_PROP_JOB_PROGRESS,
+  FP6P2_PROP_JOB_FRAMES,
+  FP6P2_PROP_JOB_TARGET_FRAMES,
+  FP6P2_PROP_JOB_RESULT,
+  FP6P2_PROP_JOB_ERROR,
   FP6P2_PROP_LAST
 };
 
@@ -68,6 +77,29 @@ typedef struct _Fp6Phase2
   gint raw_rotate;
   gint64 raw_armed_at;
   gchar *raw_result, *raw_error;
+
+  /* capture jobs (fp6camera-jobs.c) */
+  gint job_state;               /* Fp6JobState */
+  gint job_kind;                /* Fp6JobKind */
+  gchar *job_path;
+  gint job_rotate, job_quality;
+  gfloat job_zoom;
+  gdouble job_progress;
+  gint job_frames, job_target;
+  gchar *job_result, *job_error;
+  volatile gint job_cancel;
+  gboolean job_stop;
+  gint64 job_deadline;
+  GstVideoInfo job_info;
+  gboolean job_info_ok;
+  GPtrArray *frames;            /* Fp6Frame */
+  /* exposure plan */
+  gint n_steps, step, settle_ok;
+  gint64 settle_deadline;
+  gint64 step_exp[32];
+  gdouble step_gain[32], step_ev[32];
+  gdouble base_gr, base_gb;
+  gfloat base_lens;
 } Fp6Phase2;
 
 static gpointer fp6p2_dng_thread (gpointer data);
@@ -90,6 +122,7 @@ fp6p2_sensor_of (const gchar * camera_name)
 }
 
 #include "fp6camera-raw.c"
+#include "fp6camera-jobs.c"
 
 /* ------------------------------------------------------------------------ */
 /* element hooks                                                            */
@@ -114,6 +147,10 @@ fp6p2_free (Fp6LibcameraSrc * self)
   g_free (p->raw_path);
   g_free (p->raw_result);
   g_free (p->raw_error);
+  g_free (p->job_path);
+  g_free (p->job_result);
+  g_free (p->job_error);
+  g_clear_pointer (&p->frames, g_ptr_array_unref);
   g_mutex_clear (&p->lock);
   g_free (p);
   self->p2 = NULL;
@@ -138,8 +175,14 @@ fp6p2_build (Fp6LibcameraSrc * self, GstElement * cam, GstElement * crop,
   p->raw_w = p->raw_h = p->raw_stride = 0;
   if (p->raw_state == RAW_ARMED)
     p->raw_state = RAW_IDLE;
+  p->job_info_ok = FALSE;
   g_mutex_unlock (&p->lock);
 
+  {
+    GstPad *pad = gst_element_get_static_pad (crop, "sink");
+    gst_pad_add_probe (pad, GST_PAD_PROBE_TYPE_BUFFER, fp6j_probe, self, NULL);
+    gst_object_unref (pad);
+  }
   if (raw)
     fp6r_build (self, cam);
 }
@@ -156,6 +199,7 @@ fp6p2_clear (Fp6LibcameraSrc * self)
     g_free (p->raw_error);
     p->raw_error = g_strdup ("camera stopped");
   }
+  fp6j_clear (self);
   g_mutex_unlock (&p->lock);
 }
 
@@ -208,6 +252,34 @@ fp6p2_get_property (Fp6LibcameraSrc * self, guint id, GValue * value)
     case FP6P2_PROP_SENSOR:
       g_value_set_string (value, fp6_sensor_names[p->sensor]);
       break;
+    case FP6P2_PROP_JOB_STATE:
+      g_value_set_int (value, p->job_state);
+      break;
+    case FP6P2_PROP_JOB_KIND:{
+      const gchar *k = NULL;
+      for (guint i = 0; i < G_N_ELEMENTS (fp6j_kinds); i++)
+        if (fp6j_kinds[i].kind == (Fp6JobKind) p->job_kind)
+          k = fp6j_kinds[i].name;
+      g_value_set_string (value, k);
+      break;
+    }
+    case FP6P2_PROP_JOB_PROGRESS:
+      g_value_set_double (value, p->job_state == JOB_CAPTURE
+          && p->job_target > 0 ? (gdouble) p->job_frames / p->job_target
+          : p->job_progress);
+      break;
+    case FP6P2_PROP_JOB_FRAMES:
+      g_value_set_int (value, p->job_frames);
+      break;
+    case FP6P2_PROP_JOB_TARGET_FRAMES:
+      g_value_set_int (value, p->job_target);
+      break;
+    case FP6P2_PROP_JOB_RESULT:
+      g_value_set_string (value, p->job_result);
+      break;
+    case FP6P2_PROP_JOB_ERROR:
+      g_value_set_string (value, p->job_error);
+      break;
     default:
       break;
   }
@@ -241,7 +313,35 @@ fp6p2_class_init (GObjectClass * oc)
   P (FP6P2_PROP_SENSOR, g_param_spec_string ("sensor", "Sensor",
           "Sensor of the built chain: imx896 | ov13b10 | s5kkd1 | unknown",
           NULL, ro));
+  P (FP6P2_PROP_JOB_STATE, g_param_spec_int ("job-state", "Job state",
+          "0 idle 1 capturing 2 processing 3 done 4 error", 0, 4, 0, ro));
+  P (FP6P2_PROP_JOB_KIND, g_param_spec_string ("job-kind", "Job kind",
+          "Kind of the current/last job", NULL, ro));
+  P (FP6P2_PROP_JOB_PROGRESS, g_param_spec_double ("job-progress",
+          "Job progress", "0..1 of the capture (state 1) or the processing "
+          "(state 2)", 0, 1, 0, ro));
+  P (FP6P2_PROP_JOB_FRAMES, g_param_spec_int ("job-frames", "Job frames",
+          "Frames captured", 0, G_MAXINT, 0, ro));
+  P (FP6P2_PROP_JOB_TARGET_FRAMES, g_param_spec_int ("job-target-frames",
+          "Job target frames", "Frames to capture (0 = open ended)", 0,
+          G_MAXINT, 0, ro));
+  P (FP6P2_PROP_JOB_RESULT, g_param_spec_string ("job-result", "Job result",
+          "Saved file(s), newline separated", NULL, ro));
+  P (FP6P2_PROP_JOB_ERROR, g_param_spec_string ("job-error", "Job error",
+          "Why the last job failed", NULL, ro));
 #undef P
+
+  /* kind, output path, clockwise display rotation, JPEG quality, params */
+  g_signal_new_class_handler ("job-start", t,
+      G_SIGNAL_RUN_LAST | G_SIGNAL_ACTION, G_CALLBACK (fp6j_start),
+      NULL, NULL, NULL, G_TYPE_BOOLEAN, 5, G_TYPE_STRING, G_TYPE_STRING,
+      G_TYPE_INT, G_TYPE_INT, G_TYPE_STRING);
+  g_signal_new_class_handler ("job-stop", t,
+      G_SIGNAL_RUN_LAST | G_SIGNAL_ACTION, G_CALLBACK (fp6j_stop),
+      NULL, NULL, NULL, G_TYPE_NONE, 0);
+  g_signal_new_class_handler ("job-cancel", t,
+      G_SIGNAL_RUN_LAST | G_SIGNAL_ACTION, G_CALLBACK (fp6j_cancel),
+      NULL, NULL, NULL, G_TYPE_NONE, 0);
 
   /* path, clockwise display rotation (as for stack-start) */
   g_signal_new_class_handler ("raw-capture", t,

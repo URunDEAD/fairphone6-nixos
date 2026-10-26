@@ -25,7 +25,7 @@ start)
   cat > $W <<W2
 #!/bin/sh
 # TEMPORARY Phase 2 GUI test (restored by gui-session.sh stop)
-export FP6_CAMERA_CONFIG=\$HOME/.config/fp6-camera/camera.conf
+# the system camera.conf (/etc/fp6-camera)
 exec $2/bin/lomiri-camera-app "\$@" 2>>/tmp/fp6-phase2-app.log
 W2
   : > /tmp/fp6-phase2-app.log
