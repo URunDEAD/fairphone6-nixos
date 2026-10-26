@@ -45,6 +45,11 @@ in
     # phase2: RAW+JPEG (DNG via fp6libcamerasrc's raw stream) and the
     # computational modes; see results/feature-push-20261024/camera/phase2.
     ./lomiri-camera-app-phase2.patch
+    # fast-launch (applied last): camera opened while the overlay loads,
+    # gallery/settings after the first frame, Keep ready parking, Settings >
+    # Fast launch (fp6-app-ready lists), FP6_CAMERA_TRACE timing marks.
+    # results/feature-push-20261024/camera/fast-launch/README.md
+    ./lomiri-camera-app-fast-launch.patch
   ];
   nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ pkg-config ];
   buildInputs = old.buildInputs ++ [ gstFp6Camera libcamera gst_all_1.gst-libav glib ];
@@ -57,11 +62,23 @@ in
       --set-default FP6_CAMERA_CONFIG ${configFile}
       --prefix LIBCAMERA_IPA_CONFIG_PATH : ${gstFp6Camera}/share/libcamera/ipa
       --set QT_GSTREAMER_USE_OPENGL_PLUGIN 0
+      # fast launch: nixpkgs Qt only uses QML caches with this set (see
+      # boot-speed/lomiri-qmlcache-fp6.nix). The app's own QML is compiled
+      # ahead of time below; imported modules (Lomiri UITK ...) are cached in
+      # ~/.cache/camera.ubports/qmlcache on first use (store URLs: a changed
+      # module gets a new cache file; the app prunes unused ones).
+      --set-default QML_FORCE_DISK_CACHE 1
       ${lib.optionalString (!hardwareEncode) "--set GST_PLUGIN_FEATURE_RANK ${rankOverride}"}
     )
   '';
   # Refuse a wrapper that could load the stock (photography-less) camerabin.
+  # fast launch: ahead-of-time bytecode (.qmlc/.jsc next to each file; used
+  # with QML_FORCE_DISK_CACHE, no compile on the first start).
   postFixup = (old.postFixup or "") + ''
+    find $out/share/lomiri-camera-app -name '*.qml' -o -name '*.js' | while read -r f; do
+      ${libsForQt5.qtdeclarative.dev}/bin/qmlcachegen -o "''${f}c" "$f" || echo "qmlcachegen: $f stays uncompiled"
+    done
+    test -f $out/share/lomiri-camera-app/qml/camera-app.qmlc
     w=$out/bin/lomiri-camera-app
     grep -q fp6camerabinsrc "$w"
     grep -q ${qtmultimediaFp6.bin} "$w"

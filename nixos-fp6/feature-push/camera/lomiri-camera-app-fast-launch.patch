@@ -1,0 +1,467 @@
+diff --git a/cameraapplication.cpp b/cameraapplication.cpp
+index 0ed633c..6a82b38 100644
+--- a/cameraapplication.cpp
++++ b/cameraapplication.cpp
+@@ -29,6 +29,35 @@
+ 
+ #include "config.h"
+ 
++// FP6 fast launch: FP6_CAMERA_TRACE=1 prints "FLMARK <what> <unix time>"
++// on stderr (tools/feature-push/camera-fast-launch/measure.sh).
++#include <QElapsedTimer>
++#include <QDateTime>
++#include <QDir>
++#include <QFileInfo>
++#include <QStandardPaths>
++#include <QTimer>
++#include <QQuickWindow>
++#include <cstdio>
++#include <ctime>
++
++static bool fp6TraceOn()
++{
++    static const bool on = qEnvironmentVariableIsSet("FP6_CAMERA_TRACE");
++    return on;
++}
++
++static void fp6TraceMark(const char *what)
++{
++    if (!fp6TraceOn())
++        return;
++    struct timespec ts;
++    clock_gettime(CLOCK_REALTIME, &ts);
++    fprintf(stderr, "FLMARK %s %lld.%09ld\n", what, (long long) ts.tv_sec, ts.tv_nsec);
++}
++
++static const int fp6MainMark = (fp6TraceMark("main"), 0);   // before main()
++
+ static void printUsage(const QStringList& arguments)
+ {
+     qDebug() << "usage:"
+@@ -40,6 +69,7 @@ CameraApplication::CameraApplication(int &argc, char **argv)
+     : QGuiApplication(argc, argv),
+       m_mode(CameraMode::NORMAL)
+ {
++    fp6TraceMark("qguiapplication");
+ 
+     // The testability driver is only loaded by QApplication but not by QGuiApplication.
+     // However, QApplication depends on QWidget which would add some unneeded overhead => Let's load the testability driver on our own.
+@@ -105,7 +135,59 @@ bool CameraApplication::setup()
+     m_engine->addImportPath(cameraAppImportDirectory());
+     qDebug() << "Import path added" << cameraAppImportDirectory();
+     qDebug() << "Camera app directory" << cameraAppDirectory();
++    fp6TraceMark("engine-load");
+     m_engine->load(QUrl::fromLocalFile(sourceQml(m_mode)));
++    fp6TraceMark("engine-loaded");
++
++    // FP6 fast launch: QML_FORCE_DISK_CACHE (wrapper) caches the imported
++    // modules here; entries of replaced module builds are never used again.
++    QTimer::singleShot(30000, this, []() {
++        QDir cache(QStandardPaths::writableLocation(QStandardPaths::CacheLocation)
++                   + QStringLiteral("/qmlcache"));
++        const QDateTime limit = QDateTime::currentDateTime().addDays(-30);
++        const QFileInfoList files = cache.entryInfoList(
++            QStringList() << QStringLiteral("*.qmlc") << QStringLiteral("*.jsc"), QDir::Files);
++        for (const QFileInfo &f : files)
++            if (f.lastModified() < limit)
++                QFile::remove(f.absoluteFilePath());   // recompiled on next use
++    });
++
++    // FP6 fast launch trace: buffer swaps of the first 15 s (render thread)
++    QQuickWindow *window = m_engine->rootObjects().isEmpty() ? nullptr
++        : qobject_cast<QQuickWindow *>(m_engine->rootObjects().first());
++    if (fp6TraceOn() && window) {
++        QElapsedTimer *since = new QElapsedTimer;
++        since->start();
++        QObject::connect(window, &QQuickWindow::frameSwapped, window, [since]() {
++            if (!since->hasExpired(15000))
++                fp6TraceMark("swap");
++        }, Qt::DirectConnection);
++    }
+ 
+     return true;
+ }
++
++bool CameraApplication::fp6Trace() const
++{
++    return fp6TraceOn();
++}
++
++bool CameraApplication::fp6StartedHidden() const
++{
++    // fp6-app-ready (nixos-fp6/feature-push/app-ready) creates this before a
++    // hidden prelaunch; Lomiri then does not activate the first window.
++    static const bool hidden = QFileInfo::exists(
++        qEnvironmentVariable("XDG_RUNTIME_DIR")
++        + QStringLiteral("/fp6-app-ready/background/lomiri-camera-app"));
++    return hidden;
++}
++
++bool CameraApplication::fp6KeepReadyForced() const
++{
++    return qgetenv("FP6_CAMERA_KEEP_READY") == "1";
++}
++
++void CameraApplication::fp6Mark(const QString &what) const
++{
++    fp6TraceMark(what.toUtf8().constData());
++}
+diff --git a/cameraapplication.h b/cameraapplication.h
+index 1cf23ff..6c06cfe 100644
+--- a/cameraapplication.h
++++ b/cameraapplication.h
+@@ -30,12 +30,20 @@ class CameraApplication : public QGuiApplication
+ {
+     Q_OBJECT
+     Q_PROPERTY(bool desktopMode READ isDesktopMode CONSTANT)
++    // FP6 fast launch: timing marks on stderr with FP6_CAMERA_TRACE set
++    Q_PROPERTY(bool fp6Trace READ fp6Trace CONSTANT)
+ 
+ public:
+     CameraApplication(int &argc, char **argv);
+     virtual ~CameraApplication();
+     bool setup();
+     bool isDesktopMode() const;
++    bool fp6Trace() const;
++    Q_INVOKABLE void fp6Mark(const QString &what) const;
++    // started by the phone's "Keep apps ready" prelaunch, not by the user
++    Q_INVOKABLE bool fp6StartedHidden() const;
++    // FP6_CAMERA_KEEP_READY=1: Keep ready behaviour without fp6-app-ready (tests)
++    Q_INVOKABLE bool fp6KeepReadyForced() const;
+ 
+ Q_SIGNALS:
+ 
+diff --git a/qml/Viewfinder/ViewFinderView.qml b/qml/Viewfinder/ViewFinderView.qml
+index 0798d24..4b1a7c5 100644
+--- a/qml/Viewfinder/ViewFinderView.qml
++++ b/qml/Viewfinder/ViewFinderView.qml
+@@ -22,6 +22,7 @@ import QtMultimedia 5.9
+ import CameraApp 0.1
+ //import QtGraphicalEffects 1.0
+ import Lomiri.Content 1.3
++import Qt.labs.settings 1.0
+ 
+ import "../components"
+ 
+@@ -52,10 +53,113 @@ FocusScope {
+ 
+     function decideCameraState() {
+         if (viewFinderOverlay.status == Loader.Ready) {
+-            camera.cameraState = Camera.ActiveState;
++            // FP6 fast launch: a hidden prelaunch (Keep ready) only opens
++            // the camera; the sensor streams once the user brings the app up
++            camera.cameraState = fp6Hidden ? Camera.LoadedState : Camera.ActiveState;
+         }
+     }
+ 
++    // ---- FP6 fast launch (lomiri-camera-app-fast-launch.patch)
++    // Open the camera (libcamera manager, IPA, sensor configuration) while
++    // the overlay QML still loads; streaming starts when it is Ready.
++    Component.onCompleted: Qt.callLater(function() {
++        if (camera.cameraState == Camera.UnloadedState)
++            camera.cameraState = Camera.LoadedState;
++    })
++    // Stream as soon as the camera is opened instead of waiting for the
++    // overlay QML (~1 s): the resolutions the overlay would apply are read
++    // here (same settings keys); viewfinder and capture resolution only take
++    // effect at the start, the overlay's other bindings also apply live.
++    Settings {
++        id: fp6EarlySettings
++        property var photoResolutions
++        property var videoResolutions
++    }
++    function fp6EarlyStart() {
++        var res = camera.captureMode === Camera.CaptureStillImage
++                ? fp6EarlySettings.photoResolutions : fp6EarlySettings.videoResolutions;
++        var want = res ? res[camera.deviceId] : undefined;
++        if (want) {
++            var p = String(want).split("x");
++            var target = Qt.size(parseInt(p[0]), parseInt(p[1]));
++            if (camera.captureMode === Camera.CaptureStillImage)
++                camera.imageCapture.resolution = target;
++            else
++                camera.videoRecorder.resolution = target;
++            // the overlay's rule: the largest viewfinder size of the same aspect
++            var best, list = camera.supportedViewfinderResolutions();
++            for (var i = 0; i < list.length; i++) {
++                if (Math.abs(list[i].width / list[i].height - target.width / target.height) <= 0.02
++                        && (!best || list[i].width > best.width))
++                    best = list[i];
++            }
++            if (best)
++                camera.viewfinder.resolution = Qt.size(best.width, best.height);
++        }
++        application.fp6Mark("early-start");
++        camera.cameraState = Camera.ActiveState;
++    }
++    Connections {
++        target: camera
++        onCameraStatusChanged: {
++            if (camera.cameraStatus == Camera.LoadedStatus
++                    && camera.cameraState == Camera.LoadedState
++                    && viewFinderOverlay.status != Loader.Ready
++                    && !viewFinderView.fp6Hidden && !viewFinderView.fp6Parked
++                    && Qt.application.state === Qt.ApplicationActive)
++                fp6EarlyStart();
++        }
++    }
++    // Started by "Keep ready" in the background: no streaming until shown.
++    property bool fp6Hidden: application.fp6StartedHidden()
++    // In the background the sensor stops streaming (nixpkgs' Lomiri does not
++    // suspend apps, so a backgrounded or locked-screen camera kept streaming):
++    // with Keep ready the camera stays opened (Loaded) before the app is
++    // frozen; otherwise it is released after 2 s for other apps.
++    property bool fp6KeepReady: application.fp6KeepReadyForced()
++                                || (main.fp6AppReady !== null && main.fp6AppReady.keepReady)
++    property bool fp6Parked: false
++    Connections {
++        target: Qt.application
++        onStateChanged: {
++            application.fp6Mark("app-state-" + Qt.application.state);
++            if (Qt.application.state === Qt.ApplicationActive) {
++                fp6ParkTimer.stop();
++                if (viewFinderView.fp6Hidden || viewFinderView.fp6Parked) {
++                    viewFinderView.fp6Hidden = false;
++                    viewFinderView.fp6Parked = false;
++                    decideCameraState();
++                }
++            } else {
++                fp6ParkTimer.interval = viewFinderView.fp6KeepReady || viewFinderView.fp6Hidden ? 400 : 2000;
++                fp6ParkTimer.restart();
++            }
++        }
++    }
++    Timer {
++        id: fp6ParkTimer
++        onTriggered: {
++            if (Qt.application.state !== Qt.ApplicationActive
++                    && camera.cameraState != Camera.UnloadedState
++                    && camera.videoRecorder.recorderState == CameraRecorder.StoppedState
++                    && !camera.photoCaptureInProgress && !camera.timedCaptureInProgress
++                    && !camera.pro.jobBusy && camera.pro.stackState == 0) {
++                viewFinderView.fp6Parked = true;
++                camera.cameraState = viewFinderView.fp6KeepReady || viewFinderView.fp6Hidden
++                        ? Camera.LoadedState : Camera.UnloadedState;
++                application.fp6Mark("parked-" + camera.cameraState);
++            }
++        }
++    }
++    Connections {
++        target: camera
++        onCameraStatusChanged: application.fp6Mark("camera-status-" + camera.cameraStatus)
++    }
++    Connections {
++        target: viewFinderOverlay
++        onStatusChanged: if (viewFinderOverlay.status == Loader.Ready) application.fp6Mark("overlay-ready")
++    }
++
+     property Camera camera: Camera {
+         id: camera
+         captureMode: Camera.CaptureStillImage
+diff --git a/qml/camera-app.qml b/qml/camera-app.qml
+index 8defcb2..add0fb4 100644
+--- a/qml/camera-app.qml
++++ b/qml/camera-app.qml
+@@ -93,6 +93,34 @@ Window {
+         i18n.domain = "lomiri-camera-app";
+         i18n.bindtextdomain("lomiri-camera-app", i18nDirectory);
+         main.show();
++        application.fp6Mark("root-completed");
++        fp6StartFallback.start();
++    }
++
++    // ---- FP6 fast launch: what the viewfinder does not need is loaded
++    // after the camera streams (or after 4 s at the latest)
++    property bool fp6Started: false
++    property var fp6AppReady: fp6AppReadyLoader.item
++    Timer {
++        id: fp6StartFallback
++        interval: 4000
++        onTriggered: main.fp6Started = true
++    }
++    Timer {
++        id: fp6StartDelay
++        interval: 300
++        onTriggered: main.fp6Started = true
++    }
++    Connections {
++        target: viewFinderView.camera
++        onCameraStatusChanged: if (viewFinderView.camera.cameraStatus == Camera.ActiveStatus
++                                   && !main.fp6Started) fp6StartDelay.start()
++    }
++    Loader {
++        id: fp6AppReadyLoader
++        asynchronous: true
++        active: main.fp6Started || viewFinderView.fp6Hidden
++        source: "components/Fp6AppReady.qml"
+     }
+ 
+     readonly property int sensorOrientation: orientationSensor.reading ? orientationSensor.reading.orientation : OrientationReading.TopUp
+@@ -363,6 +391,7 @@ Window {
+ 
+         GalleryViewLoader {
+             id: galleryView
++            fp6Load: main.fp6Started || inView
+             width: viewSwitcher.width
+             height: viewSwitcher.height
+             inView: viewSwitcher.ratio > 0.0
+diff --git a/qml/components/AdvancedOptions.qml b/qml/components/AdvancedOptions.qml
+index b7ba1ac..42a82ff 100644
+--- a/qml/components/AdvancedOptions.qml
++++ b/qml/components/AdvancedOptions.qml
+@@ -52,10 +52,12 @@ Page {
+ 
+         interactive: true
+         flickableDirection: Flickable.VerticalFlick
++        contentHeight: optionsColumn.height    // FP6: scrolls once it is taller than the page
++        clip: true
+ 
+         Column {
+-
+-            anchors.fill: parent
++            id: optionsColumn
++            width: parent.width
+ 
+             ListItem {
+                 ListItemLayout {
+@@ -372,6 +374,52 @@ Page {
+                     }
+                 }
+             }
++
++            // ---- FP6 fast launch (lomiri-camera-app-fast-launch.patch)
++            ListItem {
++                height: fastLaunchHeader.height + units.gu(1)
++                divider.visible: false
++                ListItemLayout {
++                    id: fastLaunchHeader
++                    title.text: i18n.tr("Fast launch")
++                    title.font.weight: Font.DemiBold
++                    title.color: theme.palette.normal.backgroundText
++                    subtitle.text: i18n.tr("Always on, at no cost: compiled screens are cached, and the photo roll and settings load after the viewfinder starts. The last exposure is kept, so the first frames are already exposed right.")
++                    subtitle.maximumLineCount: 4
++                    subtitle.wrapMode: Text.WordWrap
++                    subtitle.color: theme.palette.normal.backgroundSecondaryText
++                }
++            }
++            OptionSelector {
++                id: fastLaunchSelector
++                property var appReady: main.fp6AppReady
++                visible: !!appReady && appReady.available
++                width: parent.width
++                expanded: true
++                model: [i18n.tr("Off"), i18n.tr("Preload"), i18n.tr("Keep ready")]
++                selectedIndex: appReady ? appReady.mode : 0
++                onDelegateClicked: if (appReady) appReady.setMode(index)
++            }
++            Label {
++                visible: fastLaunchSelector.visible
++                width: parent.width
++                wrapMode: Text.WordWrap
++                textSize: Label.Small
++                color: theme.palette.normal.backgroundSecondaryText
++                text: [
++                    i18n.tr("Off: the Camera starts from scratch when you open it. No extra battery or memory use."),
++                    i18n.tr("Preload: the Camera's files are read into memory after login and when the phone is idle, so a cold start skips the storage reads. Uses about %1 MB of otherwise free memory (given back when other apps need it) and almost no battery: one read after login.").arg(150),
++                    i18n.tr("Keep ready: a Camera instance is started after login and kept suspended in the background, with the camera opened but not streaming, so it appears almost at once. Holds about %1 MB of memory all the time; no battery while it waits (the app is frozen and the sensor is off), but other apps cannot open the camera meanwhile. The sensor only streams once you open the Camera.").arg(120)
++                ][fastLaunchSelector.selectedIndex]
++            }
++            Label {
++                visible: !fastLaunchSelector.visible
++                width: parent.width
++                wrapMode: Text.WordWrap
++                textSize: Label.Small
++                color: theme.palette.normal.backgroundSecondaryText
++                text: i18n.tr("Preload and Keep ready need the phone's \"Keep apps ready\" service, which is not installed.")
++            }
+         }
+     }
+ 
+diff --git a/qml/components/Fp6AppReady.qml b/qml/components/Fp6AppReady.qml
+new file mode 100644
+index 0000000..0b9af05
+--- /dev/null
++++ b/qml/components/Fp6AppReady.qml
+@@ -0,0 +1,42 @@
++/*
++ * FP6 fast launch: the Camera's entries in the phone-wide "Keep apps ready"
++ * lists (fp6-app-ready, GSettings com.fairphone6.app-ready). Loaded through a
++ * Loader: without gsettings-qt or the schema it fails or is not available,
++ * and the Camera settings hide the choice.
++ *   mode 0 = off, 1 = preload (page cache), 2 = keep ready (prelaunched,
++ *   suspended in the background, camera opened but not streaming)
++ */
++import QtQuick 2.12
++import GSettings 1.0
++
++QtObject {
++    id: root
++
++    // GSettings is a property map: it cannot carry QML properties itself
++    property GSettings settings: GSettings {
++        schema.id: "com.fairphone6.app-ready"
++    }
++
++    readonly property string appId: "lomiri-camera-app"
++    readonly property bool available: settings.schema.isValid
++    readonly property bool keepReady: available && has(settings.keepReady)
++    readonly property bool preloaded: available && has(settings.preload)
++    readonly property int mode: keepReady ? 2 : (preloaded ? 1 : 0)
++
++    function has(list) {
++        return !!list && Array.prototype.indexOf.call(list, appId) >= 0;
++    }
++    function withApp(list, on) {
++        var out = [];
++        for (var i = 0; list && i < list.length; i++)
++            if (list[i] !== appId) out.push(list[i]);
++        if (on) out.push(appId);
++        return out;
++    }
++    function setMode(m) {
++        if (!available) return;
++        settings.preload = withApp(settings.preload, m >= 1);
++        settings.prelaunch = withApp(settings.prelaunch, m === 2);
++        settings.keepReady = withApp(settings.keepReady, m === 2);
++    }
++}
+diff --git a/qml/components/GalleryViewLoader.qml b/qml/components/GalleryViewLoader.qml
+index e8f5d88..01dba35 100644
+--- a/qml/components/GalleryViewLoader.qml
++++ b/qml/components/GalleryViewLoader.qml
+@@ -23,25 +23,31 @@ Loader {
+     property bool inView
+     property bool touchAcquired: loader.item ? loader.item.touchAcquired : false
+ 
++    // FP6 fast launch: the gallery loads once the viewfinder runs (or when
++    // it is swiped to); before that the photo roll reads new files itself
++    property bool fp6Load: true
++
+     function showLastPhotoTaken() {
+-        loader.item.showLastPhotoTaken();
++        if (loader.item) loader.item.showLastPhotoTaken();
+     }
+ 
+     function prependMediaToModel(filePath) {
+-        loader.item.prependMediaToModel(filePath);
++        if (loader.item) loader.item.prependMediaToModel(filePath);
+     }
+ 
+     function precacheThumbnail(filePath) {
+-        loader.item.precacheThumbnail(filePath);
++        if (loader.item) loader.item.precacheThumbnail(filePath);
+     }
+ 
+     asynchronous: true
+ 
++    onFp6LoadChanged: if (fp6Load && source == "") loader.setSource("GalleryView.qml")
+     Component.onCompleted: {
+-        loader.setSource("GalleryView.qml");
++        if (fp6Load) loader.setSource("GalleryView.qml");
+     }
+ 
+     onLoaded: {
++        application.fp6Mark("gallery-ready");
+         loader.item.inView = Qt.binding(function() { return loader.inView });
+         loader.item.exit.connect(exit);
+     }

@@ -7,7 +7,7 @@
 #
 # Opt-in; nothing here loads modules, starts services or touches the cameras at
 # boot. Requires the existing camera stack (hardware.fp6Camera.enable).
-{ config, lib, pkgs, ... }:
+{ config, lib, pkgs, options, ... }:
 let
   cfg = config.hardware.fp6LomiriCamera;
   camOpts = { name, ... }: {
@@ -141,7 +141,7 @@ in {
     };
   };
 
-  config = lib.mkIf cfg.enable {
+  config = lib.mkIf cfg.enable (lib.mkMerge [ {
     assertions = [{
       assertion = config.hardware.fp6Camera.enable;
       message = "hardware.fp6LomiriCamera needs hardware.fp6Camera (libcamera package/IPA).";
@@ -162,5 +162,22 @@ in {
     ];
     environment.systemPackages = [ pkgs.gst_all_1.gstreamer ];
     system.build.fp6-lomiri-camera-app = pkgs.lomiri.lomiri-camera-app;
-  };
+  }
+  # Camera fast launch: what "Preload" (Camera > Settings > Fast launch, via
+  # fp6-app-ready) reads besides the app's learned mapped files: its QML with
+  # the ahead-of-time .qmlc, the IPA modules and tuning files, the plugins.
+  (lib.optionalAttrs (options.hardware.fairphone6 ? appReady) {
+    hardware.fairphone6.appReady.extraPreload.lomiri-camera-app = let
+      app = pkgs.lomiri.lomiri-camera-app;
+    in [
+      "${app}/share/lomiri-camera-app"
+      "${app}/lib/lomiri-camera-app"
+      "${config.hardware.fp6Camera.package}/lib/libcamera"
+      "${config.hardware.fp6Camera.package}/share/libcamera"
+      "${config.hardware.fp6Camera.package}/lib/gstreamer-1.0"
+      "${app.gstFp6Camera}/lib/gstreamer-1.0"
+      "${app.gstFp6Camera}/share/libcamera"
+      "${app.qtmultimediaFp6.bin}/lib/qt-5.15.19/plugins/mediaservice"
+    ];
+  }) ]);
 }
