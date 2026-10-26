@@ -72,6 +72,50 @@ n = len(calls)
 core.volume_down(1); core.power_key(1, now=90.0); core.power_key(0, now=90.2); core.volume_down(0)
 check(len(calls) == n + 1 and calls[-1] == ("on", m.REASON_POWERKEY), "chord with the display off still wakes it")
 
+# power key double/triple press (gestures): deterministic fake timer
+timers = {}
+def fake_schedule(seconds, callback):
+    key = len(timers) + 1
+    timers[key] = callback
+    return key
+def run_timers():
+    for key in list(timers):
+        timers.pop(key)()
+core._schedule = fake_schedule
+core._multi_cancel_timer = lambda: (timers.pop(core.multi_timer, None), setattr(core, "multi_timer", None))
+multi = []
+core.multi_listeners = [lambda count, on: multi.append((count, on))]
+core.screen_on, core.off_reasons = True, set()
+n = len(calls)
+core.power_key(1, now=100.0); core.power_key(0, now=100.1)
+check(len(calls) == n + 1 and not timers, "default (max 0): single press toggles at once, no timer")
+core.screen_on, core.off_reasons = True, set()
+core.set_multi_press(3); n = len(calls)
+core.power_key(1, now=110.0); core.power_key(0, now=110.1)
+check(len(calls) == n and len(timers) == 1, "max 3: single press waits for the gap")
+run_timers()
+check(len(calls) == n + 1 and calls[-1] == ("off", m.REASON_POWERKEY) and not multi, "max 3: lone press toggles after the gap")
+core.screen_on, core.off_reasons = True, set(); n = len(calls)
+core.power_key(1, now=120.0); core.power_key(0, now=120.1); core.power_key(1, now=120.3); core.power_key(0, now=120.4)
+run_timers()
+check(multi == [(2, True)] and len(calls) == n, "double press emits MultiPress(2), display unchanged")
+core.power_key(1, now=130.0); core.power_key(0, now=130.1); core.power_key(1, now=130.2); core.power_key(0, now=130.3)
+core.power_key(1, now=130.4); core.power_key(0, now=130.5)
+check(multi[-1] == (3, True) and not timers and len(calls) == n, "triple press at max fires at once")
+core.set_multi_press(2)
+core.power_key(1, now=140.0); core.power_key(0, now=140.1); core.power_key(1, now=140.2); core.power_key(0, now=140.3)
+check(multi[-1] == (2, True) and not timers, "max 2: double press fires at once")
+del multi[:]
+core.volume_down(1); core.power_key(1, now=150.0); core.power_key(0, now=150.1); core.volume_down(0)
+core.power_key(1, now=150.3); core.power_key(0, now=150.4)
+check(not multi and len(timers) == 1, "chord is not counted as a press")
+n = len(calls); run_timers()
+check(not multi and len(calls) == n + 1, "press after a chord alone is a single press")
+core.screen_on, core.off_reasons = True, set(); n = len(calls)
+core.power_key(1, now=160.0); core.power_key(0, now=160.1); core.power_key(1, now=160.2); core.power_key(0, now=162.0)
+check(not multi and not timers and core.multi_count == 0 and len(calls) == n, "long press is not counted and cancels the count")
+core.set_multi_press(0)
+
 # notifications: the closing "off" only blanks a display the notification woke
 core = object.__new__(m.Core)
 core.lock, core.screen_power = threading.RLock(), True
@@ -124,6 +168,17 @@ check(tuple(int(x) for x in params[:3]) == (10, 1, 255) and not bool(params[4]),
       "getBrightnessParams without light sensor")
 rep.setUserBrightness(255)
 check((bl / "brightness").read_text().strip() == "4095", "manual brightness 255 -> raw 4095")
+pk = dbus.Interface(bus.get_object(m.REPOWERD, m.POWERKEY_PATH), m.POWERKEY_IFACE)
+pk.SetMultiPress(3)
+check(int(pk.GetMultiPress()) == 3, "PowerKey.SetMultiPress over D-Bus")
+try:
+    pk.SetMultiPress(5)
+    check(False, "PowerKey rejects max 5")
+except dbus.DBusException:
+    check(True, "PowerKey rejects max 5")
+client = subprocess.run([sys.executable, "-c", "import dbus; b=dbus.SessionBus(); dbus.Interface(b.get_object(%r, %r), %r).SetMultiPress(2)" % (m.REPOWERD, m.POWERKEY_PATH, m.POWERKEY_IFACE)])
+time.sleep(0.3)
+check(client.returncode == 0 and int(pk.GetMultiPress()) == 0, "multi-press resets when its client leaves the bus")
 check(bool(scr.getDoubleTapToWakeSupported()), "dt2w supported with lp_mode present")
 scr.setDoubleTapToWakeEnabled(True)
 check((touch / "gesture_wakeup").read_text().startswith("2"), "dt2w selects double tap")

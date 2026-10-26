@@ -67,6 +67,11 @@ KEY_VOLUMEDOWN = 114
 # Shorter presses toggle the display (repowerd behaviour); longer ones are left
 # to Lomiri's own long-press power dialog (PhysicalKeysMapper, 2 s).
 POWER_KEY_SHORT_PRESS = 1.0
+# Double/triple press: the next press must start within this time after the
+# previous release (only waited for when a multi-press action is assigned).
+POWER_KEY_MULTI_GAP = 0.35
+POWERKEY_IFACE = "com.fairphone6.PowerKey"
+POWERKEY_PATH = "/com/fairphone6/PowerKey"
 EVENT = struct.Struct("llHHi")
 
 
@@ -301,6 +306,10 @@ class Core:
 
     volume_down_held = False      # Volume-Down currently pressed
     power_chord = False           # this power press overlaps Volume-Down
+    multi_press_max = 0           # 0, 2 or 3 (com.fairphone6.PowerKey.SetMultiPress)
+    multi_count = 0
+    multi_timer = None
+    multi_listeners = ()
 
     def __init__(self, bus, backlight, touch, curve, screen_power, sensors=True):
         self.bus, self.backlight, self.touch = bus, backlight, touch
@@ -698,21 +707,81 @@ class Core:
         if value == 1:
             self.power_pressed_at = now
             self.power_chord = self.volume_down_held
+            self._multi_press_down()
             return
         if value != 0 or self.power_pressed_at is None:
             return
         held, self.power_pressed_at = now - self.power_pressed_at, None
         if self.power_chord:
             self.power_chord = False
+            self._multi_reset()
             if self.screen_on:
                 log("KEY_POWER with Volume-Down (screenshot chord): display unchanged")
                 return
-        if held >= POWER_KEY_SHORT_PRESS:
+            # A chord from standby wakes at once; it never counts as a multi-press.
+            if held < POWER_KEY_SHORT_PRESS:
+                self._toggle_display()
             return
+        if held >= POWER_KEY_SHORT_PRESS:
+            self._multi_reset()
+            return
+        self._short_press()
+
+    def _toggle_display(self):
         with self.lock:
             off = self.screen_on and "user" not in self.off_reasons
             log("KEY_POWER short press:", "display off" if off else "display on")
         self.set_screen_power("off" if off else "on", REASON_POWERKEY)
+
+    # power key double/triple press (gestures module, com.fairphone6.PowerKey).
+    # multi_press_max 0 (default, nothing assigned): a short press toggles the
+    # display at once. 2/3: presses whose release-to-press gap is under
+    # POWER_KEY_MULTI_GAP count up; the count fires when it reaches the max or
+    # the gap runs out. Count 1 toggles the display; 2 and 3 are announced
+    # (MultiPress signal) instead and leave the display unchanged.
+    def _short_press(self):
+        if not self.multi_press_max:
+            self._toggle_display()
+            return
+        self._multi_cancel_timer()
+        self.multi_count += 1
+        if self.multi_count >= self.multi_press_max:
+            self._multi_fire()
+        else:
+            self.multi_timer = self._schedule(POWER_KEY_MULTI_GAP, self._multi_fire)
+
+    def _schedule(self, seconds, callback):
+        return GLib.timeout_add(int(seconds * 1000), lambda: (callback(), GLib.SOURCE_REMOVE)[1])
+
+    def _multi_cancel_timer(self):
+        if self.multi_timer is not None:
+            GLib.source_remove(self.multi_timer)
+            self.multi_timer = None
+
+    def _multi_reset(self):
+        self._multi_cancel_timer()
+        self.multi_count = 0
+
+    def _multi_press_down(self):
+        # A new press inside the gap: wait for its release before deciding.
+        self._multi_cancel_timer()
+
+    def _multi_fire(self):
+        count, self.multi_count, self.multi_timer = self.multi_count, 0, None
+        if count == 1:
+            self._toggle_display()
+        elif count >= 2:
+            log("KEY_POWER multi-press:", count)
+            for listener in self.multi_listeners:
+                listener(count, self.screen_on)
+
+    def set_multi_press(self, maximum):
+        maximum = int(maximum)
+        if maximum not in (0, 2, 3):
+            raise Invalid("maximum must be 0, 2 or 3")
+        self.multi_press_max = maximum
+        self._multi_reset()
+        log("power key multi-press max:", maximum)
 
     def user_activity(self):
         with self.lock:
@@ -904,11 +973,46 @@ class Screen(dbus.service.Object):
         pass
 
 
+class PowerKey(dbus.service.Object):
+    """Power key double/triple press for the gestures daemon (fp6-gestures)."""
+
+    def __init__(self, bus, core, authorizer):
+        super().__init__(bus, POWERKEY_PATH)
+        self.bus, self.core, self.authorizer = bus, core, authorizer
+        self.owner_watch = None
+        core.multi_listeners = [lambda count, on: self.MultiPress(count, on)]
+
+    @dbus.service.method(POWERKEY_IFACE, in_signature="i", out_signature="", sender_keyword="sender")
+    def SetMultiPress(self, maximum, sender=None):
+        self.authorizer.require(sender)
+        self.core.set_multi_press(maximum)
+        if self.owner_watch is not None:
+            self.owner_watch.cancel()
+            self.owner_watch = None
+        if int(maximum) and sender:
+            # Back to the instant single press when the client goes away.
+            def owner(name):
+                if not name and self.owner_watch is not None:
+                    self.owner_watch.cancel()
+                    self.owner_watch = None
+                    self.core.set_multi_press(0)
+            self.owner_watch = self.bus.watch_name_owner(sender, owner)
+
+    @dbus.service.method(POWERKEY_IFACE, in_signature="", out_signature="i")
+    def GetMultiPress(self):
+        return self.core.multi_press_max
+
+    @dbus.service.signal(POWERKEY_IFACE, signature="ib")
+    def MultiPress(self, count, display_on):
+        pass
+
+
 class Service:
     def __init__(self, bus, core, authorizer):
         self.names = [dbus.service.BusName(name, bus, do_not_queue=True) for name in (REPOWERD, SCREEN)]
         self.repowerd = Repowerd(bus, core, authorizer)
         self.screen = Screen(bus, core, self.repowerd, authorizer)
+        self.powerkey = PowerKey(bus, core, authorizer)
         self.timer = GLib.timeout_add_seconds(2, self.repowerd.poll)
 
 
