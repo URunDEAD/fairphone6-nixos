@@ -1,0 +1,21 @@
+# Known-harmless matches for secret-scan.sh (extended regex, case-insensitive).
+# Keep this list short and specific; every entry is a reviewed false positive.
+# postmarketOS / Mobile NixOS USB-network convention (phone 172.16.42.1, host .2)
+172\.16\.42\.[0-9]
+# Waydroid default bridge, QEMU user-net
+192\.168\.240\.[0-9]
+10\.0\.2\.[0-9]
+# Author/sign-off trailers of the project owner (allowed by policy)
+(From|Author|Committer|Signed-off-by|Co-developed-by):? +Paul Schuldesz <paulschuldesz@gmail\.com>
+# third-party copyright headers inside vendored upstream patches
+Copyright \(C\) [0-9]{4}.*@
+# libcamera tuning tables (pairs of gains, not coordinates)
+gains: \[
+# test hotspot created and removed by tools/feature-push/network-test.sh
+SSID=FP6-TEST-AP|PSK=fp6-feature-push-test
+# sudo prompt variable names, not values
+wheelNeedsPassword
+# libcamera colour-correction matrices (imx896.yaml), not coordinates
+(ccm: \[ *| {10,})-?[0-9]\.[0-9]{6}, +-?[0-9]\.[0-9]{6}, +-?[0-9]\.[0-9]{6}
+# documented placeholder builder URLs
+ssh-ng://builder@(your-)?arm-builder
