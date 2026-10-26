@@ -26,7 +26,7 @@ setup)
   "$phone" "set -e; $SUDO mkdir -p -m 0755 /run/fp6ud-test
     printf '%s\n' '<!DOCTYPE busconfig PUBLIC \"-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN\" \"http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd\">' \
       '<busconfig><type>session</type><listen>unix:path=/run/fp6ud-test/bus</listen><auth>EXTERNAL</auth>' \
-      '<policy context=\"default\"><allow send_destination=\"*\"/><allow own=\"*\"/></policy></busconfig>' \
+      '<policy context=\"default\"><allow user=\"*\"/><allow send_destination=\"*\"/><allow receive_sender=\"*\"/><allow own=\"*\"/></policy></busconfig>' \
       | $SUDO tee /run/fp6ud-test/bus.conf >/dev/null
     $SUDO systemd-run --unit=fp6ud-test-bus --collect -p Type=simple \
       \$(readlink -f \$(command -v dbus-daemon)) --config-file=/run/fp6ud-test/bus.conf --nofork --nopidfile
@@ -46,7 +46,7 @@ setup)
     sleep 1; systemctl is-active fp6ud-test-helper"
   ;;
 as-user)
-  "$phone" "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/fp6ud-test/bus FP6_USB_DRIVE_SESSION_BUS=1 PATH=\$PATH:${CORE:?set CORE}/bin $2"
+  "$phone" "export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/fp6ud-test/bus FP6_USB_DRIVE_SESSION_BUS=1 PATH=\$PATH:${CORE:?set CORE}/bin; $2"
   ;;
 gadget)
   "$phone" 'g=/sys/kernel/config/usb_gadget/g1; echo "UDC=$(cat $g/UDC) state=$(cat /sys/class/udc/*/state)"; ls -l $g/configs/c.1 | grep -- "->" | sed "s/.* \([^ ]*\) -> .*functions\//\1 -> /"; ls $g/functions; ls /run/fp6-usb-drive 2>/dev/null; ip -4 -br addr show usb0'

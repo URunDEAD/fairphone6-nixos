@@ -98,11 +98,18 @@ struct Session {
     unplugged_since: Option<Instant>,
 }
 
+/// Transfer activity of the mass-storage kernel thread ("file-storage").
+/// Byte counters come from /proc/<pid>/io (CONFIG_TASK_IO_ACCOUNTING; rchar
+/// and wchar count the thread's reads/writes of the image). Without it (the
+/// FP6 kernel) activity comes from the thread's CPU ticks in /proc/<pid>/stat
+/// and no byte counts are reported.
 #[derive(Default)]
 struct Io {
     pid: Option<u32>,
+    bytes_known: bool,
     last: Option<(Instant, u64, u64)>,
     base: (u64, u64),
+    last_ticks: Option<u64>,
     read: u64,
     written: u64,
     read_rate: f64,
@@ -125,20 +132,40 @@ impl Io {
         let get = |k: &str| t.lines().find_map(|l| l.strip_prefix(k).and_then(|v| v.trim().parse::<u64>().ok()));
         Some((get("rchar:")?, get("wchar:")?))
     }
+    /// utime + stime (clock ticks) of the thread.
+    fn ticks(pid: u32) -> Option<u64> {
+        let t = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let rest = &t[t.rfind(')')? + 2..];
+        let f: Vec<&str> = rest.split_whitespace().collect();
+        // fields after "pid (comm) ": state=0 ... utime=11, stime=12
+        Some(f.get(11)?.parse::<u64>().ok()? + f.get(12)?.parse::<u64>().ok()?)
+    }
     fn reset(&mut self) {
         *self = Io::default();
     }
     fn sample(&mut self) {
-        if self.pid.is_none_or(|p| Self::counters(p).is_none()) {
+        let alive = self.pid.is_some_and(|p| std::path::Path::new(&format!("/proc/{p}/comm")).exists());
+        if !alive {
             self.pid = Self::find_pid();
             self.last = None;
+            self.last_ticks = None;
             if let Some(c) = self.pid.and_then(Self::counters) {
                 self.base = (c.0.saturating_sub(self.read), c.1.saturating_sub(self.written));
             }
         }
         let Some(pid) = self.pid else { return };
-        let Some((r, w)) = Self::counters(pid) else { return };
         let t = Instant::now();
+        if let Some(ticks) = Self::ticks(pid) {
+            if self.last_ticks.is_some_and(|l| ticks > l) {
+                self.last_activity = Some(t);
+            }
+            self.last_ticks = Some(ticks);
+        }
+        let Some((r, w)) = Self::counters(pid) else {
+            self.bytes_known = false;
+            return;
+        };
+        self.bytes_known = true;
         let (rr, ww) = (r.saturating_sub(self.base.0), w.saturating_sub(self.base.1));
         if let Some((t0, r0, w0)) = self.last {
             let dt = t.duration_since(t0).as_secs_f64().max(0.001);
@@ -184,6 +211,7 @@ impl Engine {
             v["exclusive"] = json!(s.saved.exclusive);
             v["since"] = json!(s.saved.since);
             v["size"] = json!(s.size);
+            v["ioBytes"] = json!(self.io.bytes_known);
             v["readBytes"] = json!(self.io.read);
             v["writtenBytes"] = json!(self.io.written);
             v["readRate"] = json!(self.io.read_rate.round());

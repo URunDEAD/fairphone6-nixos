@@ -58,7 +58,8 @@ Rectangle {
                 color: st.hostConnected ? theme.palette.normal.positive : theme.palette.normal.backgroundTertiaryText
             }
             Label {
-                text: st.active ? i18n.tr("Transferring %1").arg(Fmt.rate((st.readRate || 0) + (st.writeRate || 0)))
+                text: st.active ? (st.ioBytes ? i18n.tr("Transferring %1").arg(Fmt.rate((st.readRate || 0) + (st.writeRate || 0)))
+                                              : i18n.tr("Transferring data"))
                       : st.hostConnected ? i18n.tr("Computer connected")
                       : i18n.tr("Waiting for a computer on the USB cable")
                 color: theme.palette.normal.foregroundText
@@ -66,6 +67,7 @@ Rectangle {
         }
         Label {
             width: parent.width
+            visible: st.ioBytes === true
             text: i18n.tr("Read %1").arg(Fmt.size(st.readBytes || 0))
                   + ((st.writtenBytes || 0) > 0 ? " · " + i18n.tr("written %1").arg(Fmt.size(st.writtenBytes)) : "")
             textSize: Label.Small

@@ -14,8 +14,15 @@ fn bus() -> Result<Connection, String> {
     if let Some(c) = g.as_ref() {
         return Ok(c.clone());
     }
-    let c = if std::env::var_os("FP6_USB_DRIVE_SESSION_BUS").is_some() { Connection::session() } else { Connection::system() }
-        .map_err(|e| format!("system bus: {e}"))?;
+    // Tests: FP6_USB_DRIVE_BUS_ADDRESS (a private bus) or FP6_USB_DRIVE_SESSION_BUS.
+    let c = if let Ok(addr) = std::env::var("FP6_USB_DRIVE_BUS_ADDRESS") {
+        zbus::blocking::connection::Builder::address(addr.as_str()).and_then(|b| b.build())
+    } else if std::env::var_os("FP6_USB_DRIVE_SESSION_BUS").is_some() {
+        Connection::session()
+    } else {
+        Connection::system()
+    }
+    .map_err(|e| format!("system bus: {e}"))?;
     *g = Some(c.clone());
     Ok(c)
 }

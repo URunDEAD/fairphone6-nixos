@@ -51,14 +51,18 @@ fn lines(st: &Value) -> Vec<String> {
     v.push(if st["hostConnected"] == true { "Computer connected".into() } else { "Waiting for a computer".into() });
     let r = st["readBytes"].as_f64().unwrap_or(0.0);
     let w = st["writtenBytes"].as_f64().unwrap_or(0.0);
-    let mut io = format!("Read {}", human(r));
-    if w > 0.0 {
-        io.push_str(&format!(" · written {}", human(w)));
+    if st["ioBytes"] == true {
+        let mut io = format!("Read {}", human(r));
+        if w > 0.0 {
+            io.push_str(&format!(" · written {}", human(w)));
+        }
+        if st["active"] == true {
+            io.push_str(&format!(" · {}/s", human(st["readRate"].as_f64().unwrap_or(0.0) + st["writeRate"].as_f64().unwrap_or(0.0))));
+        }
+        v.push(io);
+    } else {
+        v.push(if st["active"] == true { "Transferring data".into() } else { "Idle".into() });
     }
-    if st["active"] == true {
-        io.push_str(&format!(" · {}/s", human(st["readRate"].as_f64().unwrap_or(0.0) + st["writeRate"].as_f64().unwrap_or(0.0))));
-    }
-    v.push(io);
     if st["exclusive"] == true {
         v.push("USB network and ADB are off until you stop".into());
     }
@@ -90,8 +94,12 @@ struct Agent {
 
 impl Agent {
     fn notify(&self, summary: &str, body: &str) {
-        let hints = VariantDict::new(None);
-        let args = ("USB Drive", 0u32, "stock_usb", summary, body, Vec::<String>::new(), hints.end(), 6000i32).to_variant();
+        // (susssasa{sv}i): the hints must be a real a{sv}, not a boxed variant.
+        let hints = VariantDict::new(None).end();
+        let args = Variant::tuple_from_iter([
+            "USB Drive".to_variant(), 0u32.to_variant(), "stock_usb".to_variant(), summary.to_variant(),
+            body.to_variant(), Vec::<String>::new().to_variant(), hints, 6000i32.to_variant(),
+        ]);
         let r = self.session.call_sync(Some("org.freedesktop.Notifications"), "/org/freedesktop/Notifications",
                                        "org.freedesktop.Notifications", "Notify", Some(&args), None,
                                        gio::DBusCallFlags::NONE, 3000, None::<&gio::Cancellable>);
@@ -152,7 +160,14 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let system = match gio::bus_get_sync(gio::BusType::System, None::<&gio::Cancellable>) {
+    // Tests: FP6_USB_DRIVE_BUS_ADDRESS points at a private bus with the helper.
+    let system = match std::env::var("FP6_USB_DRIVE_BUS_ADDRESS") {
+        Ok(a) => gio::DBusConnection::for_address_sync(&a,
+            gio::DBusConnectionFlags::AUTHENTICATION_CLIENT | gio::DBusConnectionFlags::MESSAGE_BUS_CONNECTION,
+            None::<&gio::DBusAuthObserver>, None::<&gio::Cancellable>),
+        Err(_) => gio::bus_get_sync(gio::BusType::System, None::<&gio::Cancellable>),
+    };
+    let system = match system {
         Ok(c) => c,
         Err(e) => {
             log(format!("system bus: {e}"));
