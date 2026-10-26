@@ -20,4 +20,4 @@ wheelNeedsPassword
 # documented placeholder builder URLs
 ssh-ng://builder@(your-)?arm-builder
 # white-balance locus tables in C (Kelvin, R gain, B gain), not coordinates
-^\+?\+?[[:space:]]*\{ [0-9]{4}, [0-9]\.[0-9]+, [0-9]\.[0-9]+ \},$
+\{ [0-9]{4}, [0-9]\.[0-9]+, [0-9]\.[0-9]+ \},$
