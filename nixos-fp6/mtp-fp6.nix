@@ -78,6 +78,9 @@ let
       flock -w 30 9 || fail 'USB gadget is busy'
       mtp_changed=1
       printf '\n' > "$gadget/UDC"
+      # /dev/usb-ffs only exists once ADB has run (Developer mode); MTP must
+      # not depend on it.
+      mkdir -p "$(dirname "$endpoints")"
       mkdir "$function_dir" "$endpoints"
       mount -t functionfs mtp "$endpoints"
       ln -s "$function_dir" "$function_link"
