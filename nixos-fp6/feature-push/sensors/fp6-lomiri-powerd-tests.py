@@ -146,6 +146,77 @@ core.set_screen_power("off", m.REASON_POWERKEY); core.off_reasons.add("proximity
 core.set_screen_power("on", m.REASON_NOTIFICATION)
 check(not core.screen_on, "notification does not wake a display blanked by proximity")
 
+# idle display-off (privacy-lock): dim, then off with reason inactivity ----
+class FakeBacklight:
+    def __init__(self):
+        self.value = 200
+    def read(self):
+        return self.value
+    def write(self, value):
+        self.value = value
+        return value
+core = object.__new__(m.Core)
+core.lock, core.screen_power, core.screen_on = threading.RLock(), True, True
+core.off_reasons, core.prox_clients, core.notification_woke = set(), set(), False
+core.backlight, core.auto, core.user_value, core.ramp_id, core.ramp_target = FakeBacklight(), False, 200, 0, None
+idle_timers = {}
+def idle_schedule(seconds, callback):
+    key = len(idle_timers) + 100
+    idle_timers[key] = (seconds, callback)
+    return key
+core._schedule = idle_schedule
+core._idle_cancel = lambda: (idle_timers.pop(core.idle_timer, None), setattr(core, "idle_timer", None))
+offs = []
+def idle_apply(reason):
+    core.screen_on = not core.off_reasons
+    offs.append(reason)
+    core._idle_screen_changed(core.screen_on)
+core._apply_screen = idle_apply
+def fire(now):
+    key = core.idle_timer
+    check(key in idle_timers, f"idle timer armed at {now}")
+    idle_timers.pop(key, None)
+    core._idle_fire(now)
+core.idle_activity(0.0)
+check(core.idle_timer is None, "no idle timer while the timeout is 0 (never)")
+core.set_inactivity_timeouts(60, -1); core.set_inactivity_timeouts(-1, 45)
+core.idle_activity(1000.0)
+check(idle_timers[core.idle_timer][0] == 45, f"first check at the dim point {idle_timers.get(core.idle_timer)}")
+core.idle_activity(1020.0)
+fire(1045.0)
+check(not core.idle_dimmed and idle_timers[core.idle_timer][0] == 20, "input before the dim point re-arms for the rest")
+fire(1065.0)
+check(core.idle_dimmed and core.backlight.value == m.IDLE_DIM_VALUE, "dims at dim-timeout")
+core.idle_activity(1070.0)
+check(not core.idle_dimmed and core.backlight.value == 200, "touch while dimmed restores brightness")
+fire(1115.0); fire(1130.0)
+check(offs == [m.REASON_INACTIVITY] and not core.screen_on and "user" in core.off_reasons, "display off after activity-timeout (reason inactivity)")
+check(core.idle_timer is None, "no idle timer while the display is off")
+core.off_reasons.clear(); idle_apply(m.REASON_POWERKEY)
+check(core.idle_timer is not None, "display on re-arms the idle timer")
+core.add_display_on_request(7, ":1.5")
+check(core.idle_timer is None, "keepDisplayOn holds off the idle display-off")
+core.remove_display_on_requests(sender=":1.5")
+check(core.idle_timer is not None and not core.display_on_requests, "requests of a caller that left are dropped")
+core.prox_clients.add("lomiri-telephony-service-handler"); core._idle_rearm()
+check(core.idle_timer is None, "no idle display-off during a call (proximity handling)")
+core.prox_clients.clear(); core._idle_rearm()
+check(core.idle_timer is not None, "idle timer back after the call")
+core.set_inactivity_timeouts(0, -1)
+check(core.idle_timer is None, "activity-timeout 0 = never")
+# Press signal: every short press, also with multi-press assigned
+presses = []
+core.press_listeners = [lambda now, on: presses.append(now)]
+core.set_screen_power = lambda mode, reason: None
+core.power_pressed_at, core.power_chord, core.volume_down_held = None, False, False
+core.multi_press_max, core.multi_count, core.multi_timer = 3, 0, None
+core._multi_cancel_timer = lambda: None
+for t in (200.0, 200.3, 200.6, 200.9, 201.2):
+    core.power_key(1, now=t); core.power_key(0, now=t + 0.1)
+check(len(presses) == 5, f"Press for each of 5 quick presses with multi-press 3 {presses}")
+core.power_key(1, now=210.0); core.power_key(0, now=212.0)
+check(len(presses) == 5, "long press is not a Press")
+
 # D-Bus service ------------------------------------------------------------
 tmp = Path(tempfile.mkdtemp())
 bl = tmp / "bl"; bl.mkdir()
@@ -204,6 +275,7 @@ GLib.timeout_add(300, loop.quit)
 loop.run()
 check((bl / "brightness").read_text().strip() == "4095", "screen on restores brightness")
 check((touch / "lp_mode").read_text().startswith("0"), "screen on leaves touch LP")
+check(events == [(0, 2), (1, 2)], f"DisplayPowerStateChange signals {events}")
 
 # brightness cap (battery saver): clamps manual/screen-on, keeps the slider value
 cap = dbus.Interface(bus.get_object(m.REPOWERD, m.CAP_PATH), m.CAP_IFACE)
@@ -217,8 +289,12 @@ check((bl / "brightness").read_text().strip() == str((128 * 4095 + 127) // 255),
 check(capped == [128], f"CapChanged signal {capped}")
 rep.setUserBrightness(200)
 check((bl / "brightness").read_text().strip() == str((128 * 4095 + 127) // 255), "manual brightness above the cap is clamped")
+del events[:]
 scr.setScreenPowerMode("off", 2); scr.setScreenPowerMode("on", 2)
+GLib.timeout_add(300, loop.quit)
+loop.run()
 check((bl / "brightness").read_text().strip() == str((128 * 4095 + 127) // 255), "screen-on restore respects the cap")
+check(events == [(0, 2), (1, 2)], f"only the explicit off/on emit DisplayPowerStateChange {events}")
 cap.SetCap(255)
 GLib.timeout_add(1200, loop.quit)
 loop.run()
@@ -230,9 +306,13 @@ for bad in (0, 256):
     except dbus.DBusException:
         check(True, f"cap {bad} rejected")
 rep.setUserBrightness(255)
-check(events[:2] == [(0, 2), (1, 2)], f"DisplayPowerStateChange signals {events}")
+check(events == [(0, 2), (1, 2)], f"SetCap and capped writes emit no DisplayPowerStateChange {events}")
 scr.setInactivityTimeouts(60, 30)
 check(True, "setInactivityTimeouts accepted")
+cookie = int(scr.keepDisplayOn())
+scr.removeDisplayOnRequest(cookie)
+check(cookie > 0, "keepDisplayOn/removeDisplayOnRequest")
+scr.setInactivityTimeouts(0, 0)
 
 daemon.terminate()
 out, _ = daemon.communicate(timeout=10)
