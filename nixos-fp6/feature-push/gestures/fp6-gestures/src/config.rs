@@ -1,0 +1,206 @@
+// SPDX-License-Identifier: MIT
+//! Settings snapshot (GSettings com.fairphone6.gestures) and the lock policy.
+
+use crate::detector::Sensitivity;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Action {
+    None,
+    Flashlight,
+    App(String),
+    Command(String),
+}
+
+impl Action {
+    /// kind: "none" | "flashlight" | "app" | "command"; an app or command
+    /// without a target is "none".
+    pub fn from_parts(kind: &str, app: &str, command: &str) -> Action {
+        match kind {
+            "flashlight" => Action::Flashlight,
+            "app" if !app.trim().is_empty() => Action::App(app.trim().to_string()),
+            "command" if !command.trim().is_empty() => Action::Command(command.to_string()),
+            _ => Action::None,
+        }
+    }
+
+    /// "flashlight", "app:<id>", "command:<shell text>" or "none" (CLI form).
+    pub fn parse_cli(text: &str) -> Action {
+        if let Some(id) = text.strip_prefix("app:") {
+            Action::from_parts("app", id, "")
+        } else if let Some(cmd) = text.strip_prefix("command:") {
+            Action::from_parts("command", "", cmd)
+        } else {
+            Action::from_parts(text, "", "")
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Source {
+    Shake,
+    PowerDouble,
+    PowerTriple,
+}
+
+impl Source {
+    pub fn name(self) -> &'static str {
+        match self {
+            Source::Shake => "shake",
+            Source::PowerDouble => "power key double press",
+            Source::PowerTriple => "power key triple press",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Config {
+    pub shake_enabled: bool,
+    pub shake_action: Action,
+    pub sensitivity: Sensitivity,
+    pub shake_when_locked: bool,
+    pub double_press: Action,
+    pub triple_press: Action,
+    pub command_timeout: u32,
+    pub vibrate: bool,
+}
+
+impl Default for Config {
+    fn default() -> Config {
+        Config {
+            shake_enabled: false,
+            shake_action: Action::Flashlight,
+            sensitivity: Sensitivity::Medium,
+            shake_when_locked: true,
+            double_press: Action::None,
+            triple_press: Action::None,
+            command_timeout: 10,
+            vibrate: true,
+        }
+    }
+}
+
+impl Config {
+    pub fn action_for(&self, source: Source) -> &Action {
+        match source {
+            Source::Shake => &self.shake_action,
+            Source::PowerDouble => &self.double_press,
+            Source::PowerTriple => &self.triple_press,
+        }
+    }
+
+    /// Value for com.fairphone6.PowerKey.SetMultiPress: 0 keeps the instant
+    /// single press (nothing assigned), else the highest assigned count.
+    pub fn multi_press_max(&self) -> i32 {
+        if self.triple_press != Action::None {
+            3
+        } else if self.double_press != Action::None {
+            2
+        } else {
+            0
+        }
+    }
+
+    /// Accelerometer polling rate, or None to stop sampling. With the display
+    /// off only the actions that may run locked keep the sensor polled, and
+    /// at half rate.
+    pub fn sampling_hz(&self, display_on: bool) -> Option<u32> {
+        if !self.shake_enabled || self.shake_action == Action::None {
+            return None;
+        }
+        if display_on {
+            return Some(50);
+        }
+        match self.shake_action {
+            Action::Flashlight | Action::App(_) if self.shake_when_locked => Some(25),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Decision {
+    Run,
+    /// Turn the display on and start the app: Lomiri shows the unlock screen
+    /// and the app after a successful unlock.
+    WakeThenRun,
+    Refuse,
+}
+
+/// locked: the Lomiri greeter is shown or the display is off.
+pub fn decide(action: &Action, source: Source, locked: bool, shake_when_locked: bool) -> Decision {
+    let shake_blocked = source == Source::Shake && !shake_when_locked;
+    match action {
+        Action::None => Decision::Refuse,
+        _ if !locked => Decision::Run,
+        Action::Flashlight if shake_blocked => Decision::Refuse,
+        Action::Flashlight => Decision::Run,
+        Action::App(_) if shake_blocked => Decision::Refuse,
+        Action::App(_) => Decision::WakeThenRun,
+        // Custom commands never run on a locked phone.
+        Action::Command(_) => Decision::Refuse,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defaults_are_off_and_instant() {
+        let c = Config::default();
+        assert_eq!(c.sampling_hz(true), None);
+        assert_eq!(c.multi_press_max(), 0);
+        assert_eq!(c.shake_action, Action::Flashlight);
+    }
+
+    #[test]
+    fn multi_press_max() {
+        let mut c = Config::default();
+        c.double_press = Action::Flashlight;
+        assert_eq!(c.multi_press_max(), 2);
+        c.triple_press = Action::App("camera".into());
+        assert_eq!(c.multi_press_max(), 3);
+        c.double_press = Action::None;
+        assert_eq!(c.multi_press_max(), 3);
+    }
+
+    #[test]
+    fn sampling_follows_display_and_lock_setting() {
+        let mut c = Config { shake_enabled: true, ..Config::default() };
+        assert_eq!(c.sampling_hz(true), Some(50));
+        assert_eq!(c.sampling_hz(false), Some(25));
+        c.shake_when_locked = false;
+        assert_eq!(c.sampling_hz(false), None);
+        c.shake_when_locked = true;
+        c.shake_action = Action::Command("true".into());
+        assert_eq!(c.sampling_hz(false), None);
+        assert_eq!(c.sampling_hz(true), Some(50));
+    }
+
+    #[test]
+    fn lock_policy() {
+        let app = Action::App("x".into());
+        let cmd = Action::Command("true".into());
+        use Decision::*;
+        use Source::*;
+        assert_eq!(decide(&Action::Flashlight, Shake, true, true), Run);
+        assert_eq!(decide(&Action::Flashlight, Shake, true, false), Refuse);
+        assert_eq!(decide(&Action::Flashlight, PowerDouble, true, false), Run);
+        assert_eq!(decide(&app, Shake, false, false), Run);
+        assert_eq!(decide(&app, Shake, true, true), WakeThenRun);
+        assert_eq!(decide(&app, Shake, true, false), Refuse);
+        assert_eq!(decide(&app, PowerTriple, true, false), WakeThenRun);
+        assert_eq!(decide(&cmd, Shake, false, true), Run);
+        assert_eq!(decide(&cmd, Shake, true, true), Refuse);
+        assert_eq!(decide(&cmd, PowerDouble, true, true), Refuse);
+        assert_eq!(decide(&Action::None, PowerDouble, false, true), Refuse);
+    }
+
+    #[test]
+    fn parse_actions() {
+        assert_eq!(Action::from_parts("app", "", ""), Action::None);
+        assert_eq!(Action::parse_cli("app:lomiri-camera-app"), Action::App("lomiri-camera-app".into()));
+        assert_eq!(Action::parse_cli("command:echo hi"), Action::Command("echo hi".into()));
+        assert_eq!(Action::parse_cli("flashlight"), Action::Flashlight);
+    }
+}

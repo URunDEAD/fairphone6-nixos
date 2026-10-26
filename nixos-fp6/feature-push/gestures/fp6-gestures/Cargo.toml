@@ -1,0 +1,17 @@
+[package]
+name = "fp6-gestures"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Shake and power-key multi-press shortcuts for Lomiri on the Fairphone 6"
+
+[dependencies]
+gio = "0.20"
+glib = "0.20"
+libc = "0.2"
+zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true

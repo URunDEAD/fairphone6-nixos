@@ -1,0 +1,25 @@
+{
+    "icon": "gestures",
+    "name": "Gesture Shortcuts",
+    "translations": "lomiri-system-settings",
+    "category": "personal",
+    "priority": 7,
+    "form-factors": [
+        "phone",
+        "tablet"
+    ],
+    "keywords": [
+        "gestures",
+        "shake",
+        "flashlight",
+        "torch",
+        "power",
+        "button",
+        "double",
+        "triple",
+        "shortcut"
+    ],
+    "has-dynamic-keywords": false,
+    "has-dynamic-visibility": false,
+    "page-component": "PageComponent.qml"
+}

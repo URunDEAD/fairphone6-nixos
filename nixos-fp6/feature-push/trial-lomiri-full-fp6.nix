@@ -41,6 +41,7 @@ let
       ./misc/waydroid-lomiri-fp6.nix
       ./apps/fragments-fp6.nix
       ./apps/maps-fp6.nix
+      ./gestures/gestures-fp6.nix
       ./netbird/netbird-fp6.nix
       ./apparmor/apparmor-fp6.nix
       ./adb/adb-fp6.nix

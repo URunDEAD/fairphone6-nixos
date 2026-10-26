@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- FP6 gesture shortcuts: fp6-gestures (user service) reads these live;
+     System Settings > Gesture Shortcuts writes them. -->
+<schemalist gettext-domain="lomiri-system-settings">
+  <enum id="com.fairphone6.gestures.ShakeAction">
+    <value nick="flashlight" value="1"/>
+    <value nick="app" value="2"/>
+    <value nick="command" value="3"/>
+  </enum>
+  <enum id="com.fairphone6.gestures.PressAction">
+    <value nick="none" value="0"/>
+    <value nick="flashlight" value="1"/>
+    <value nick="app" value="2"/>
+    <value nick="command" value="3"/>
+  </enum>
+  <enum id="com.fairphone6.gestures.Sensitivity">
+    <value nick="low" value="0"/>
+    <value nick="medium" value="1"/>
+    <value nick="high" value="2"/>
+  </enum>
+  <schema id="com.fairphone6.gestures" path="/com/fairphone6/gestures/">
+    <key name="shake-enabled" type="b">
+      <default>false</default>
+      <summary>Shake gesture on</summary>
+    </key>
+    <key name="shake-action" enum="com.fairphone6.gestures.ShakeAction">
+      <default>'flashlight'</default>
+      <summary>What a shake does</summary>
+    </key>
+    <key name="shake-app" type="s">
+      <default>''</default>
+      <summary>App id (desktop file name without .desktop) for the shake</summary>
+    </key>
+    <key name="shake-command" type="s">
+      <default>''</default>
+      <summary>Shell command (/bin/sh -c, as the user) for the shake</summary>
+    </key>
+    <key name="shake-sensitivity" enum="com.fairphone6.gestures.Sensitivity">
+      <default>'medium'</default>
+      <summary>Shake sensitivity</summary>
+    </key>
+    <key name="shake-when-locked" type="b">
+      <default>true</default>
+      <summary>Shake works with the screen off or locked</summary>
+      <description>Flashlight toggles while locked; an app opens after unlocking; custom commands never run while locked.</description>
+    </key>
+    <key name="double-press-action" enum="com.fairphone6.gestures.PressAction">
+      <default>'none'</default>
+      <summary>Power key double press</summary>
+    </key>
+    <key name="double-press-app" type="s">
+      <default>''</default>
+      <summary>App id for the double press</summary>
+    </key>
+    <key name="double-press-command" type="s">
+      <default>''</default>
+      <summary>Shell command for the double press</summary>
+    </key>
+    <key name="triple-press-action" enum="com.fairphone6.gestures.PressAction">
+      <default>'none'</default>
+      <summary>Power key triple press</summary>
+    </key>
+    <key name="triple-press-app" type="s">
+      <default>''</default>
+      <summary>App id for the triple press</summary>
+    </key>
+    <key name="triple-press-command" type="s">
+      <default>''</default>
+      <summary>Shell command for the triple press</summary>
+    </key>
+    <key name="command-timeout" type="i">
+      <range min="1" max="300"/>
+      <default>10</default>
+      <summary>Seconds before a custom command is killed</summary>
+    </key>
+    <key name="vibrate" type="b">
+      <default>true</default>
+      <summary>Short vibration when a shortcut runs</summary>
+    </key>
+    <key name="installed-apps" type="as">
+      <default>[]</default>
+      <summary>Apps the Settings page offers ("id TAB name TAB icon"), kept by fp6-gestures</summary>
+    </key>
+    <key name="app-list-request" type="i">
+      <default>0</default>
+      <summary>Changed by the Settings page to ask fp6-gestures to rescan the apps</summary>
+    </key>
+  </schema>
+</schemalist>
