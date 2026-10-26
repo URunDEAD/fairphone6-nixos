@@ -17,7 +17,7 @@ stdenv.mkDerivation {
     libs="$(pkg-config --libs gstreamer-1.0 gstreamer-photography-1.0 gstreamer-video-1.0 gstreamer-tag-1.0) -lgstbasecamerabinsrc-1.0 -lm"
     # panorama: Rust (no crates), static library with a C ABI
     rustc --edition 2021 --crate-type staticlib --crate-name fp6vision -C opt-level=3 \
-      -C panic=abort -C codegen-units=1 -o libfp6vision.a vision/lib.rs
+      -C panic=abort -C codegen-units=1 -o libfp6vision.a fp6rust.rs   # vision + fastlaunch modules
     # image processing (HDR/night/panorama ...): vectorised, separate object
     $CC -c -fPIC -O3 -ffast-math -Wall $(pkg-config --cflags glib-2.0) -o fp6-imaging.o fp6-imaging.c
     $CC -shared -fPIC -O2 -Wall \
@@ -90,6 +90,10 @@ stdenv.mkDerivation {
     # Rust unit tests (panorama tracking/stitching, page detection)
     rustc --edition 2021 --test -C opt-level=2 -o $TMPDIR/vision-test ${./gst-fp6camera/vision/lib.rs}
     $TMPDIR/vision-test
+    # fast launch: stored AE state (ioctl layout, state file, missing sensor)
+    rustc --edition 2021 --test -o $TMPDIR/fastlaunch-test ${./gst-fp6camera/fastlaunch/lib.rs}
+    $TMPDIR/fastlaunch-test
+    grep -aq fp6fl_seed $out/lib/gstreamer-1.0/libgstfp6camera.so
     $out/libexec/fp6-dng-selftest $TMPDIR/t.dng
     raw-identify -v $TMPDIR/t.dng | tee $TMPDIR/dcraw.txt
     grep -qi "filter pattern: *BG/*GR" $TMPDIR/dcraw.txt

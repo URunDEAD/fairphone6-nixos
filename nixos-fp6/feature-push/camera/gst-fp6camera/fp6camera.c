@@ -345,6 +345,10 @@ static gboolean fp6p2_set_property (Fp6LibcameraSrc * self, guint id,
 static gboolean fp6p2_get_property (Fp6LibcameraSrc * self, guint id,
     GValue * value);
 
+/* FAST LAUNCH section hooks (defined in fp6camera-fastlaunch.c) */
+static void fp6fl_open (Fp6LibcameraSrc * self);
+static void fp6fl_close (Fp6LibcameraSrc * self);
+
 enum
 {
   LSRC_PROP_0,
@@ -709,6 +713,8 @@ lsrc_change_state (GstElement * element, GstStateChange transition)
 
   if (transition == GST_STATE_CHANGE_NULL_TO_READY && !lsrc_build (self))
     return GST_STATE_CHANGE_FAILURE;
+  if (transition == GST_STATE_CHANGE_NULL_TO_READY)
+    fp6fl_open (self);          /* FAST LAUNCH */
   if (transition == GST_STATE_CHANGE_PLAYING_TO_PAUSED)
     lsrc_disarm_watchdog (self);
 
@@ -722,6 +728,8 @@ lsrc_change_state (GstElement * element, GstStateChange transition)
     self->restarts = 0;
     lsrc_arm_watchdog (self);
   }
+  if (transition == GST_STATE_CHANGE_PAUSED_TO_READY)
+    fp6fl_close (self);         /* FAST LAUNCH */
   if (transition == GST_STATE_CHANGE_READY_TO_NULL)
     lsrc_clear (self);
   return ret;
@@ -843,6 +851,11 @@ fp6_libcamera_src_init (Fp6LibcameraSrc * self)
 /* PHASE 2 (computational / standard features): separate file, same unit   */
 /* ------------------------------------------------------------------------ */
 #include "fp6camera-phase2.c"
+
+/* ------------------------------------------------------------------------ */
+/* FAST LAUNCH (stored AE state): separate file, same unit                  */
+/* ------------------------------------------------------------------------ */
+#include "fp6camera-fastlaunch.c"
 
 /* ------------------------------------------------------------------------ */
 /* fp6camerabinsrc: runtime subclass of wrappercamerabinsrc                 */
