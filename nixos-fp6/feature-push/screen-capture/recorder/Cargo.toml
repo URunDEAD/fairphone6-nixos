@@ -1,0 +1,27 @@
+[package]
+name = "fp6-screen-capture"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "FP6 Lomiri screen recorder (encoder + status-bar indicator)"
+publish = false
+rust-version = "1.85"
+
+[[bin]]
+name = "fp6-screenrecord"
+path = "src/main.rs"
+
+[[bin]]
+name = "fp6-screenrecord-indicator"
+path = "src/bin/indicator.rs"
+
+[dependencies]
+gstreamer = "0.24"
+gstreamer-app = "0.24"
+zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
+libc = "0.2"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true

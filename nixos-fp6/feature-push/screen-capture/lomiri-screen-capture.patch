@@ -1,0 +1,291 @@
+--- a/qml/Components/Dialogs.qml
++++ b/qml/Components/Dialogs.qml
+@@ -40,11 +40,21 @@
+     property bool canLogout: false
+ 
+     signal powerOffClicked();
++    // FP6 screen recording: the user tapped Start in the dialog below.
++    signal screenRecordConfirmed();
+ 
+     function showPowerDialog() {
+         d.showPowerDialog();
+     }
+ 
++    // replace: take over from the dialog that is open (power dialog button).
++    function showScreenRecordDialog(replace) {
++        if (dialogLoader.active && !replace) return;
++        dialogLoader.sourceComponent = screenRecordDialogComponent;
++        dialogLoader.focus = true;
++        dialogLoader.active = true;
++    }
++
+     property var doOnClosedAllWindows: function() {}
+     Connections {
+         target: topLevelSurfaceList
+@@ -239,6 +249,61 @@
+     }
+ 
+     Component {
++        id: screenRecordDialogComponent
++        ShellDialog {
++            id: screenRecordDialog
++            title: i18n.tr("Record screen")
++            text: i18n.tr("Recording starts in 3 seconds and runs until you tap the red dot in the top bar, lock the phone or turn the screen off. Videos are saved in Videos/Screencasts.")
++            Item {
++                width: parent.width
++                height: units.gu(4)
++                Label {
++                    anchors { left: parent.left; right: micSwitch.left; verticalCenter: parent.verticalCenter }
++                    text: i18n.tr("Record the microphone")
++                    wrapMode: Text.WordWrap
++                }
++                Switch {
++                    id: micSwitch
++                    anchors { right: parent.right; verticalCenter: parent.verticalCenter }
++                    checked: screenRecorder.recordMicrophone
++                }
++            }
++            Item {
++                width: parent.width
++                height: units.gu(4)
++                Label {
++                    anchors { left: parent.left; right: systemSwitch.left; verticalCenter: parent.verticalCenter }
++                    text: i18n.tr("Record sound from the phone")
++                    wrapMode: Text.WordWrap
++                }
++                Switch {
++                    id: systemSwitch
++                    anchors { right: parent.right; verticalCenter: parent.verticalCenter }
++                    checked: screenRecorder.recordSystemAudio
++                }
++            }
++            Button {
++                width: parent.width
++                focus: true
++                text: i18n.tr("Start recording")
++                color: theme.palette.normal.positive
++                enabled: screenRecorder.allowed && !screenRecorder.recording && !screenRecorder.saving
++                onClicked: {
++                    screenRecorder.recordMicrophone = micSwitch.checked;
++                    screenRecorder.recordSystemAudio = systemSwitch.checked;
++                    screenRecordDialog.hide();
++                    root.screenRecordConfirmed();
++                }
++            }
++            Button {
++                width: parent.width
++                text: i18n.tr("Cancel")
++                onClicked: screenRecordDialog.hide()
++            }
++        }
++    }
++
++    Component {
+         id: powerDialogComponent
+         ShellDialog {
+             id: powerDialog
+@@ -291,6 +356,21 @@
+                 }
+             }
+             Button {
++                width: parent.width
++                visible: screenRecorder.allowed
++                enabled: !screenRecorder.saving
++                text: screenRecorder.recording ? i18n.tr("Stop recording")
++                    : screenRecorder.saving ? i18n.tr("Saving recording…") : i18n.tr("Record screen")
++                onClicked: {
++                    if (screenRecorder.recording) {
++                        powerDialog.hide();
++                        screenRecorder.stop();
++                    } else {
++                        root.showScreenRecordDialog(true);
++                    }
++                }
++            }
++            Button {
+                 width: parent.width
+                 text: i18n.tr("Cancel")
+                 onClicked: {
+Only in b3/qml/Components: Dialogs.qml.orig
+--- a/qml/Components/ItemGrabber.qml
++++ b/qml/Components/ItemGrabber.qml
+@@ -35,7 +35,8 @@
+ 
+     NotificationAudio {
+         id: shutterSound
+-        source: "/usr/share/sounds/lomiri/camera/click/camera_click.ogg"
++        // FP6: no /usr/share on NixOS (substituted at build time).
++        source: "@fp6CameraClick@"
+     }
+ 
+     function capture(item) {
+--- a/qml/Components/PhysicalKeysMapper.qml
++++ b/qml/Components/PhysicalKeysMapper.qml
+@@ -66,6 +66,16 @@
+         property bool superTabPressed: false
+ 
+         property var powerButtonPressStart: -1
++
++        // FP6: no power dialog and no volume change for the chord;
++        // fp6-lomiri-powerd leaves the display on for it.
++        function powerVolumeDownChord() {
++            if (Powerd.status === Powerd.On) {
++                root.screenshotTriggered();
++            }
++            powerButtonPressStart = -1;
++            ignoreVolumeEvents = true;
++        }
+     }
+ 
+     InputEventGenerator {
+@@ -82,12 +92,15 @@
+                 }
+             } else {
+                 d.powerButtonPressStart = currentEventTimestamp;
++                // FP6: Power + Volume Down takes a screenshot, either order.
++                if (d.volumeDownKeyPressed) d.powerVolumeDownChord();
+             }
+         } else if ((event.key == Qt.Key_MediaTogglePlayPause || event.key == Qt.Key_MediaPlay) && !event.isAutoRepeat) {
+             event.accepted = callManager.handleMediaKey(false);
+         } else if (event.key == Qt.Key_VolumeDown) {
+             if (event.isAutoRepeat && !d.ignoreVolumeEvents) root.volumeDownTriggered();
+             else if (!event.isAutoRepeat) {
++                if (d.powerButtonPressStart != -1) d.powerVolumeDownChord();
+                 if (d.volumeUpKeyPressed) {
+                     if (Powerd.status === Powerd.On) {
+                         root.screenshotTriggered();
+--- a/qml/Panel/Panel.qml
++++ b/qml/Panel/Panel.qml
+@@ -55,6 +55,9 @@
+ 
+     // Whether our expanded menus should take up the full width of the panel
+     property bool partialWidth: width >= units.gu(60)
++    // FP6 screen recording: red dot left of the title; tap it to stop.
++    property bool screenRecording: false
++    signal screenRecordingStopClicked()
+ 
+     property string mode: "staged"
+     property PanelState panelState
+@@ -370,10 +373,32 @@
+             }
+             height: root.minimizedPanelHeight
+ 
++            Rectangle {
++                id: screenRecordingDot
++                objectName: "screenRecordingDot"
++                visible: root.screenRecording
++                anchors { left: parent.left; verticalCenter: parent.verticalCenter }
++                width: units.gu(1.5)
++                height: width
++                radius: width / 2
++                color: "#ed3146"
++                SequentialAnimation on opacity {
++                    running: screenRecordingDot.visible
++                    loops: Animation.Infinite
++                    NumberAnimation { to: 0.35; duration: 900 }
++                    NumberAnimation { to: 1; duration: 900 }
++                }
++                MouseArea {
++                    anchors { fill: parent; margins: -units.gu(1) }
++                    onClicked: root.screenRecordingStopClicked()
++                }
++            }
++
+             Label {
+                 id: rowLabel
+                 anchors {
+                     left: parent.left
++                    leftMargin: root.screenRecording ? units.gu(2.5) : 0
+                     right: root.partialWidth ? parent.right : parent.left
+                     rightMargin: touchMenuIcon.width
+                 }
+@@ -396,7 +421,7 @@
+                 objectName: "touchMenuIcon"
+                 anchors {
+                     left: parent.left
+-                    leftMargin: rowLabel.contentWidth + units.dp(2)
++                    leftMargin: rowLabel.anchors.leftMargin + rowLabel.contentWidth + units.dp(2)
+                     verticalCenter: parent.verticalCenter
+                 }
+                 width: units.gu(2)
+Only in b3/qml/Panel: Panel.qml.orig
+--- a/qml/Shell.qml
++++ b/qml/Shell.qml
+@@ -44,6 +44,7 @@
+ import Lomiri.Session 0.1
+ import Lomiri.Indicators 0.1 as Indicators
+ import Cursor 1.1
++import FP6.ScreenRecorder 0.1
+ import WindowManager 1.0
+ 
+ 
+@@ -589,6 +590,8 @@
+             minimizedPanelHeight: units.gu(3)
+             expandedPanelHeight: units.gu(7)
+             applicationMenuContentX: launcher.lockedVisible ? launcher.panelWidth : 0
++            screenRecording: screenRecorder.recording
++            onScreenRecordingStopClicked: screenRecorder.stop()
+ 
+             indicators {
+                 hides: [launcher]
+@@ -852,6 +855,7 @@
+         usageScenario: shell.usageScenario
+         hasKeyboard: shell.hasKeyboard
+         canLogout: shell.mode !== "greeter"
++        onScreenRecordConfirmed: screenRecordCountdown.begin()
+         onPowerOffClicked: {
+             shutdownFadeOutRectangle.enabled = true;
+             shutdownFadeOutRectangle.visible = true;
+@@ -871,6 +875,52 @@
+         onUrlRequested: shell.activateURL(url)
+     }
+ 
++    // FP6 screen recording (feature-push/screen-capture): reads back the frames
++    // this shell renders; only in the user session, never on the greeter or
++    // lock screen or with the display off (stops at once when that changes).
++    ScreenRecorder {
++        id: screenRecorder
++        allowed: shell.mode !== "greeter" && !!greeter && !greeter.shown && Powerd.status === Powerd.On
++        // D-Bus RequestStart (status-bar switch): ask first, never start by itself.
++        onStartRequested: {
++            panel.indicators.hide();
++            dialogs.showScreenRecordDialog(false);
++        }
++    }
++
++    Timer {
++        id: screenRecordCountdown
++        property int count: 0
++        interval: 1000
++        repeat: true
++        function begin() { count = 3; start(); }
++        onTriggered: {
++            if (!screenRecorder.allowed) { stop(); count = 0; return; }
++            if (--count > 0) return;
++            stop();
++            screenRecorder.start(shell.transformRotationAngle || 0);
++        }
++    }
++
++    Rectangle {
++        visible: screenRecordCountdown.running
++        anchors.centerIn: parent
++        z: dialogs.z + 5
++        width: units.gu(12)
++        height: width
++        radius: width / 2
++        color: "#c7162b"
++        opacity: 0.9
++        Label {
++            anchors.centerIn: parent
++            text: screenRecordCountdown.count
++            color: "white"
++            fontSize: "x-large"
++            font.weight: Font.Bold
++        }
++        MouseArea { anchors.fill: parent; onClicked: screenRecordCountdown.stop() }
++    }
++
+     ItemGrabber {
+         id: itemGrabber
+         anchors.fill: parent

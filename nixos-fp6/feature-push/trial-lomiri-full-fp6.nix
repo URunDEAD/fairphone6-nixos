@@ -49,6 +49,7 @@ let
       ./lomiri-session/lomiri-session-fp6.nix
       ./lomiri-drawer-folders/lomiri-drawer-folders-fp6.nix
       ./app-ready/app-ready-fp6.nix
+      ./screen-capture/screen-capture-fp6.nix
       ({ lib, options, ... }: {
         # fp6-lomiri-powerd replaces the manual-only brightness bridge.
         # lomiri-gpu-fp6.nix restates it at mkOverride 10.
@@ -139,6 +140,10 @@ let
         # 3 s kill safety net); user session units stop when the LightDM session
         # ends. See results/feature-push-20261024/lomiri-session/README.md.
         hardware.fairphone6.lomiriSession.enable = true;
+        # Power + Volume Down screenshots (shutter sound) and a screen recorder:
+        # power dialog "Record screen" / status-bar switch, red dot, MP4 in
+        # ~/Videos/Screencasts. See results/feature-push-20261024/screen-capture/README.md.
+        hardware.fairphone6.screenCapture.enable = true;
         system.nixos.tags = [ "full-features" ];
       })
     ];
