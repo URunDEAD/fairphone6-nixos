@@ -1,0 +1,101 @@
+From c61b7480211d015e5c443d872e9f8ab6fb3491b2 Mon Sep 17 00:00:00 2001
+From: Paul Schuldesz <paulschuldesz@gmail.com>
+Date: Mon, 26 Oct 2026 18:30:41 +0200
+Subject: [PATCH] Input: eswin_eph861x: wait for the IC reset report instead of
+ 5 s in probe
+
+eph_probe() slept a fixed 5 s ("wait ic boot done") after enabling the
+regulators. On the FP6 the controller announces the end of its
+power-on reset with a device-state report (reset flag) about 170 ms
+after power-on (dmesg: regulator enable 1.257 s, "Reset completed"
+1.427 s); the IRQ thread already turns that report into
+complete(&reset_completion), which nothing waited for.
+
+Wait for reset_completion, then a short settle delay (50 ms), and
+fall back to the old full delay, measured from regulator enable, if
+no report arrives. Both bounds are module parameters of the built-in
+driver (eswin_ts.ic_boot_timeout_ms=, eswin_ts.ic_boot_settle_ms=);
+ic_boot_settle_ms=5000 restores the old fixed sleep.
+
+Expected effect: eph_probe() returns ~4.8 s earlier (kernel6:
+1.257 s -> 6.656 s), so the stage-1 background modprobe of
+spi_geni_qcom also finishes earlier, and the IMU on spi1.0 is bound
+earlier.
+---
+ .../touchscreen/eswin_touch/eswin_eph861x.c   | 40 ++++++++++++++++++-
+ 1 file changed, 38 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/input/touchscreen/eswin_touch/eswin_eph861x.c b/drivers/input/touchscreen/eswin_touch/eswin_eph861x.c
+index 2b6d006..5f4f543 100644
+--- a/drivers/input/touchscreen/eswin_touch/eswin_eph861x.c
++++ b/drivers/input/touchscreen/eswin_touch/eswin_eph861x.c
+@@ -2129,6 +2129,19 @@ out:
+ 
+ #endif
+ 
++/*
++ * Upper bound for the IC boot wait in probe (the vendor's fixed delay), and
++ * the settle time after the IC's reset report. Built in, so set them on the
++ * kernel command line as eswin_ts.ic_boot_timeout_ms= / eswin_ts.ic_boot_settle_ms=.
++ * ic_boot_settle_ms=5000 restores the old fixed 5 s sleep.
++ */
++static unsigned int ic_boot_timeout_ms = 5000;
++module_param(ic_boot_timeout_ms, uint, 0444);
++MODULE_PARM_DESC(ic_boot_timeout_ms, "Max wait for the IC reset report in probe (ms)");
++static unsigned int ic_boot_settle_ms = 50;
++module_param(ic_boot_settle_ms, uint, 0444);
++MODULE_PARM_DESC(ic_boot_settle_ms, "Delay after the IC reset report before talking to it (ms)");
++
+ #if (ESWIN_EPH861X_SPI)
+ static int eph_probe(struct comms_device *commsdevice)
+ #endif
+@@ -2141,6 +2154,7 @@ static int eph_probe(struct comms_device *commsdevice, const struct comms_device
+     int ret_val;
+     int device_info_read_retry = 0;
+     struct device *dev = &commsdevice->dev;
++    unsigned long ic_boot_start, ic_boot_deadline, ic_boot_left;
+ 
+     //struct device_node *node = commsdevice->dev.of_node;
+     dev_dbg(dev, "%s >>>\n", __func__);
+@@ -2252,14 +2266,36 @@ static int eph_probe(struct comms_device *commsdevice, const struct comms_device
+         goto err_free_mem;
+     }
+ 
++    ic_boot_start = jiffies;
+     ret_val = eph_probe_regulators(ephdata);
+     if (ret_val)
+     {
+         goto err_free_irq;
+     }
+ 
+-    //wait ic boot done
+-    msleep(5000);
++    /*
++     * Wait for the IC to finish booting. The vendor code slept a fixed 5 s
++     * here, but the firmware announces the end of its power-on reset with a
++     * device-state report (reset flag set), which the IRQ thread turns into
++     * complete(&reset_completion). On the FP6 that report arrives ~170 ms
++     * after the regulators are enabled. Wait for it, give the firmware a
++     * short settle time, and fall back to the old full delay (measured from
++     * regulator enable) if no report arrives.
++     */
++    ic_boot_deadline = ic_boot_start + msecs_to_jiffies(ic_boot_timeout_ms);
++    ic_boot_left = time_before(jiffies, ic_boot_deadline) ? ic_boot_deadline - jiffies : 0;
++    if (wait_for_completion_timeout(&ephdata->reset_completion, ic_boot_left) ||
++        completion_done(&ephdata->reset_completion))
++    {
++        dev_info(dev, "IC boot done (reset report) %u ms after power-on\n",
++                 jiffies_to_msecs(jiffies - ic_boot_start));
++        msleep(ic_boot_settle_ms);
++    }
++    else
++    {
++        dev_warn(dev, "no reset report from the IC within %u ms, continuing\n",
++                 ic_boot_timeout_ms);
++    }
+ 
+     /* Need to have IRQ disabled before calling eph_initialize() as it re-enables it */
+     disable_irq(ephdata->chg_irq);
+-- 
+2.54.0
+

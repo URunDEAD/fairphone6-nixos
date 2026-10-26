@@ -1,0 +1,24 @@
+kernel7 candidates (staged 2026-10-26; NOT in kernel6, whose pinned drv is unchanged)
+
+0001-input-eswin-eph861x-wait-for-reset-report-in-probe.patch
+  eph_probe() slept a fixed msleep(5000) "wait ic boot done" after enabling
+  the regulators. The IC sends its reset device-state report ~170 ms after
+  power-on (kernel6 dmesg: regulator enable 1.257 s, "Reset completed"
+  1.427 s), and the IRQ thread already completes ephdata->reset_completion.
+  The patch waits for that completion, then a 50 ms settle delay. If no
+  report comes, it falls back to the old 5 s, counted from regulator enable.
+  Parameters of the built-in driver (kernel command line):
+    eswin_ts.ic_boot_timeout_ms=5000   upper bound (old fixed delay)
+    eswin_ts.ic_boot_settle_ms=50      set to 5000 for the old behaviour
+  Apply AFTER ../sensors/0003-input-eswin-eph861x-gesture-wake-pm-lp-mode.patch
+  (same order as kernel6's kernelPatches; both touch eswin_eph861x.c).
+  Expected: eph_probe returns at ~1.7 s instead of ~6.7 s. The stage-1
+  background modprobe (boot-speed module) ends ~5 s earlier, and the IMU
+  on spi1.0 is bound earlier. The rest of stage-1 is already off this path.
+  Compile check (external module against the kernel6 7.2.0-fp6-nixos6 headers,
+  W=1, no new warnings): compile-check.nix ->
+    /nix/store/sfy35c8l9xzx7h4l6rywmvj08zbwbmdl-fp6-kernel7-candidate-eswin-compile-check-63289f441152-nixos6
+  To check on the first kernel7 boot:
+    dmesg | grep -E "IC boot done|no reset report|eph_probe <|zxz Product ID"
+  Then confirm touch, double-tap-to-wake (lp_mode), suspend/resume and the
+  firmware version line work as before.
