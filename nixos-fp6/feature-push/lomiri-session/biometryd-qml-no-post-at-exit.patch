@@ -1,0 +1,32 @@
+--- a/src/biometry/qml/Biometryd/operation.h
++++ b/src/biometry/qml/Biometryd/operation.h
+@@ -152,15 +152,26 @@
+     /// @brief finalize schedules deletion of this instance onto the QCoreApplication main loop.
+     void finalize()
+     {
+-        QCoreApplication::instance()->postEvent(this, new Task{[this]() { delete this; }});
++        // The last reference to the observer can be held by a Task that was
++        // never delivered. Qt's application teardown deletes such events while
++        // it holds the main thread's post-event-list mutex
++        // (QCoreApplicationPrivate::cleanupThreadData), so
++        // posting from here would deadlock the exiting process (a Lomiri greeter
++        // with a running fingerprint identification hung in futex_wait until
++        // SIGKILL). Once the application is going away, leak this instance.
++        if (!QCoreApplication::instance() || QCoreApplication::closingDown())
++            return;
++        QCoreApplication::postEvent(this, new Task{[this]() { delete this; }});
+     }
+ 
+     /// @brief dispatch enqueues the given task for execution on the QCoreApplication
+     /// main loop.
+     void dispatch(const std::shared_ptr<Context>& ctxt, const std::function<void()>& task)
+     {
+-        QCoreApplication::instance()->postEvent(this, new Task{[ctxt, task]() { task();}});
+-    }    
++        if (!QCoreApplication::instance() || QCoreApplication::closingDown())
++            return;
++        QCoreApplication::postEvent(this, new Task{[ctxt, task]() { task();}});
++    }
+ };
+ 
+ /// @brief Observer monitors an Operation.

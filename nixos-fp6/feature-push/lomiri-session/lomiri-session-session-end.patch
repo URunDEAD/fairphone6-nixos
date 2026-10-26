@@ -1,0 +1,94 @@
+--- a/desktop/dm-lomiri-session.in
++++ b/desktop/dm-lomiri-session.in
+@@ -6,7 +6,16 @@
+ dbus-update-activation-environment --systemd QT_QPA_PLATFORM=wayland
+ dbus-update-activation-environment --systemd UBUNTU_PLATFORM_API_BACKEND=desktop_mirclient
+ 
+-@CMAKE_INSTALL_FULL_LIBEXECDIR@/lomiri-session/run-systemd-session lomiri.service
++# LightDM's session child forwards SIGTERM only to this script (the NixOS
++# session wrapper execs it), so pass it on to run-systemd-session, which then
++# stops lomiri.service and the graphical session target.
++@CMAKE_INSTALL_FULL_LIBEXECDIR@/lomiri-session/run-systemd-session lomiri.service &
++session_pid=$!
++trap 'kill -TERM "$session_pid" 2>/dev/null' TERM HUP INT
++while ! wait "$session_pid"; do
++    kill -0 "$session_pid" 2>/dev/null || break
++done
++trap - TERM HUP INT
+ 
+ dbus-update-activation-environment --systemd QT_QPA_PLATFORM=
+ dbus-update-activation-environment --systemd UBUNTU_PLATFORM_API_BACKEND=
+--- a/systemd/run-systemd-session
++++ b/systemd/run-systemd-session
+@@ -14,7 +14,7 @@
+ 
+ # robustness: if the previous graphical session left some failed units,
+ # reset them so that they don't break this startup
+-for unit in $(systemctl --user --no-legend --state=failed list-units | cut -f1 -d' '); do
++for unit in $(systemctl --user --no-legend --plain --state=failed list-units | cut -f1 -d' '); do
+     if [ "$(systemctl --user show -p PartOf --value $unit)" = "graphical-session.target" ]; then
+         systemctl --user reset-failed $unit
+     fi
+@@ -24,17 +24,52 @@
+ # can be done declaratively (https://github.com/systemd/systemd/issues/3750)
+ # This could be a generator, but we don't want to penalize non-graphical logins
+ # with this.
+-systemctl --user list-unit-files --no-legend | while read unit status _; do
+-    [ "${unit%.service}" != "$unit" ] || continue
+-    [ "$status" != "$disabled" ] || continue
+-    if [ "$(systemctl --user show -p PartOf --value $unit)" = "graphical-session.target" ]; then
+-        mkdir -p "$XDG_RUNTIME_DIR/systemd/user/${unit}.d"
+-        printf '[Unit]\nAfter=graphical-session-pre.target\n' > "$XDG_RUNTIME_DIR/systemd/user/${unit}.d/graphical-session-pre.conf"
+-    fi
+-done
+-systemctl --user daemon-reload
++#
++# FP6: one `systemctl show` for all service files instead of one per unit
++# (~1.7 s for ~95 units on the phone), and a daemon-reload (~1.8 s) only when a
++# drop-in was actually added or changed: the drop-ins live in $XDG_RUNTIME_DIR
++# and survive until the user manager stops, so re-logins skip both costs.
++units=$(systemctl --user list-unit-files --no-legend --type=service | while read unit status _; do
++    case "$unit" in *@.service) continue ;; esac
++    echo "$unit"
++done)
++reload=
++if [ -n "$units" ]; then
++    for unit in $(systemctl --user show -p Id -p PartOf $units | awk '
++        /^Id=/ { id = substr($0, 4) }
++        /^PartOf=/ { partof = substr($0, 8) }
++        /^$/ { if (partof == "graphical-session.target") print id; id = ""; partof = "" }
++        END { if (partof == "graphical-session.target") print id }'); do
++        conf="$XDG_RUNTIME_DIR/systemd/user/${unit}.d/graphical-session-pre.conf"
++        want=$(printf '[Unit]\nAfter=graphical-session-pre.target')
++        if [ "$(cat "$conf" 2>/dev/null)" != "$want" ]; then
++            mkdir -p "${conf%/*}"
++            printf '%s\n' "$want" > "$conf"
++            reload=1
++        fi
++    done
++fi
++if [ -n "$reload" ]; then
++    systemctl --user daemon-reload
++fi
++
++# The display manager ends the session with SIGTERM (forwarded by
++# dm-lomiri-session, or sent by a logind scope stop). Without a handler the
++# user units kept running headless until the next login replaced them. Stop the
++# graphical session (lomiri.service has BindsTo=graphical-session.target) in
++# the user manager before going away; --no-block, so a slow shell can't hold
++# up the scope.
++session_ended() {
++    trap - TERM HUP INT
++    systemctl --user stop --no-block "$1" graphical-session.target graphical-session-pre.target
++    exit 0
++}
++trap 'session_ended "$1"' TERM HUP INT
+ 
+-systemctl --user start --wait "$1"
++# In the background, so that the trap runs as soon as the signal arrives.
++systemctl --user start --wait "$1" &
++wait $! || true
++trap - TERM HUP INT
+ 
+ dbus-update-activation-environment --systemd GNOME_DESKTOP_SESSION_ID=
+ 

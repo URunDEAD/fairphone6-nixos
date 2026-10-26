@@ -44,6 +44,7 @@ let
       ./netbird/netbird-fp6.nix
       ./apparmor/apparmor-fp6.nix
       ./adb/adb-fp6.nix
+      ./lomiri-session/lomiri-session-fp6.nix
       ({ lib, options, ... }: {
         # fp6-lomiri-powerd replaces the manual-only brightness bridge.
         # lomiri-gpu-fp6.nix restates it at mkOverride 10.
@@ -130,6 +131,10 @@ let
         # per-app modes in hardware.fairphone6.apparmor.apps.
         # See results/feature-push-20261024/apparmor/README.md.
         hardware.fairphone6.apparmor.enable = true;
+        # Greeter Lomiri exits at login (biometryd QML shutdown deadlock fixed,
+        # 3 s kill safety net); user session units stop when the LightDM session
+        # ends. See results/feature-push-20261024/lomiri-session/README.md.
+        hardware.fairphone6.lomiriSession.enable = true;
         system.nixos.tags = [ "full-features" ];
       })
     ];
