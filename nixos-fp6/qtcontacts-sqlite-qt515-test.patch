@@ -1,0 +1,17 @@
+--- a/tests/auto/qcontactmanager/tst_qcontactmanager.cpp
++++ b/tests/auto/qcontactmanager/tst_qcontactmanager.cpp
+@@ -4592,8 +4592,13 @@
+     QTest::newRow("datetimes dt4 = dt4") << QVariant(dt4) << QVariant(dt4) << Qt::CaseInsensitive << 0;
+     QTest::newRow("datetimes dt5 = dt5") << QVariant(dt5) << QVariant(dt5) << Qt::CaseInsensitive << 0;
+ 
+-    // Uninitialized datetime now compares as the epoch date
++    // Qt 5.14+ orders an invalid datetime before all valid datetimes.
++#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
++    QTest::newRow("datetimes dt0 < dt1") << QVariant(dt0) << QVariant(dt1) << Qt::CaseInsensitive << -1;
++#else
++    // Older Qt compared an uninitialized datetime as the epoch date.
+     QTest::newRow("datetimes dt0 > dt1") << QVariant(dt0) << QVariant(dt1) << Qt::CaseInsensitive << 1;
++#endif
+ }
+ 
+ void tst_QContactManager::createCollection()

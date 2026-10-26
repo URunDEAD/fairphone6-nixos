@@ -1,0 +1,72 @@
+diff --git a/indicator/messagingmenu.cpp b/indicator/messagingmenu.cpp
+index 0222cd4..64ce8dd 100644
+--- a/indicator/messagingmenu.cpp
++++ b/indicator/messagingmenu.cpp
+@@ -304,7 +304,10 @@ void MessagingMenu::addMessage(NotificationData notificationData)
+     // FIXME: For accounts not based on phone numbers, don't try to match contacts for now
+     if (account->addressableVCardFields().contains("tel")) {
+         request->setManager(ContactUtils::sharedManager());
+-        request->start();
++        if (!request->start()) {
++            // FP6: never drop the notification when the contacts backend fails
++            Q_EMIT request->stateChanged(QContactAbstractRequest::FinishedState);
++        }
+     } else {
+         // just emit the signal to pretend we did a contact search
+         Q_EMIT request->stateChanged(QContactAbstractRequest::FinishedState);
+diff --git a/indicator/textchannelobserver.cpp b/indicator/textchannelobserver.cpp
+index 0db3afd..702e460 100644
+--- a/indicator/textchannelobserver.cpp
++++ b/indicator/textchannelobserver.cpp
+@@ -438,7 +438,10 @@ void TextChannelObserver::triggerNotificationForMessage(const Tp::TextChannelPtr
+         // FIXME: For accounts not based on phone numbers, don't try to match contacts for now
+         if (account->addressableVCardFields().contains("tel")) {
+             request->setManager(ContactUtils::sharedManager());
+-            request->start();
++            if (!request->start()) {
++                // FP6: never drop the notification when the contacts backend fails
++                Q_EMIT request->stateChanged(QContactAbstractRequest::FinishedState);
++            }
+         } else {
+             // just emit the signal to pretend we did a contact search
+             Q_EMIT request->stateChanged(QContactAbstractRequest::FinishedState);
+diff --git a/liblomiritelephonyservice/contactutils.cpp b/liblomiritelephonyservice/contactutils.cpp
+index 45a53cc..c719f62 100644
+--- a/liblomiritelephonyservice/contactutils.cpp
++++ b/liblomiritelephonyservice/contactutils.cpp
+@@ -22,6 +22,7 @@
+ #include "contactutils.h"
+ #include <QContactName>
+ #include <QContactDisplayLabel>
++#include <QDebug>
+ 
+ QTCONTACTS_USE_NAMESPACE
+ 
+@@ -34,7 +35,26 @@ QContactManager *sharedManager(const QString &engine)
+     if (!qgetenv("TELEPHONY_SERVICE_TEST").isEmpty()) {
+         finalEngine = "memory";
+     }
+-    static QContactManager *instance = new QContactManager(finalEngine);
++    // FP6: the "galera" engine (address-book-service) is not installed on
++    // this NixOS/Lomiri build. A QContactManager for a missing engine is the
++    // invalid engine, whose fetch requests never start, never finish and thus
++    // silently drop every SMS notification and messaging-menu entry. Fall back
++    // to an engine that exists (qtcontacts-sqlite holds the user's contacts).
++    static QContactManager *instance = [&finalEngine]() {
++        const QString override = qEnvironmentVariable("TELEPHONY_SERVICE_CONTACTS_ENGINE");
++        if (!override.isEmpty()) {
++            finalEngine = override;
++        }
++        const QStringList available = QContactManager::availableManagers();
++        if (!available.contains(finalEngine)) {
++            const QString fallback = available.contains(QStringLiteral("org.nemomobile.contacts.sqlite"))
++                    ? QStringLiteral("org.nemomobile.contacts.sqlite") : QStringLiteral("memory");
++            qWarning() << "ContactUtils: contacts engine" << finalEngine << "is not available"
++                       << available << "- using" << fallback;
++            finalEngine = fallback;
++        }
++        return new QContactManager(finalEngine);
++    }();
+     return instance;
+ }
+ 
