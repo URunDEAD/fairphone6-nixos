@@ -7,10 +7,26 @@
 #    never request the on-screen keyboard. wayland = text-input-v3, which Mir
 #    bridges to Maliit (see ../osk-wayland/).
 #  * GDK_BACKEND=wayland keeps it off Xwayland (DISPLAY=:0 is also exported).
+#  * Fragments starts transmission-daemon with its RPC bound to 0.0.0.0 even
+#    with "remote access" off (only the 127.0.0.1/::1 whitelist protects it,
+#    no password). The daemon is wrapped to append --rpc-bind-address
+#    127.0.0.1 (the last occurrence wins), so it only listens on localhost.
+#    Fragments' own "remote access" setting therefore has no effect.
 { config, lib, pkgs, ... }:
 let
   cfg = config.hardware.fairphone6.fragments;
-  base = pkgs.fragments;
+  # Name keeps "-transmission" so the AppArmor profile's store glob matches.
+  transmissionLocal = pkgs.symlinkJoin {
+    name = "fp6-localhost-transmission";
+    paths = [ pkgs.transmission_4 ];
+    nativeBuildInputs = [ pkgs.makeBinaryWrapper ];
+    postBuild = ''
+      rm "$out/bin/transmission-daemon"
+      makeBinaryWrapper ${pkgs.transmission_4}/bin/transmission-daemon "$out/bin/transmission-daemon" \
+        --append-flags "--rpc-bind-address 127.0.0.1"
+    '';
+  };
+  base = pkgs.fragments.override { transmission_4 = transmissionLocal; };
   desktopId = "de.haeckerfelix.Fragments.desktop";
   wrapped = pkgs.symlinkJoin {
     name = "fragments-lomiri-fp6";

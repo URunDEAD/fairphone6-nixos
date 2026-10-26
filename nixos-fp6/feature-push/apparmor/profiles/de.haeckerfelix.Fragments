@@ -16,6 +16,8 @@ profile de.haeckerfelix.Fragments /nix/store/*-fragments-*/bin/{.fragments-wrapp
 
   /nix/store/*-fragments-*/bin/{.fragments-wrapped,fragments} mrix,
   /nix/store/*-transmission*/bin/transmission-daemon mrix,
+  # fragments-fp6.nix wraps the daemon (binary wrapper) to bind RPC to localhost.
+  /nix/store/*-transmission*/bin/.transmission-daemon-wrapped mrix,
 
   owner @{HOME}/.config/fragments/ rw,
   owner @{HOME}/.config/fragments/** rwkl,
