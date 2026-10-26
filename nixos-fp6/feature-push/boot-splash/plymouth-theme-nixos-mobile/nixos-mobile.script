@@ -23,24 +23,50 @@ N_SHUT = 112;
 mode = Plymouth.GetMode();
 shutting_down = (mode == "shutdown" || mode == "reboot");
 
-fun load(prefix, n) {
-  for (i = 0; i < n; i++)
-    local.arr[i] = Image(prefix + i + ".png").Scale(global.SW, global.SH);
-  return local.arr;
+// Boot animation start frame: 0 plays the intro; N_INTRO starts at the glow loop.
+// The FP6 package sets this to N_INTRO when the stage-1 bridge frame (the
+// resting logo, loop-0) is already on the panel, so the logo does not vanish and spin in again.
+BOOT_START = 0;
+
+// Frames are decoded and scaled on first use, in order, and then cached.
+// Decoding all of them before the first refresh used to delay the first
+// frame by the time it took to decode and scale 126 (boot) or 112 (shutdown) PNGs.
+intro_n = 0;
+loop_n = 0;
+shut_n = 0;
+
+fun intro_frame(i) {
+  while (global.intro_n <= i) {
+    global.intro[global.intro_n] = Image("intro-" + global.intro_n + ".png").Scale(global.SW, global.SH);
+    global.intro_n++;
+  }
+  return global.intro[i];
+}
+
+fun loop_frame(i) {
+  while (global.loop_n <= i) {
+    global.loop[global.loop_n] = Image("loop-" + global.loop_n + ".png").Scale(global.SW, global.SH);
+    global.loop_n++;
+  }
+  return global.loop[i];
+}
+
+fun shut_frame(i) {
+  while (global.shut_n <= i) {
+    global.frames[global.shut_n] = Image("shutdown-" + global.shut_n + ".png").Scale(global.SW, global.SH);
+    global.shut_n++;
+  }
+  return global.frames[i];
 }
 
 logo = Sprite();
 logo.SetPosition(X, Y, 1);
 
 if (shutting_down) {
-  frames = load("shutdown-", N_SHUT);
   white = Image("white.png");
   crt = Sprite();
   crt.SetZ(2);
   crt.SetOpacity(0);
-} else {
-  intro = load("intro-", N_INTRO);
-  loop = load("loop-", N_LOOP);
 }
 
 tick = 0;
@@ -57,7 +83,7 @@ fun refresh_callback() {
   t = global.tick / global.TICK;   // seconds since start
 
   if (global.shutting_down) {
-    if (f < global.N_SHUT) global.logo.SetImage(global.frames[f]);
+    if (f < global.N_SHUT) global.logo.SetImage(shut_frame(f));
     else global.logo.SetOpacity(0);
 
     // Flash to pale white, then collapse to a line, then a dot (CRT power-off).
@@ -75,8 +101,9 @@ fun refresh_callback() {
       global.crt.SetOpacity(o);
     }
   } else {
-    if (f < global.N_INTRO) global.logo.SetImage(global.intro[f]);
-    else global.logo.SetImage(global.loop[(f - global.N_INTRO) % global.N_LOOP]);
+    f = f + global.BOOT_START;
+    if (f < global.N_INTRO) global.logo.SetImage(intro_frame(f));
+    else global.logo.SetImage(loop_frame((f - global.N_INTRO) % global.N_LOOP));
   }
 }
 

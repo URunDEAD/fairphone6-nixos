@@ -34,6 +34,17 @@
 # flashed. NAutoVTs=0/ReserveVT=0 stop that and vt.global_cursor_default=0
 # removes the cursor: VT2 is a plain black screen until Lomiri draws.
 #
+# Bridge frame (2026-10-26, see results/feature-push-20261024/boot-speed/):
+# stage-1 paints the nixos-mobile theme's resting frame into fb0 right after
+# the panel module loads (~1.3 s). It stays on the panel until plymouthd draws
+# the same frame (DeviceScale=1, glow loop first), so there is no dark gap
+# between the bootloader logo and Plymouth. The lvgui stage-1 splash would
+# swap in the Mobile NixOS logo for ~2 s, so it is skipped by default
+# (stage1Splash). The recovery menu and error screen are unaffected.
+# The theme decodes frames lazily, so the first frame (boot and shutdown)
+# no longer waits for every PNG to be decoded. plymouth-{poweroff,reboot,halt,kexec}
+# start after user.slice, when the Lomiri session's Mir no longer holds the DRM master.
+#
 # verbose = true restores the original debug cmdline and drops Plymouth.
 { config, lib, pkgs, ... }:
 let
@@ -52,6 +63,38 @@ let
     rsvg-convert --width=${toString cfg.logoWidth} --keep-aspect-ratio \
       ${../../upstream/mobile-nixos/artwork/logo/logo.white.svg} -o $out
   '';
+
+  # Stage-1 bridge frame: the nixos-mobile theme's resting frame (loop-0)
+  # rendered at the same geometry as nixos-mobile.script computes it with
+  # DeviceScale=1. Values are truncated like Math.Int:
+  # SW = W*0.744, SH = SW*446/464, X = (W-SW)/2, Y = (H-SH)/2, on #05070D,
+  # as raw XRGB8888 (bytes B,G,R,X) rows of fb0's line length
+  # (stride, 4480 = 1120 px for the 1116 px panel).
+  bridge = cfg.bridgeFrame;
+  screenW = config.mobile.hardware.screen.width;
+  screenH = config.mobile.hardware.screen.height;
+  spriteW = screenW * 744 / 1000;
+  spriteH = spriteW * 446 / 464;
+  spriteX = (screenW - spriteW) / 2;
+  spriteY = (screenH - spriteH) / 2;
+  lineW = bridge.stride / 4;
+  bridgeFrame = pkgs.runCommand "fp6-boot-bridge-frame.bgrx" {
+    nativeBuildInputs = [ pkgs.buildPackages.imagemagick ];
+  } ''
+    magick -size ${toString lineW}x${toString screenH} xc:'#05070D' \
+      \( ${./plymouth-theme-nixos-mobile/images/loop-0.png} -resize ${toString spriteW}x${toString spriteH}! \) \
+      -geometry +${toString spriteX}+${toString spriteY} -composite \
+      -alpha off -depth 8 bridge.png
+    magick bridge.png -alpha opaque -depth 8 BGRA:$out
+    size=$(stat -c %s $out)
+    test "$size" = ${toString (bridge.stride * screenH)} || { echo "bridge frame is $size bytes" >&2; exit 1; }
+  '';
+  bridgeTask = pkgs.writeText "fp6-boot-splash-stage-1-bridge.rb"
+    (builtins.replaceStrings
+      [ "@width@" "@height@" "@stride@" "@stage1Splash@" ]
+      [ (toString screenW) (toString screenH) (toString bridge.stride) (lib.boolToString cfg.stage1Splash) ]
+      (builtins.readFile ./stage-1-bridge.rb));
+  useBridge = quiet && bridge.enable && cfg.theme == "nixos-mobile";
 in
 {
   options.hardware.fairphone6.bootSplash = {
@@ -73,6 +116,37 @@ in
         animation in ./plymouth-theme-nixos-mobile (NixOS logo spins in, glow
         loop until the greeter; outro plus CRT collapse on shutdown/reboot).
         Any theme shipped by pkgs.plymouth (e.g. "spinner") also works.
+      '';
+    };
+    bridgeFrame = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = ''
+          Paint the nixos-mobile theme's resting frame into the msm fbdev
+          (/dev/fb0) as soon as stage-1 has loaded the panel module. It stays on screen
+          through stage-1, switch_root and early stage-2 until Plymouth draws
+          the same frame. Plymouth then starts at the glow loop instead of the
+          spin-in intro, so the logo does not disappear and reappear.
+          Only used with theme "nixos-mobile" and without verbose.
+        '';
+      };
+      stride = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 4480;
+        description = "fb0 line length in bytes (/sys/class/graphics/fb0/stride). Stage-1 checks it before painting.";
+      };
+    };
+    stage1Splash = lib.mkOption {
+      type = lib.types.bool;
+      default = !cfg.bridgeFrame.enable;
+      defaultText = lib.literalExpression "!bridgeFrame.enable";
+      description = ''
+        Show the Mobile NixOS lvgui progress splash in stage-1. With the bridge
+        frame it would replace the NixOS logo with the Mobile NixOS logo for
+        ~2 s and then go back, so it is off by default then. The recovery menu
+        (hold a volume key during boot) and the stage-1 error screen are
+        separate applets and are not affected.
       '';
     };
     logoWidth = lib.mkOption {
@@ -118,8 +192,20 @@ in
         theme = cfg.theme;
         logo = logo;
         themePackages = lib.optional (cfg.theme == "nixos-mobile")
-          (pkgs.callPackage ./plymouth-theme-nixos-mobile { });
+          (pkgs.callPackage ./plymouth-theme-nixos-mobile { bootStartsAtLoop = useBridge; });
+        # Native pixels (no automatic 2x on this ~430 dpi panel): the theme
+        # scales its 464 px sprites straight to the screen width (sharper), and
+        # the frame lands exactly where the stage-1 bridge frame put it.
+        extraConfig = "DeviceScale=1";
       };
+      # Shutdown/reboot animation: plymouth-{poweroff,reboot,halt,kexec} are
+      # ordered after display-manager only, but the Lomiri session's Mir
+      # (session scope in user.slice) can still hold the DRM master then, and
+      # plymouthd cannot modeset. Start them only after user.slice has stopped.
+      systemd.services.plymouth-poweroff.after = [ "user.slice" ];
+      systemd.services.plymouth-reboot.after = [ "user.slice" ];
+      systemd.services.plymouth-halt.after = [ "user.slice" ];
+      systemd.services.plymouth-kexec.after = [ "user.slice" ];
       # gdm.nix pattern: LightDM quits Plymouth itself (deactivate + quit
       # --retain-splash after the greeter's display server is ready). Without
       # this, multi-user.target's plymouth-quit.service would end the splash
@@ -129,6 +215,13 @@ in
         conflicts = [ "plymouth-quit.service" ];
       };
       systemd.services.plymouth-quit.wantedBy = lib.mkForce [ ];
+    })
+    (lib.mkIf useBridge {
+      mobile.boot.stage-1.tasks = [ bridgeTask ];
+      mobile.boot.stage-1.contents = [
+        { object = bridgeFrame; symlink = "/etc/fp6-bridge-frame.bgrx"; }
+      ];
+      system.build.fp6-boot-bridge-frame = bridgeFrame;
     })
   ]);
 }

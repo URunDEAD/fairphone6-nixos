@@ -35,6 +35,7 @@ let
       ./fingerprint/fingerprint-persist-fp6.nix
       ./fingerprint/biometryd-fprintd-fp6.nix
       ./boot-splash/boot-splash-fp6.nix
+      ./boot-speed/boot-speed-fp6.nix
       ./misc/quick-checks-fp6.nix
       ./misc/haptics-fp6.nix
       ./misc/waydroid-lomiri-fp6.nix
@@ -107,6 +108,9 @@ let
         # Quiet boot + Plymouth spinner; no getty/text between greeter and session.
         # hardware.fairphone6.bootSplash.verbose = true brings the debug boot text back.
         hardware.fairphone6.bootSplash.enable = true;
+        # Stage-1 loads spi_geni_qcom (touchscreen probe sleeps 5 s) in the background.
+        # See results/feature-push-20261024/boot-speed/README.md.
+        hardware.fairphone6.bootSpeed.enable = true;
         # Offline-charging target, on-demand MTP, neard (see results/feature-push-20261024/quick-checks/).
         hardware.fairphone6.quickChecks.enable = true;
         # English UI, Romanian date/time format (dd.mm.yyyy, 24 h).
