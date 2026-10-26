@@ -1,0 +1,45 @@
+--- a/src/plugins/gstreamer/camerabin/camerabinserviceplugin.cpp	2026-10-26 11:35:31.681828968 +0200
++++ b/src/plugins/gstreamer/camerabin/camerabinserviceplugin.cpp	2026-10-26 11:35:31.713562227 +0200
+@@ -109,14 +109,14 @@
+ {
+ 
+     return service == Q_MEDIASERVICE_CAMERA
+-            ? QGstUtils::cameraDevices(m_sourceFactory)
++            ? QGstUtils::cameraDevices(sourceFactory())
+             : QList<QByteArray>();
+ }
+ 
+ QString CameraBinServicePlugin::deviceDescription(const QByteArray &service, const QByteArray &deviceName)
+ {
+     return service == Q_MEDIASERVICE_CAMERA
+-            ? QGstUtils::cameraDescription(deviceName, m_sourceFactory)
++            ? QGstUtils::cameraDescription(deviceName, sourceFactory())
+             : QString();
+ }
+ 
+@@ -130,17 +130,23 @@
+ 
+ QCamera::Position CameraBinServicePlugin::cameraPosition(const QByteArray &deviceName) const
+ {
+-    return QGstUtils::cameraPosition(deviceName, m_sourceFactory);
++    return QGstUtils::cameraPosition(deviceName, sourceFactory());
+ }
+ 
+ int CameraBinServicePlugin::cameraOrientation(const QByteArray &deviceName) const
+ {
+-    return QGstUtils::cameraOrientation(deviceName, m_sourceFactory);
++    return QGstUtils::cameraOrientation(deviceName, sourceFactory());
+ }
+ 
+ GstElementFactory *CameraBinServicePlugin::sourceFactory() const
+ {
+     if (!m_sourceFactory) {
++        // FP6: QCameraInfo::defaultCamera()/availableCameras() reach this
++        // before create() has initialized GStreamer; without gst_init the
++        // registry is empty, the lookup fails and the device list falls back
++        // to the /dev/video* scan, which the camera service later rejects
++        // (ServiceMissingError, "Cannot access camera").
++        QGstUtils::initializeGst();
+         GstElementFactory *factory = 0;
+         const QByteArray envCandidate = qgetenv("QT_GSTREAMER_CAMERABIN_SRC");
+         if (!envCandidate.isEmpty())

@@ -1,0 +1,33 @@
+{
+  "tree_commit": "6c63b696c89bff29e4413b5290aff39626843b90",
+  "files": [
+    {
+      "path": "proprietary/vendor/etc/camera/sensorParamConfig.xml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "0818c4a6be589dc54d89217762eeb55daa7f04af",
+      "size": 3376,
+      "url": "https://raw.githubusercontent.com/TheMuppets/proprietary_vendor_fairphone_FP6/6c63b696c89bff29e4413b5290aff39626843b90/proprietary/vendor/etc/camera/sensorParamConfig.xml",
+      "sha256": "5ee996edd8e31494c81fcb18f39f25e5374ad4e03b8e708f4d17117a7a29c555"
+    },
+    {
+      "path": "proprietary/vendor/lib64/camera/com.qti.sensor.s5kkd1sp.so",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "72b325420006302e3e90130df0d8db779e193bfc",
+      "size": 28040,
+      "url": "https://raw.githubusercontent.com/TheMuppets/proprietary_vendor_fairphone_FP6/6c63b696c89bff29e4413b5290aff39626843b90/proprietary/vendor/lib64/camera/com.qti.sensor.s5kkd1sp.so",
+      "sha256": "2913fd0939fa5d093d5776f48926616b54b1073b00106e95f6979c7ddf95738f"
+    },
+    {
+      "path": "proprietary/vendor/lib64/camera/com.qti.sensormodule.tsp_s5kkd1sp_fp6.bin",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "5aa7288ff1c8334ebd0a4856404d906800508422",
+      "size": 250742,
+      "url": "https://raw.githubusercontent.com/TheMuppets/proprietary_vendor_fairphone_FP6/6c63b696c89bff29e4413b5290aff39626843b90/proprietary/vendor/lib64/camera/com.qti.sensormodule.tsp_s5kkd1sp_fp6.bin",
+      "sha256": "7a924c8a79d526f0258896a0d048ac85b73fa989d273511b1e5e3e94f7f5d0ce"
+    }
+  ],
+  "scope": "Static read-only code inspection; not executed; not installed; no calibration or userdata"
+}

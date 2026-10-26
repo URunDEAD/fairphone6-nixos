@@ -1,0 +1,52 @@
+--- a/test/ipa/libipa/meson.build
++++ b/test/ipa/libipa/meson.build
+@@ -1,6 +1,7 @@
+ # SPDX-License-Identifier: CC0-1.0
+ 
+ libipa_test = [
++    {'name': 'fp6_sensor_helpers', 'sources': ['fp6_sensor_helpers.cpp']},
+     {'name': 'fixedpoint', 'sources': ['fixedpoint.cpp']},
+     {'name': 'histogram', 'sources': ['histogram.cpp']},
+     {'name': 'interpolator', 'sources': ['interpolator.cpp']},
+--- /dev/null
++++ b/test/ipa/libipa/fp6_sensor_helpers.cpp
+@@ -0,0 +1,39 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++#include <cmath>
++#include <iostream>
++#include "camera_sensor_helper.h"
++#include "test.h"
++
++using namespace libcamera;
++using namespace ipa;
++
++class Fp6SensorHelpersTest : public Test
++{
++protected:
++	int run() override
++	{
++		auto imx = CameraSensorHelperFactoryBase::create("imx896");
++		auto ov = CameraSensorHelperFactoryBase::create("ov13b10");
++		if (!imx || !ov) {
++			std::cerr << "FP6 sensor gain helpers must be registered\n";
++			return TestFail;
++		}
++		/* IMX896's 14-bit denominator differs from older Sony sensors. */
++		if (std::abs(imx->gain(0) - 1.0) > 1e-8 ||
++		    std::abs(imx->gain(8192) - 2.0) > 1e-8 ||
++		    std::abs(imx->gain(16128) - 64.0) > 1e-8 ||
++		    imx->gainCode(1.0) != 0 || imx->gainCode(2.0) != 8192 ||
++		    imx->gainCode(64.0) != 16128) {
++			std::cerr << "IMX896 gain conversion does not match kernel controls\n";
++			return TestFail;
++		}
++		if (std::abs(ov->gain(128) - 1.0) > 1e-8 ||
++		    std::abs(ov->gain(256) - 2.0) > 1e-8 ||
++		    ov->gainCode(1.0) != 128 || ov->gainCode(2.0) != 256) {
++			std::cerr << "OV13B10 gain conversion is incorrect\n";
++			return TestFail;
++		}
++		return TestPass;
++	}
++};
++TEST_REGISTER(Fp6SensorHelpersTest)

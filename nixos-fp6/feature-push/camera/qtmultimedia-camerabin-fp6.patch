@@ -1,0 +1,51 @@
+diff -ru a/src/plugins/gstreamer/camerabin/camerabinflash.cpp b/src/plugins/gstreamer/camerabin/camerabinflash.cpp
+--- a/src/plugins/gstreamer/camerabin/camerabinflash.cpp	2026-10-24 12:52:42.368613933 +0300
++++ b/src/plugins/gstreamer/camerabin/camerabinflash.cpp	2026-10-24 12:53:07.191587105 +0300
+@@ -69,7 +69,8 @@
+     case GST_PHOTOGRAPHY_FLASH_MODE_AUTO: modes |= QCameraExposure::FlashAuto; break;
+     case GST_PHOTOGRAPHY_FLASH_MODE_OFF: modes |= QCameraExposure::FlashOff; break;
+     case GST_PHOTOGRAPHY_FLASH_MODE_ON: modes |= QCameraExposure::FlashOn; break;
+-    case GST_PHOTOGRAPHY_FLASH_MODE_FILL_IN: modes |= QCameraExposure::FlashFill; break;
++    // FP6: FILL_IN is the continuous LED ("video light"/torch) state.
++    case GST_PHOTOGRAPHY_FLASH_MODE_FILL_IN: modes |= QCameraExposure::FlashVideoLight; break;
+     case GST_PHOTOGRAPHY_FLASH_MODE_RED_EYE: modes |= QCameraExposure::FlashRedEyeReduction; break;
+     default:
+         modes |= QCameraExposure::FlashAuto;
+@@ -88,6 +89,8 @@
+     else if (mode.testFlag(QCameraExposure::FlashOn)) flashMode = GST_PHOTOGRAPHY_FLASH_MODE_ON;
+     else if (mode.testFlag(QCameraExposure::FlashFill)) flashMode = GST_PHOTOGRAPHY_FLASH_MODE_FILL_IN;
+     else if (mode.testFlag(QCameraExposure::FlashRedEyeReduction)) flashMode = GST_PHOTOGRAPHY_FLASH_MODE_RED_EYE;
++    else if (mode.testFlag(QCameraExposure::FlashVideoLight)
++             || mode.testFlag(QCameraExposure::FlashTorch)) flashMode = GST_PHOTOGRAPHY_FLASH_MODE_FILL_IN;
+ 
+     gst_photography_set_flash_mode(m_session->photography(), flashMode);
+ }
+@@ -98,7 +101,8 @@
+             mode == QCameraExposure::FlashOn ||
+             mode == QCameraExposure::FlashAuto ||
+             mode == QCameraExposure::FlashRedEyeReduction ||
+-            mode == QCameraExposure::FlashFill;
++            mode == QCameraExposure::FlashFill ||
++            mode == QCameraExposure::FlashVideoLight;
+ }
+ 
+ bool CameraBinFlash::isFlashReady() const
+diff -ru a/src/plugins/gstreamer/camerabin/camerabinvideoencoder.cpp b/src/plugins/gstreamer/camerabin/camerabinvideoencoder.cpp
+--- a/src/plugins/gstreamer/camerabin/camerabinvideoencoder.cpp	2026-10-24 12:52:42.374508673 +0300
++++ b/src/plugins/gstreamer/camerabin/camerabinvideoencoder.cpp	2026-10-24 12:53:07.191854441 +0300
+@@ -201,7 +201,14 @@
+     const char * const name = qt_gst_element_get_factory_name(encoder);
+ 
+     const int bitRate = m_actualVideoSettings.bitRate();
+-    if (bitRate == -1) {
++    if (qstrcmp(name, "x264enc") == 0) {
++        // FP6: software H.264 must keep up with a live camera on the phone
++        // CPU; x264enc's "bitrate" is in kbit/s, not bit/s.
++        g_object_set(G_OBJECT(encoder), "speed-preset", 1 /* ultrafast */, NULL);
++        gst_util_set_object_arg(G_OBJECT(encoder), "tune", "zerolatency");
++        if (bitRate > 0)
++            g_object_set(G_OBJECT(encoder), "bitrate", guint(qBound(256, bitRate / 1000, 40000)), NULL);
++    } else if (bitRate == -1) {
+         // Bit rate is invalid, don't evaluate the remaining conditions.
+     } else if (g_object_class_find_property(objectClass, "bitrate")) {
+         g_object_set(G_OBJECT(encoder), "bitrate", bitRate, NULL);

@@ -1,0 +1,55 @@
+/* UNINTEGRATED REVIEW CANDIDATE: append to the exact FP6 board DTS only after
+ * source/PLL/lane review. Source-derived906MHz is not hardware-validated.
+ * Driver defaults to strict-ID probe only; it cannot stream without opt-in.
+ */
+&cci1_i2c1 {
+ camera@3d {
+  compatible = "samsung,s5kkd1";
+  reg = <0x3d>;
+  clocks = <&camcc CAM_CC_MCLK3_CLK>;
+  assigned-clocks = <&camcc CAM_CC_MCLK3_CLK>;
+  assigned-clock-rates = <24000000>;
+  vddio-supply = <&vreg_l6p>;
+  vddd-supply = <&vreg_l2p>;
+  vdda-supply = <&vreg_l3p>;
+  reset-gpios = <&tlmm 43 GPIO_ACTIVE_LOW>;
+  pinctrl-names = "default";
+  pinctrl-0 = <&kd1_mclk3_default &kd1_reset_default>;
+  orientation = <0>;
+  /* Rotation deliberately omitted until vendor HVflip/mount transform review. */
+  port {
+   kd1_ep: endpoint {
+    remote-endpoint = <&kd1_csiphy3_ep>;
+    bus-type = <MEDIA_BUS_TYPE_CSI2_DPHY>;
+    data-lanes = <0 1 2 3>;
+    link-frequencies = /bits/ 64 <906000000>;
+   };
+  };
+ };
+};
+&camss {
+ ports {
+  port@3 {
+   reg = <3>;
+   kd1_csiphy3_ep: endpoint {
+    remote-endpoint = <&kd1_ep>;
+    bus-type = <MEDIA_BUS_TYPE_CSI2_DPHY>;
+    data-lanes = <0 1 2 3>;
+   };
+  };
+ };
+};
+&tlmm {
+ kd1_mclk3_default: kd1-mclk3-default-state {
+  pins = "gpio86";
+  function = "cam_mclk";
+  drive-strength = <2>;
+  bias-disable;
+ };
+ kd1_reset_default: kd1-reset-default-state {
+  pins = "gpio43";
+  function = "gpio";
+  drive-strength = <2>;
+  bias-disable;
+ };
+};

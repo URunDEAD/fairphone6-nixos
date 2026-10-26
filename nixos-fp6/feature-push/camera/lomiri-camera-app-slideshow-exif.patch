@@ -1,0 +1,37 @@
+FP6: photos showed rotated in the photo roll slideshow. The camera saves the
+sensor frame with an EXIF Orientation tag (grid thumbnails from
+lomiri-thumbnailer are upright). Without Lomiri.Components.Extras the slideshow
+loads the plain file URL; Lomiri.Components rewrites local image files to
+image://scaling when the device pixel ratio is not 1 (Lomiri on Mir: wl_output
+scale 3), and that provider ignores EXIF and autoTransform (checked with a QML
+probe: DPR 1 -> 1536x2048, DPR 3 + Lomiri.Components -> 682x512 unrotated).
+Load photos through the thumbnailer instead (EXIF aware), and set
+autoTransform anyway.
+
+--- a/qml/components/SlideshowView.qml	2026-10-26 13:26:14.710964636 +0200
++++ b/qml/components/SlideshowView.qml	2026-10-26 13:44:19.119928373 +0200
+@@ -262,10 +262,15 @@
+                         height: flickable.height * flickable.sizeScale
+ 
+                         property bool isVideo: MimeTypeMapper.mimeTypeToContentType(fileType) === ContentType.Videos
+-                        property string photoUrl: editingAvailable ? "image://photo/%1".arg(fileURL.toString()) : fileURL.toString()
++                        // FP6: not the plain file URL. Lomiri.Components intercepts local
++                        // image files at device pixel ratio != 1 (image://scaling), and that
++                        // path ignores EXIF Orientation; the thumbnailer applies it.
++                        property string photoUrl: editingAvailable ? "image://photo/%1".arg(fileURL.toString())
++                                                                   : "image://thumbnailer/%1".arg(fileURL.toString())
+                         property string url: fileURL.toString().replace("file://", "");
+                         Image {
+                             id: image
++                            autoTransform: true   // FP6: honour EXIF Orientation
+                             anchors.fill: parent
+                             asynchronous: true
+                             cache: false
+@@ -282,6 +287,7 @@
+ 
+                         Image {
+                             id: highResolutionImage
++                            autoTransform: true   // FP6: honour EXIF Orientation
+                             anchors.fill: parent
+                             asynchronous: true
+                             cache: false

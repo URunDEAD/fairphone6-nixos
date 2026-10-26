@@ -1,0 +1,11 @@
+{
+  "input_sha256": "7a924c8a79d526f0258896a0d048ac85b73fa989d273511b1e5e3e94f7f5d0ce",
+  "input": "upstream/fp6-vendor-static/com.qti.sensormodule.tsp_s5kkd1sp_fp6.bin",
+  "source": "upstream/fp6-vendor-static-sources.json",
+  "output_sha256": "42e47a8efaa51e1370599a827f5a45603e54220265f5763cfb79197703c20f68",
+  "bytes": 3976,
+  "init_node": 7426,
+  "mode_node": 1271,
+  "ordering_and_delays_preserved": true,
+  "payload_license": "Retains original public vendor firmware provenance; not relicensed as GPL source."
+}

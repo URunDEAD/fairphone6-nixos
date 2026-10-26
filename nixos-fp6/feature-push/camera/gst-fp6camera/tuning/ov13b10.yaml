@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: CC0-1.0
+# FP6 wide camera (OmniVision OV13B10) - minimal softISP tuning.
+# blackLevel: OV13B10 BLC target is 0x40 at 10 bit (64 -> 4096 on the 16-bit
+# scale). Without a fixed value the softISP only ever lowers its estimate from
+# 16/256 in dark scenes, lifting the noise floor (flat, washed blacks).
+# No colour chart data yet: no CCM, gray-world AWB.
+# Af: the module has a dw9714 VCM (lens control exposed by the driver).
+%YAML 1.1
+---
+version: 1
+algorithms:
+  - BlackLevel:
+      blackLevel: 4096
+  - Awb:
+  - Adjust:
+  - Agc:
+  - Af:
+...

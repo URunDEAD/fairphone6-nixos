@@ -1,0 +1,13 @@
+--- a/src/quick/items/qquickborderimage.cpp
++++ b/src/quick/items/qquickborderimage.cpp
+@@ -467,6 +467,10 @@
+ {
+     Q_D(QQuickBorderImage);
+ 
++    // A superseded reply can finish before its deferred deletion.
++    if (!d->sciReply || sender() != d->sciReply)
++        return;
++
+     d->redirectCount++;
+     if (d->redirectCount < BORDERIMAGE_MAX_REDIRECT) {
+         QVariant redirect = d->sciReply->attribute(QNetworkRequest::RedirectionTargetAttribute);

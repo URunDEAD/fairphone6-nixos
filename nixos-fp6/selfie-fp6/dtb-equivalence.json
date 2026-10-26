@@ -1,0 +1,39 @@
+{
+  "PASS": true,
+  "original_kernel3_sha256": "b5f594482f69fdc743d3e66c755340f01a666050c432c8454eff2dd6943bf4f8",
+  "baseline_with_exact_kernel_dtc_and_symbols_byte_identical": true,
+  "candidate_sha256": "93bfe406603df92627f43d9740b201d6b5781da40773105c627ccdd6580e65cc",
+  "original_bytes": 118526,
+  "candidate_bytes": 119552,
+  "existing_phandles_preserved": 377,
+  "removed_nodes": [],
+  "changed_existing_properties": [],
+  "added_nodes": [
+    "/soc@0/camss@ac13000/ports/port@3/endpoint",
+    "/soc@0/cci@ac16000/i2c-bus@1/camera@3d",
+    "/soc@0/cci@ac16000/i2c-bus@1/camera@3d/port",
+    "/soc@0/cci@ac16000/i2c-bus@1/camera@3d/port/endpoint",
+    "/soc@0/pinctrl@f100000/kd1-mclk3-default-state",
+    "/soc@0/pinctrl@f100000/kd1-reset-default-state"
+  ],
+  "added_existing_node_properties": [
+    [
+      "/__symbols__",
+      "kd1_reset_default"
+    ],
+    [
+      "/__symbols__",
+      "kd1_ep"
+    ],
+    [
+      "/__symbols__",
+      "kd1_mclk3_default"
+    ],
+    [
+      "/__symbols__",
+      "kd1_csiphy3_ep"
+    ]
+  ],
+  "reservation_map_identical": true,
+  "no_normalization_of_arbitrary_cells_or_phandles_required": true
+}

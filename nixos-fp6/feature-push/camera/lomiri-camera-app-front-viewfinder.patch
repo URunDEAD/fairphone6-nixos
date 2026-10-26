@@ -1,0 +1,36 @@
+FP6: front viewfinder orientation for a source that does not mirror the front
+frames (libcamera). Upstream rotates the front viewfinder by (360 - sensor
+orientation) assuming HAL-mirrored frames, which with unmirrored frames shows
+the preview 180 degrees off from the saved photo (EXIF = sensor orientation
+for an upright device). Use the sensor orientation for both cameras and
+mirror the front preview (only the preview) left-right.
+
+--- a/qml/Viewfinder/ViewFinderView.qml	2026-10-26 13:27:41.294004577 +0200
++++ b/qml/Viewfinder/ViewFinderView.qml	2026-10-26 13:27:41.333442629 +0200
+@@ -280,19 +280,19 @@
+                 // Camera-app uses X-Lomiri-Rotates-Window-Contents, which means we're always in
+                 // native orientation. Thus, Screen.orientation isn't used here.
+ 
+-                if (camera.position === Camera.FrontFace) {
+-                    // Front facing cameras are flipped horizontally, compensate the mirror
+-                    return (360 - camera.orientation) % 360;
+-                } else {
+-                    return camera.orientation;
+-                }
++                // FP6 (libcamera via fp6camerabinsrc): front frames are NOT
++                // mirrored by the source (unlike the Android HAL), so both
++                // cameras use the sensor orientation as is; the selfie mirror
++                // is done by the transform below, preview only. Saved photos
++                // stay unmirrored with EXIF orientation (360 - device) + sensor.
++                return camera.orientation;
+             }
+ 
+             transform: Rotation {
+                 origin.x: viewFinder.width / 2
+                 origin.y: viewFinder.height / 2
+                 axis.x: 0; axis.y: 1; axis.z: 0
+-                angle: application.desktopMode ? 180 : 0
++                angle: (application.desktopMode || camera.position === Camera.FrontFace) ? 180 : 0
+             }
+         }
+ 

@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: CC0-1.0
+# FP6 front camera (Samsung S5KKD1, fp6-s5kkd1 driver) - minimal softISP tuning.
+# blackLevel: 10-bit pedestal 64 (Samsung default) -> 4096 on the 16-bit
+# scale; replaces the downward-only auto estimate that flattened low-light
+# frames. Fixed focus, no lens. No colour chart data yet: no CCM.
+%YAML 1.1
+---
+version: 1
+algorithms:
+  - BlackLevel:
+      blackLevel: 4096
+  - Awb:
+  - Adjust:
+  - Agc:
+...

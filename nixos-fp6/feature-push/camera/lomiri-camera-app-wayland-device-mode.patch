@@ -1,0 +1,18 @@
+FP6: Lomiri/Mir phone sessions use the "wayland" QPA platform. Upstream 4.1.1
+treats every non-ubuntu platform as desktop mode, and ViewFinderView.qml then
+mirrors the viewfinder left-right (webcam style). Photos are not mirrored, so
+the viewfinder disagreed with the saved files.
+
+--- a/cameraapplication.cpp	2026-10-26 13:06:10.287659448 +0200
++++ b/cameraapplication.cpp	2026-10-26 13:23:51.302924097 +0200
+@@ -81,7 +81,9 @@
+   // in name means it's running on device
+   // TODO: replace this check with SDK call for formfactor
+   QString platform = QGuiApplication::platformName();
+-  return !((platform == "ubuntu") || (platform == "ubuntumirclient"));
++  // FP6: Lomiri on Mir serves phone apps over the "wayland" platform.
++  return !((platform == "ubuntu") || (platform == "ubuntumirclient")
++           || (platform == "wayland"));
+ #endif
+ }
+ 

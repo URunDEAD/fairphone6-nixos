@@ -1,0 +1,56 @@
+--- a/src/ipa/libipa/camera_sensor_helper.cpp
++++ b/src/ipa/libipa/camera_sensor_helper.cpp
+@@ -852,4 +852,17 @@
+ REGISTER_CAMERA_SENSOR_HELPER("vd56g3", CameraSensorHelperVd56g3)
+ 
++class CameraSensorHelperFp6S5kkd1 : public CameraSensorHelper
++{
++public:
++	CameraSensorHelperFp6S5kkd1()
++	{
++		/* Both pinned S5KKD1 donor drivers: reg = gain * 32 / BASEGAIN.
++		 * V4L2 publishes register codes, so normalized gain = code / 32.
++		 */
++		gain_ = AnalogueGainLinear{ 1, 0, 0, 32 };
++	}
++};
++REGISTER_CAMERA_SENSOR_HELPER("fp6-s5kkd1", CameraSensorHelperFp6S5kkd1)
++
+ #endif /* __DOXYGEN__ */
+ 
+--- a/test/ipa/libipa/meson.build
++++ b/test/ipa/libipa/meson.build
+@@ -3,1 +3,2 @@
+ libipa_test = [
++    {'name': 'fp6_selfie_sensor_helper', 'sources': ['fp6_selfie_sensor_helper.cpp']},
+--- /dev/null
++++ b/test/ipa/libipa/fp6_selfie_sensor_helper.cpp
+@@ -0,0 +1,28 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++#include <cmath>
++#include <iostream>
++#include "camera_sensor_helper.h"
++#include "test.h"
++using namespace libcamera;
++using namespace ipa;
++class Fp6SelfieSensorHelperTest : public Test
++{
++protected:
++	int run() override
++	{
++		auto sensor = CameraSensorHelperFactoryBase::create("fp6-s5kkd1");
++		if (!sensor)
++			return TestFail;
++		/* Exact kernel control minimum/default/maximum plus intermediate gains. */
++		for (double gain : { 1.0, 1.5, 2.0, 4.0, 8.0, 64.0 }) {
++			unsigned int code = static_cast<unsigned int>(gain * 32);
++			if (sensor->gainCode(gain) != code ||
++			    std::abs(sensor->gain(code) - gain) > 1e-8) {
++				std::cerr << "S5KKD1 gain code mismatch at " << gain << "x\n";
++				return TestFail;
++			}
++		}
++		return TestPass;
++	}
++};
++TEST_REGISTER(Fp6SelfieSensorHelperTest)

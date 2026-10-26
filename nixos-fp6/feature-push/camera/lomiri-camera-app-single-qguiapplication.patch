@@ -1,0 +1,18 @@
+--- a/main.cpp
++++ b/main.cpp
+@@ -32,11 +32,13 @@
+ 
+ int main(int argc, char** argv)
+ {
+-    QGuiApplication app(argc, argv);
++    // FP6: CameraApplication is itself the QGuiApplication. A second
++    // QGuiApplication instance opens a second Wayland connection and hangs
++    // before the QML engine starts (Qt 5.15 qtwayland, Lomiri/Mir).
+     QCoreApplication::setApplicationName("camera.ubports");
+     // Necessary for Qt.labs.settings to work
+     // Ref.: https://bugs.launchpad.net/ubuntu-ui-toolkit/+bug/1354321
+-    QCoreApplication::setOrganizationDomain(QGuiApplication::applicationName());
++    QCoreApplication::setOrganizationDomain(QCoreApplication::applicationName());
+     QCoreApplication::setApplicationVersion(projectVersion());
+     CameraApplication application(argc, argv);
+ 
