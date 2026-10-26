@@ -161,16 +161,46 @@ fn set_action_state(session: &Connection, dest: &str, path: &str, name: &str, va
 /// Lomiri's silent mode: indicator-sound's "silent-mode" action (it keeps
 /// AccountsService com.lomiri.touch.AccountsService.Sound.SilentMode, which
 /// Lomiri and telephony-service follow for the ringer and notifications).
-pub fn silent_mode(session: Option<&Connection>) -> Result<bool, String> {
-    let session = session.ok_or("no session bus")?;
-    let v = action_state(session, INDICATOR_SOUND, INDICATOR_SOUND_PATH, "silent-mode").map_err(|e| format!("silent-mode: {e}"))?;
-    bool::try_from(&v).map_err(|e| format!("silent-mode state: {e}"))
+/// Without the indicator (greeter, restart) the AccountsService property
+/// itself, which the user may write.
+pub fn silent_mode(buses: &Buses) -> Result<bool, String> {
+    if let Some(session) = buses.session.as_ref() {
+        if let Ok(v) = action_state(session, INDICATOR_SOUND, INDICATOR_SOUND_PATH, "silent-mode") {
+            return bool::try_from(&v).map_err(|e| format!("silent-mode state: {e}"));
+        }
+    }
+    let system = buses.system.as_ref().ok_or("no bus for silent mode")?;
+    let reply = system
+        .call_method(Some(ACCOUNTS), accounts_path().as_str(), Some("org.freedesktop.DBus.Properties"), "Get", &(ACCOUNTS_SOUND, "SilentMode"))
+        .map_err(|e| format!("SilentMode: {e}"))?;
+    let v: OwnedValue = reply.body().deserialize().map_err(|e| format!("SilentMode: {e}"))?;
+    bool::try_from(&v).map_err(|e| format!("SilentMode: {e}"))
 }
 
-pub fn set_silent_mode(session: Option<&Connection>, on: bool) -> Result<(), String> {
-    let session = session.ok_or("no session bus")?;
-    set_action_state(session, INDICATOR_SOUND, INDICATOR_SOUND_PATH, "silent-mode", Value::from(on))
-        .map_err(|e| format!("silent-mode SetState: {e}"))
+pub fn set_silent_mode(buses: &Buses, on: bool) -> Result<(), String> {
+    if let Some(session) = buses.session.as_ref() {
+        if set_action_state(session, INDICATOR_SOUND, INDICATOR_SOUND_PATH, "silent-mode", Value::from(on)).is_ok() {
+            return Ok(());
+        }
+    }
+    let system = buses.system.as_ref().ok_or("no bus for silent mode")?;
+    system
+        .call_method(
+            Some(ACCOUNTS),
+            accounts_path().as_str(),
+            Some("org.freedesktop.DBus.Properties"),
+            "Set",
+            &(ACCOUNTS_SOUND, "SilentMode", Value::from(on)),
+        )
+        .map(|_| ())
+        .map_err(|e| format!("SilentMode Set: {e}"))
+}
+
+const ACCOUNTS: &str = "org.freedesktop.Accounts";
+const ACCOUNTS_SOUND: &str = "com.lomiri.touch.AccountsService.Sound";
+
+fn accounts_path() -> String {
+    format!("/org/freedesktop/Accounts/User{}", unsafe { libc::getuid() })
 }
 
 /// indicator-sound "volume" state (0..1).

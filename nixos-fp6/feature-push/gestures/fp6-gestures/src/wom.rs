@@ -41,6 +41,22 @@ pub fn roc_value(threshold_g: f64, odr: f64) -> f64 {
     threshold_g * 9.80665 * odr
 }
 
+/// What to write so the driver's integer division lands on the intended
+/// hardware step (3 LSB written exactly reads back as 2): +0.5 %.
+pub fn roc_write_value(threshold_g: f64, odr: f64) -> f64 {
+    roc_value(threshold_g * 1.005, odr)
+}
+
+/// Hardware step the driver derives from a written value (floor division,
+/// as inv_icm42600_accel_convert_roc_to_wom).
+#[cfg(test)]
+pub fn driver_steps(roc: f64, odr: f64) -> u64 {
+    let roc_u = (roc * 1e6).floor() as u64; // the IIO core parses micro units
+    let freq_uhz = (odr * 1e6) as u64;
+    let convert = 9807u64 * 1000 / 256;
+    roc_u * 1_000_000 / (freq_uhz * convert)
+}
+
 /// (event timestamp ns, CLOCK_REALTIME by default) from one 16-byte record.
 pub fn parse_event(buf: &[u8]) -> Option<i64> {
     if buf.len() < 16 {
@@ -76,7 +92,7 @@ impl Wom {
     }
 
     pub fn set_threshold(&self, threshold_g: f64) -> io::Result<()> {
-        std::fs::write(self.dir.join(VALUE), format!("{:.6}", roc_value(threshold_g, self.odr())))
+        std::fs::write(self.dir.join(VALUE), format!("{:.6}", roc_write_value(threshold_g, self.odr())))
     }
 
     pub fn enable(&self, on: bool) -> io::Result<()> {
@@ -144,6 +160,13 @@ mod tests {
     fn roc_matches_the_driver_conversion() {
         // Measured on the phone: 1 hardware LSB at 50 Hz reads back 1.915400.
         assert!((roc_value(HW_LSB_G * 1.0, 50.0) - 1.9154).abs() < 0.002);
+        // Measured: writing 3 LSB exactly read back 3.830800 (2 LSB).
+        assert_eq!(driver_steps(roc_value(3.0 * HW_LSB_G, 50.0), 50.0), 2);
+        for steps in 1..=20u64 {
+            for odr in [12.5, 25.0, 50.0, 100.0] {
+                assert_eq!(driver_steps(roc_write_value(steps as f64 * HW_LSB_G, odr), odr), steps, "{steps} {odr}");
+            }
+        }
         let mut rec = [0u8; 16];
         rec[8..16].copy_from_slice(&123i64.to_ne_bytes());
         assert_eq!(parse_event(&rec), Some(123));

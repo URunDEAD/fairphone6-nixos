@@ -62,12 +62,12 @@ fn main() {
         Some("silent") => {
             let b = Buses::connect();
             if let Some(v) = args.get(1) {
-                if let Err(e) = actions::set_silent_mode(b.session.as_ref(), v == "on") {
+                if let Err(e) = actions::set_silent_mode(&b, v == "on") {
                     eprintln!("{e}");
                     std::process::exit(1);
                 }
             }
-            println!("{:?}", actions::silent_mode(b.session.as_ref()));
+            println!("{:?}", actions::silent_mode(&b));
             0
         }
         Some("media") => {
@@ -364,9 +364,9 @@ fn run_job(buses: &Buses, shared: &Shared, job: Job) {
             if !config.flip_to_silence {
                 return;
             }
-            match actions::silent_mode(buses.session.as_ref()) {
+            match actions::silent_mode(buses) {
                 Ok(true) => log("face down: already silent, nothing to do"),
-                Ok(false) => match actions::set_silent_mode(buses.session.as_ref(), true) {
+                Ok(false) => match actions::set_silent_mode(buses, true) {
                     Ok(()) => {
                         set_flip_flag(shared, true);
                         log("face down: silent mode on");
@@ -385,8 +385,8 @@ fn run_job(buses: &Buses, shared: &Shared, job: Job) {
             }
             // Restore only what flip changed: if the user switched silent mode
             // off meanwhile, leave it.
-            match actions::silent_mode(buses.session.as_ref()) {
-                Ok(true) => match actions::set_silent_mode(buses.session.as_ref(), false) {
+            match actions::silent_mode(buses) {
+                Ok(true) => match actions::set_silent_mode(buses, false) {
                     Ok(()) => log("face up: silent mode off again"),
                     Err(e) => return log(e),
                 },
