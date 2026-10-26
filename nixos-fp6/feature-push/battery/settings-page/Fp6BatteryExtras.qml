@@ -32,46 +32,37 @@ Column {
     SettingsListItems.SingleValue {
         objectName: "fp6TimeToFull"
         visible: model.plugged && model.fullText() !== ""
-        text: " "
+        text: model.limit && model.limit.mode === "hold" ? i18n.tr("Adaptive charging") : i18n.tr("Charge status")
         value: model.fullText()
         showDivider: false
     }
 
     SettingsItemTitle { text: i18n.tr("Battery protection and saving") }
 
-    SettingsListItems.StandardProgression {
+    SettingsListItems.SingleValueProgression {
         objectName: "fp6BatterySaver"
         text: i18n.tr("Battery saver")
-        Label {
-            SlotsLayout.position: SlotsLayout.Trailing
-            text: model.saver && model.saver.active ? (model.saver.auto ? i18n.tr("On (low battery)") : i18n.tr("On"))
+        value: model.saver && model.saver.active ? (model.saver.auto ? i18n.tr("On (low battery)") : i18n.tr("On"))
                                                     : i18n.tr("Off")
-        }
         onClicked: extras.open("Fp6SaverPage.qml")
     }
 
-    SettingsListItems.StandardProgression {
+    SettingsListItems.SingleValueProgression {
         objectName: "fp6ChargeLimit"
         text: i18n.tr("Charge limit")
-        Label {
-            SlotsLayout.position: SlotsLayout.Trailing
-            text: {
+        value: {
                 var l = model.settings.chargeLimit
                 var s = l >= 100 ? i18n.tr("Off") : l + " %"
                 if (model.settings.adaptiveCharging) s += i18n.tr(", adaptive")
                 return s
             }
-        }
         onClicked: extras.open("Fp6ChargingPage.qml")
     }
 
-    SettingsListItems.StandardProgression {
+    SettingsListItems.SingleValueProgression {
         objectName: "fp6BatteryHealth"
         text: i18n.tr("Battery health and history")
-        Label {
-            SlotsLayout.position: SlotsLayout.Trailing
-            text: model.health && model.health.percent > 0 ? model.health.percent + " %" : ""
-        }
+        value: model.health && model.health.percent > 0 ? model.health.percent + " %" : ""
         onClicked: extras.open("Fp6HealthPage.qml")
     }
 
