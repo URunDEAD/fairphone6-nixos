@@ -230,10 +230,11 @@ in {
         # writable mount proceed without a backup).
         AssertPathExists = [ cfg.stateDir cfg.backupRoot ];
         RequiresMountsFor = [ cfg.backupRoot cfg.stateDir ];
-        # mnt-persist.mount is part of local-fs.target and is ordered after this
-        # unit; default dependencies (after basic.target -> sysinit.target ->
-        # local-fs.target) closed a cycle and systemd dropped
-        # systemd-tmpfiles-setup and others to break it (2026-10-26).
+        # mnt-persist.mount is ordered after this unit and was part of
+        # local-fs.target (before nofail); default dependencies (after
+        # basic.target -> sysinit.target -> local-fs.target) closed a cycle and
+        # systemd dropped systemd-tmpfiles-setup and others to break it
+        # (2026-10-26). Kept off the boot targets either way.
         DefaultDependencies = false;
       };
       conflicts = [ "shutdown.target" ];
@@ -255,12 +256,29 @@ in {
       what = device;
       where = mountPoint;
       type = "ext4";
-      options = "rw,nosuid,nodev,noexec";   # pmOS mnt-persist.mount
+      # pmOS mnt-persist.mount options, plus nofail: a local mount unit is
+      # implicitly Before=local-fs.target unless it has nofail, so the boot
+      # (local-fs -> sysinit -> basic -> display-manager) waited for the
+      # persist device and the ~1 s backup. With nofail only
+      # fp6-fingerprint-persist (Requires/After below) waits for this mount.
+      options = "rw,nosuid,nodev,noexec,nofail";
       requires = [ "fp6-fingerprint-persist-backup.service" ];
       after = [ "fp6-fingerprint-persist-backup.service" ];
       unitConfig.ConditionPathExists = device;
       # Deliberately no wantedBy: only fp6-fingerprint-persist pulls it in.
     } ];
+
+    # x-systemd.device-timeout only works in fstab (systemd.mount(5)); this
+    # is what fstab-generator writes for it. Without the device, the backup,
+    # the mount and the daemon fail after 30 s instead of the default 90 s.
+    # Nothing in the boot targets waits for this device job.
+    systemd.units."${utils.escapeSystemdPath device}.device" = {
+      overrideStrategy = "asDropin";
+      text = ''
+        [Unit]
+        JobRunningTimeoutSec=30s
+      '';
+    };
 
     systemd.services.fp6-fingerprint-persist = {
       description = "FP6 fingerprint daemon, writable persistent secure storage (pmOS layout)";
