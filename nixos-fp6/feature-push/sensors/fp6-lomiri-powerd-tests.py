@@ -204,7 +204,33 @@ GLib.timeout_add(300, loop.quit)
 loop.run()
 check((bl / "brightness").read_text().strip() == "4095", "screen on restores brightness")
 check((touch / "lp_mode").read_text().startswith("0"), "screen on leaves touch LP")
-check(events == [(0, 2), (1, 2)], f"DisplayPowerStateChange signals {events}")
+
+# brightness cap (battery saver): clamps manual/screen-on, keeps the slider value
+cap = dbus.Interface(bus.get_object(m.REPOWERD, m.CAP_PATH), m.CAP_IFACE)
+check(int(cap.GetCap()) == 255, "BrightnessCap defaults to 255 (no cap)")
+capped = []
+bus.add_signal_receiver(lambda c: capped.append(int(c)), signal_name="CapChanged", dbus_interface=m.CAP_IFACE)
+cap.SetCap(128)
+GLib.timeout_add(600, loop.quit)
+loop.run()
+check((bl / "brightness").read_text().strip() == str((128 * 4095 + 127) // 255), "cap lowers the current brightness")
+check(capped == [128], f"CapChanged signal {capped}")
+rep.setUserBrightness(200)
+check((bl / "brightness").read_text().strip() == str((128 * 4095 + 127) // 255), "manual brightness above the cap is clamped")
+scr.setScreenPowerMode("off", 2); scr.setScreenPowerMode("on", 2)
+check((bl / "brightness").read_text().strip() == str((128 * 4095 + 127) // 255), "screen-on restore respects the cap")
+cap.SetCap(255)
+GLib.timeout_add(1200, loop.quit)
+loop.run()
+check((bl / "brightness").read_text().strip() == str((200 * 4095 + 127) // 255), "lifting the cap restores the slider value")
+for bad in (0, 256):
+    try:
+        cap.SetCap(bad)
+        check(False, f"cap {bad} rejected")
+    except dbus.DBusException:
+        check(True, f"cap {bad} rejected")
+rep.setUserBrightness(255)
+check(events[:2] == [(0, 2), (1, 2)], f"DisplayPowerStateChange signals {events}")
 scr.setInactivityTimeouts(60, 30)
 check(True, "setInactivityTimeouts accepted")
 

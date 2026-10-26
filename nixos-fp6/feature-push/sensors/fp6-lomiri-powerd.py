@@ -16,8 +16,18 @@ and caller authorisation, copied here unchanged in behaviour) and adds:
   * optional screen power (Unity.Screen setScreenPowerMode, emitted as
     DisplayPowerStateChange) behind --screen-power, emulated with backlight 0
     plus touch gesture-LP; this backend never suspends the system.
+  * brightness cap (com.fairphone6.BrightnessCap SetCap/GetCap/CapChanged on
+    /com/fairphone6/BrightnessCap) for battery saver: every write is clamped,
+    the slider/auto target is kept and comes back when the cap is lifted.
+  * idle display-off (with --screen-power): Lomiri's setInactivityTimeouts
+    (Settings > Lock when idle = com.lomiri.touch.system activity-timeout,
+    dim-timeout): dim, then display off with reason "inactivity" (Lomiri
+    then locks). Held off by keepDisplayOn requests (freed when their caller
+    leaves the bus) and by proximity handling (calls).
+  * com.fairphone6.PowerKey.Press: one signal per short power press (the
+    privacy-lock SOS counter), independent of the multi-press mode.
 
-Nothing here suspends, changes idle policy, or touches the IMU.
+Nothing here suspends or touches the IMU.
 """
 import argparse
 import math
@@ -72,6 +82,12 @@ POWER_KEY_SHORT_PRESS = 1.0
 POWER_KEY_MULTI_GAP = 0.35
 POWERKEY_IFACE = "com.fairphone6.PowerKey"
 POWERKEY_PATH = "/com/fairphone6/PowerKey"
+# Idle dimming: backlight level (logical) while dimmed before idle display-off.
+IDLE_DIM_VALUE = 10
+# Brightness cap (battery saver, fp6-batteryd): exported on the
+# com.lomiri.Repowerd connection, so the existing bus policy applies.
+CAP_IFACE = "com.fairphone6.BrightnessCap"
+CAP_PATH = "/com/fairphone6/BrightnessCap"
 EVENT = struct.Struct("llHHi")
 
 
@@ -145,6 +161,7 @@ class Backlight:
                  compatible=Path("/proc/device-tree/compatible"), expect_max=4095):
         self.directory = Path(directory)
         self.lock = threading.Lock()
+        self.cap = LOGICAL_MAX       # com.fairphone6.BrightnessCap (logical)
         if compatible is not None and b"fairphone,fp6" not in Path(compatible).read_bytes().split(b"\0"):
             raise RuntimeError("This backend requires fairphone,fp6")
         self.maximum = self._integer("max_brightness")
@@ -186,6 +203,7 @@ class Backlight:
         value = int(value)
         if not 1 <= value <= LOGICAL_MAX:
             raise Invalid("Brightness must be between 1 and 255")
+        value = min(value, self.cap)
         with self.lock:
             if self._integer("max_brightness") != self.maximum:
                 raise Failed("Backlight maximum changed")
@@ -310,6 +328,15 @@ class Core:
     multi_count = 0
     multi_timer = None
     multi_listeners = ()
+    press_listeners = ()          # callables(monotonic time, display on): every short press
+    screen_power = False
+    # idle display-off (Unity.Screen setInactivityTimeouts), 0 = never
+    idle_timeout = 0
+    dim_timeout = 0
+    idle_timer = None
+    idle_dimmed = False
+    last_activity = 0.0
+    display_on_requests = None    # cookie -> D-Bus sender (keepDisplayOn)
 
     def __init__(self, bus, backlight, touch, curve, screen_power, sensors=True):
         self.bus, self.backlight, self.touch = bus, backlight, touch
@@ -427,7 +454,7 @@ class Core:
 
     def _light(self, lux):
         self.lux.push(lux)
-        if self.auto and self.screen_on:
+        if self.auto and self.screen_on and not self.idle_dimmed:
             target = self._auto_target()
             current = self.ramp_target if self.ramp_target is not None else self.backlight.read()
             if needs_change(current, target):
@@ -448,7 +475,7 @@ class Core:
     def _ramp_to(self, target, step_ms=30, step=6):
         """Smooth transition; superseded ramps stop at their next tick."""
         self.ramp_id += 1
-        ramp, self.ramp_target = self.ramp_id, int(target)
+        ramp, self.ramp_target = self.ramp_id, min(int(target), self.backlight.cap)
 
         def tick():
             with self.lock:
@@ -500,6 +527,23 @@ class Core:
         for listener in self.brightness_listeners:
             listener(value)
 
+    def set_cap(self, cap):
+        """Upper bound for every brightness write (manual, auto, ramps,
+        screen-on). user_value is kept, so lifting the cap restores it."""
+        with self.lock:
+            cap = int(cap)
+            if not 1 <= cap <= LOGICAL_MAX:
+                raise Invalid("Brightness cap must be between 1 and 255")
+            if cap == self.backlight.cap:
+                return cap
+            self.backlight.cap = cap
+            log("brightness cap", cap)
+            if self.screen_on:
+                target = self._auto_target() if self.auto else self.user_value
+                if min(target, cap) != self.backlight.read():
+                    self._ramp_to(target)
+            return cap
+
     # display power ----------------------------------------------------------
     def _apply_screen(self, reason):
         want_on = not self.off_reasons
@@ -525,6 +569,7 @@ class Core:
             self._touch_lp(self.dt2w or "proximity" in self.off_reasons)
         self._update_light_claim()
         log("display", "on" if want_on else "off", "reason", reason, sorted(self.off_reasons))
+        self._idle_screen_changed(want_on)
         for listener in self.listeners:
             listener(1 if want_on else 0, reason)
 
@@ -557,6 +602,7 @@ class Core:
             (self.prox_clients.add if enable else self.prox_clients.discard)(str(name))
             log("proximity handling", "enable" if enable else "disable", name, sorted(self.prox_clients))
             self._update_prox_claim()
+            self._idle_rearm()
 
     def set_screen_power(self, mode, reason):
         if not self.screen_power:
@@ -587,6 +633,123 @@ class Core:
                 self.off_reasons.discard("proximity")
             self._apply_screen(int(reason))
             return True
+
+    # idle display-off (privacy-lock) ---------------------------------------
+    # One "next check" timer: it fires at the dim or off point after the last
+    # input and re-arms itself if input came in meanwhile (input only stamps
+    # last_activity, so a stream of touch events costs no timer churn).
+    def set_inactivity_timeouts(self, poweroff, dim):
+        with self.lock:
+            if int(poweroff) >= 0:
+                self.idle_timeout = int(poweroff)
+            if int(dim) >= 0:
+                self.dim_timeout = int(dim)
+            log("inactivity timeouts: display off", self.idle_timeout or "never",
+                "dim", self.dim_timeout or "never")
+            self._idle_cancel()
+            self.idle_activity()
+
+    def _idle_points(self):
+        off = self.idle_timeout if self.screen_power else 0
+        dim = self.dim_timeout if 0 < self.dim_timeout < off else 0
+        return off, dim
+
+    def _idle_blocked(self):
+        return (not self.screen_on or bool(self.prox_clients)
+                or bool(self.display_on_requests))
+
+    def idle_activity(self, now=None):
+        now = time.monotonic() if now is None else now
+        with self.lock:
+            self.last_activity = now
+            if self.idle_dimmed:
+                self._idle_undim()
+            self._idle_arm(now)
+
+    def _idle_cancel(self):
+        if self.idle_timer is not None:
+            GLib.source_remove(self.idle_timer)
+            self.idle_timer = None
+
+    def _idle_arm(self, now=None):
+        if self.idle_timer is not None:
+            return
+        off, dim = self._idle_points()
+        if not off or self._idle_blocked():
+            return
+        now = time.monotonic() if now is None else now
+        due = dim if dim and not self.idle_dimmed else off
+        self.idle_timer = self._schedule(max(0.2, self.last_activity + due - now), self._idle_fire)
+
+    def _idle_rearm(self):
+        with self.lock:
+            self._idle_cancel()
+            if self._idle_blocked():
+                self._idle_undim()
+            else:
+                self._idle_arm()
+
+    def _idle_fire(self, now=None):
+        now = time.monotonic() if now is None else now
+        with self.lock:
+            self.idle_timer = None
+            off, dim = self._idle_points()
+            if not off or self._idle_blocked():
+                self._idle_undim()
+                return
+            idle = now - self.last_activity
+            if idle >= off - 0.05:
+                log("inactivity: display off after", round(idle), "s")
+                self.idle_dimmed = False
+                self.notification_woke = False
+                self.off_reasons.add("user")
+                self._apply_screen(REASON_INACTIVITY)
+                return
+            if dim and not self.idle_dimmed and idle >= dim - 0.05:
+                self._idle_dim()
+            self._idle_arm(now)
+
+    def _idle_dim(self):
+        self.idle_dimmed = True
+        self.ramp_id += 1
+        self.ramp_target = None
+        try:
+            if self.backlight.read() > IDLE_DIM_VALUE:
+                self.backlight.write(IDLE_DIM_VALUE)
+        except Exception as error:
+            log("idle dim failed:", error)
+
+    def _idle_undim(self):
+        if not self.idle_dimmed:
+            return
+        self.idle_dimmed = False
+        if self.screen_on:
+            try:
+                self.backlight.write(self._auto_target() if self.auto else self.user_value)
+            except Exception as error:
+                log("idle undim failed:", error)
+
+    def _idle_screen_changed(self, on):
+        self._idle_cancel()
+        self.idle_dimmed = False
+        if on:
+            self.idle_activity()
+
+    def add_display_on_request(self, cookie, sender):
+        with self.lock:
+            if self.display_on_requests is None:
+                self.display_on_requests = {}
+            self.display_on_requests[int(cookie)] = str(sender or "")
+            self._idle_rearm()
+
+    def remove_display_on_requests(self, cookie=None, sender=None):
+        with self.lock:
+            requests = self.display_on_requests or {}
+            for key in [k for k, v in requests.items()
+                        if (cookie is not None and k == int(cookie)) or (sender is not None and v == sender)]:
+                del requests[key]
+            self._idle_rearm()
+            self.idle_activity()
 
     # double tap -------------------------------------------------------------
     def set_dt2w(self, enabled):
@@ -700,6 +863,7 @@ class Core:
         return True
 
     def volume_down(self, value):
+        self.idle_activity()
         if value == 1:
             self.volume_down_held = True
             if self.power_pressed_at is not None:
@@ -709,6 +873,7 @@ class Core:
 
     def power_key(self, value, now=None):
         now = time.monotonic() if now is None else now
+        self.idle_activity(now)
         if value == 1:
             self.power_pressed_at = now
             self.power_chord = self.volume_down_held
@@ -730,7 +895,15 @@ class Core:
         if held >= POWER_KEY_SHORT_PRESS:
             self._multi_reset()
             return
+        self._announce_press(now)
         self._short_press()
+
+    def _announce_press(self, now):
+        for listener in self.press_listeners:
+            try:
+                listener(now, self.screen_on)
+            except Exception as error:
+                log("power press listener failed:", error)
 
     def _toggle_display(self):
         with self.lock:
@@ -813,6 +986,7 @@ class Core:
                 os.close(fd)
                 self.activity_watch = None
                 return GLib.SOURCE_REMOVE
+            self.idle_activity()
             if self.notification_woke and any(
                     EVENT.unpack_from(data, off)[2] == EV_ABS
                     for off in range(0, len(data) - EVENT.size + 1, EVENT.size)):
@@ -919,7 +1093,7 @@ class Repowerd(dbus.service.Object):
 
     def poll(self):
         try:
-            if self.core.screen_on:
+            if self.core.screen_on and not self.core.idle_dimmed:
                 self.publish(self.core.backlight.read())
         except Exception:
             os._exit(1)
@@ -930,7 +1104,9 @@ class Screen(dbus.service.Object):
     def __init__(self, bus, core, repowerd, authorizer):
         super().__init__(bus, SCREEN_PATH)
         self.core, self.repowerd, self.authorizer = core, repowerd, authorizer
+        self.bus = bus
         self.requests = 0
+        self.request_watches = {}
         core.listeners.append(lambda status, reason: self.DisplayPowerStateChange(status, reason))
 
     @dbus.service.method(SCREEN, in_signature="i", out_signature="", sender_keyword="sender")
@@ -949,9 +1125,8 @@ class Screen(dbus.service.Object):
 
     @dbus.service.method(SCREEN, in_signature="ii", out_signature="")
     def setInactivityTimeouts(self, poweroff_timeout, dimmer_timeout):
-        # Lomiri calls this at startup for every setting; idle policy is out of
-        # scope, accept silently instead of spamming errors.
-        pass
+        # Lomiri calls this at startup and on every change (-1 = unchanged).
+        self.core.set_inactivity_timeouts(poweroff_timeout, dimmer_timeout)
 
     @dbus.service.method(SCREEN, in_signature="", out_signature="b")
     def getDoubleTapToWakeSupported(self):
@@ -964,14 +1139,22 @@ class Screen(dbus.service.Object):
             return   # Lomiri sends the default "false" at startup
         self.core.set_dt2w(enabled)
 
-    @dbus.service.method(SCREEN, in_signature="", out_signature="i")
-    def keepDisplayOn(self):
+    @dbus.service.method(SCREEN, in_signature="", out_signature="i", sender_keyword="sender")
+    def keepDisplayOn(self, sender=None):
+        # Holds off the idle display-off until removed or the caller leaves.
         self.requests += 1
+        self.core.add_display_on_request(self.requests, sender)
+        if sender and sender not in self.request_watches:
+            def owner(name, sender=sender):
+                if not name and sender in self.request_watches:
+                    self.request_watches.pop(sender).cancel()
+                    self.core.remove_display_on_requests(sender=sender)
+            self.request_watches[sender] = self.bus.watch_name_owner(sender, owner)
         return self.requests
 
     @dbus.service.method(SCREEN, in_signature="i", out_signature="")
     def removeDisplayOnRequest(self, cookie):
-        pass
+        self.core.remove_display_on_requests(cookie=cookie)
 
     @dbus.service.signal(SCREEN, signature="ii")
     def DisplayPowerStateChange(self, status, reason):
@@ -986,6 +1169,7 @@ class PowerKey(dbus.service.Object):
         self.bus, self.core, self.authorizer = bus, core, authorizer
         self.owner_watch = None
         core.multi_listeners = [lambda count, on: self.MultiPress(count, on)]
+        core.press_listeners = [lambda now, on: self.Press(dbus.Double(now), on)]
 
     @dbus.service.method(POWERKEY_IFACE, in_signature="i", out_signature="", sender_keyword="sender")
     def SetMultiPress(self, maximum, sender=None):
@@ -1011,6 +1195,35 @@ class PowerKey(dbus.service.Object):
     def MultiPress(self, count, display_on):
         pass
 
+    # Every short press (CLOCK_MONOTONIC seconds, display state before it),
+    # whatever the multi-press mode; the privacy-lock SOS counter listens.
+    @dbus.service.signal(POWERKEY_IFACE, signature="db")
+    def Press(self, monotonic, display_on):
+        pass
+
+
+class BrightnessCap(dbus.service.Object):
+    """Battery-saver brightness cap (fp6-batteryd). 255 = no cap."""
+
+    def __init__(self, bus, core, authorizer):
+        super().__init__(bus, CAP_PATH)
+        self.core, self.authorizer = core, authorizer
+
+    @dbus.service.method(CAP_IFACE, in_signature="i", out_signature="", sender_keyword="sender")
+    def SetCap(self, cap, sender=None):
+        self.authorizer.require(sender)
+        old = self.core.backlight.cap
+        if self.core.set_cap(cap) != old:
+            self.CapChanged(dbus.Int32(self.core.backlight.cap))
+
+    @dbus.service.method(CAP_IFACE, in_signature="", out_signature="i")
+    def GetCap(self):
+        return self.core.backlight.cap
+
+    @dbus.service.signal(CAP_IFACE, signature="i")
+    def CapChanged(self, cap):
+        pass
+
 
 class Service:
     def __init__(self, bus, core, authorizer):
@@ -1018,6 +1231,7 @@ class Service:
         self.repowerd = Repowerd(bus, core, authorizer)
         self.screen = Screen(bus, core, self.repowerd, authorizer)
         self.powerkey = PowerKey(bus, core, authorizer)
+        self.cap = BrightnessCap(bus, core, authorizer)
         self.timer = GLib.timeout_add_seconds(2, self.repowerd.poll)
 
 
