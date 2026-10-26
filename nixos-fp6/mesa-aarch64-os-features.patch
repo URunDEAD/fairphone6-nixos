@@ -1,0 +1,42 @@
+--- a/src/gallium/auxiliary/gallivm/lp_bld_misc.cpp
++++ b/src/gallium/auxiliary/gallivm/lp_bld_misc.cpp
+@@ -317,7 +317,7 @@
+ lp_build_fill_mattrs(std::vector<std::string> &MAttrs)
+ {
+ 
+-#if DETECT_ARCH_ARM
++#if DETECT_ARCH_ARM || DETECT_ARCH_AARCH64
+    /* llvm-3.3+ implements sys::getHostCPUFeatures for Arm,
+     * which allows us to enable/disable code generation based
+     * on the results of cpuid on these architectures.
+@@ -529,7 +529,15 @@
+ 
+    lp_build_dump_mattrs(MAttrs);
+ 
++#if DETECT_ARCH_AARCH64
++   /* A CPU model can imply optional extensions (notably SVE) that the OS
++    * does not expose. Start with the architectural baseline and add only
++    * the OS-enabled features gathered by lp_build_fill_mattrs().
++    */
++   StringRef MCPU = "generic";
++#else
+    StringRef MCPU = llvm::sys::getHostCPUName();
++#endif
+    /*
+     * The cpu bits are no longer set automatically, so need to set mcpu manually.
+     * Note that the MAttrs set above will be sort of ignored (since we should
+--- a/src/gallium/auxiliary/gallivm/lp_bld_init_orc.cpp
++++ b/src/gallium/auxiliary/gallivm/lp_bld_init_orc.cpp
+@@ -445,7 +445,12 @@
+ 
+    lp_build_dump_mattrs(MAttrs);
+ 
++#if DETECT_ARCH_AARCH64
++   /* Match MCJIT: optional CPU-model extensions require OS feature support. */
++   std::string MCPU = "generic";
++#else
+    std::string MCPU = llvm::sys::getHostCPUName().str();
++#endif
+    /*
+     * Note that the MAttrs set above will be sort of ignored (since we should
+     * not set any which would not be set by specifying the cpu anyway).
