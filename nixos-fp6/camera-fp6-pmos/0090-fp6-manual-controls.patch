@@ -1,0 +1,738 @@
+From: Paul Schuldesz <paulschuldesz@gmail.com>
+Subject: [PATCH] FP6: manual exposure/gain/EV/white balance, long exposures
+
+Self-contained FP6 addition, applied after all other camera-fp6-pmos
+patches (keep it last; rebase when the soft IPA changes):
+
+* ipa/simple/fp6_manual.{h,cpp} (new): AeEnable, ExposureTimeMode,
+  ExposureTime, AnalogueGainMode, AnalogueGain, ExposureValue, AwbEnable,
+  ColourGains, ColourTemperature. Applied in processStats() after the
+  regular algorithms, so full auto at EV 0 is untouched. Manual exposure
+  times beyond the default frame length extend V4L2_CID_VBLANK up to the
+  sensor maximum (frame rate drops accordingly); auto always runs at the
+  default frame length. ExposureValue drives the Agc's evFactor (0021);
+  with only one of exposure/gain manual the other follows the Agc's
+  correction (0021). Reports ExposureTimeMode, AnalogueGainMode,
+  AeEnable, ExposureValue, AwbEnable, ColourTemperature (manual),
+  FrameDuration and FrameDurationLimits metadata.
+* pipeline/simple + soft IPA: the IPA gets the configured sensor mode
+  (IPAConfigInfo.sensorInfo) so its line duration matches the running
+  mode; it was taken from the mode at camera creation (on the IMX896 the
+  full-resolution line, 18 % too long, whenever a previous session left
+  that mode set).
+* pipeline/simple: VBLANK in DelayedControls (priority write, before
+  EXPOSURE), and VBLANK reset to the mode default when a session is
+  configured.
+* gstreamer: libcamerasrc also exposes ColourTemperature, AfTrigger,
+  AfState, FrameDuration and FrameDurationLimits; its control lists are
+  accessed under the state lock (set_property raced queueRequest and
+  requestCompleted), and pending controls are attached to a request only
+  once it has its buffers (a request dropped for lack of buffers took the
+  controls with it, so most controls set while streaming were lost).
+
+---
+diff --git a/include/libcamera/ipa/soft.mojom b/include/libcamera/ipa/soft.mojom
+index e5767532..7840d006 100644
+--- a/include/libcamera/ipa/soft.mojom
++++ b/include/libcamera/ipa/soft.mojom
+@@ -11,6 +11,8 @@ import "include/libcamera/ipa/core.mojom";
+ struct IPAConfigInfo {
+ 	libcamera.ControlInfoMap sensorControls;
+ 	libcamera.ControlInfoMap lensControls;
++	/* FP6: the configured sensor mode (line length, size) */
++	libcamera.IPACameraSensorInfo sensorInfo;
+ };
+ 
+ interface IPASoftInterface {
+diff --git a/src/gstreamer/gstlibcamerasrc.cpp b/src/gstreamer/gstlibcamerasrc.cpp
+index 9061f916..aa3c7431 100644
+--- a/src/gstreamer/gstlibcamerasrc.cpp
++++ b/src/gstreamer/gstlibcamerasrc.cpp
+@@ -186,9 +186,6 @@ int GstLibcameraSrcState::queueRequest()
+ 	if (!request)
+ 		return -ENOMEM;
+ 
+-	/* Apply controls */
+-	controls_.applyControls(request);
+-
+ 	std::unique_ptr<RequestWrap> wrap =
+ 		std::make_unique<RequestWrap>(std::move(request));
+ 
+@@ -210,6 +207,18 @@ int GstLibcameraSrcState::queueRequest()
+ 		wrap->attachBuffer(srcpad, buffer);
+ 	}
+ 
++	/*
++	 * Apply the pending controls only now that the request has all its
++	 * buffers: a request dropped above for lack of buffers would otherwise
++	 * take the controls with it (they are cleared once applied), so
++	 * controls set while streaming were mostly lost. lock_: set_property
++	 * may modify them concurrently.
++	 */
++	{
++		GLibLocker locker(&lock_);
++		controls_.applyControls(wrap->request_);
++	}
++
+ 	GST_TRACE_OBJECT(src_, "Requesting buffers");
+ 
+ 	{
+@@ -509,7 +518,10 @@ gst_libcamera_src_open(GstLibcameraSrc *self)
+ 		return false;
+ 	}
+ 
+-	self->state->controls_.setCamera(cam);
++	{
++		GLibLocker locker(&self->state->lock_);
++		self->state->controls_.setCamera(cam);
++	}
+ 
+ 	cam->requestCompleted.connect(self->state, &GstLibcameraSrcState::requestCompleted);
+ 
+@@ -990,11 +1002,13 @@ gst_libcamera_src_set_property(GObject *object, guint prop_id,
+ 		g_clear_pointer(&self->sensor_config, gst_structure_free);
+ 		self->sensor_config = (GstStructure *)g_value_dup_boxed(value);
+ 		break;
+-	default:
++	default: {
++		GLibLocker locker(&state->lock_);
+ 		if (!state->controls_.setProperty(prop_id - PROP_LAST, value, pspec))
+ 			G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
+ 		break;
+ 	}
++	}
+ }
+ 
+ static void
+@@ -1012,11 +1026,13 @@ gst_libcamera_src_get_property(GObject *object, guint prop_id, GValue *value,
+ 	case PROP_SENSOR_CONFIG:
+ 		g_value_set_boxed(value, self->sensor_config);
+ 		break;
+-	default:
++	default: {
++		GLibLocker locker(&state->lock_);
+ 		if (!state->controls_.getProperty(prop_id - PROP_LAST, value, pspec))
+ 			G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
+ 		break;
+ 	}
++	}
+ }
+ 
+ static GstStateChangeReturn
+diff --git a/src/ipa/simple/fp6_manual.cpp b/src/ipa/simple/fp6_manual.cpp
+new file mode 100644
+index 00000000..83a66234
+--- /dev/null
++++ b/src/ipa/simple/fp6_manual.cpp
+@@ -0,0 +1,363 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++/*
++ * FP6 manual camera controls for the simple (software ISP) IPA
++ *
++ * Semantics (libcamera control definitions):
++ *  - ExposureTimeMode/AnalogueGainMode Manual use ExposureTime/AnalogueGain
++ *    (the last value received, in any mode, as libcamerasrc may send value
++ *    and mode in different requests); without any value received yet the
++ *    current one is kept (lock). AeEnable false = both manual, true = both
++ *    auto. The same holds for AwbEnable and ColourGains/ColourTemperature.
++ *  - Exposure times above what the default frame length allows extend the
++ *    frame length through V4L2_CID_VBLANK up to the sensor maximum; the
++ *    frame rate drops accordingly. Auto modes always run at the default
++ *    frame length.
++ *  - ExposureValue sets the Agc's evFactor (2^EV); full auto stays the
++ *    Agc's. With exactly one of exposure/gain manual, the other one follows
++ *    the Agc's undamped correction (activeState.agc.correction), softened.
++ *  - AwbEnable false = manual white balance from ColourGains, else from
++ *    ColourTemperature (white point locus of the tuning file's Awb, or a
++ *    generic locus), else the current gains are kept (lock).
++ */
++
++#include "fp6_manual.h"
++
++#include <algorithm>
++#include <array>
++#include <cmath>
++#include <vector>
++
++#include <linux/v4l2-controls.h>
++
++#include <libcamera/base/log.h>
++
++#include <libcamera/control_ids.h>
++
++#include "libcamera/internal/vector.h"
++
++namespace libcamera {
++
++LOG_DEFINE_CATEGORY(IPASoftFp6Manual)
++
++namespace ipa::soft::fp6 {
++
++namespace {
++
++/* Softening of the Agc correction applied to the automatic parameter */
++constexpr double kCorrectionPower = 0.65;
++
++constexpr int32_t kMaxExposureUs = 600 * 1000 * 1000;
++
++struct LocusPoint {
++	double ct;
++	double r;
++	double b;
++};
++
++/*
++ * Generic locus when the tuning file has none (IMX896 calibration; only
++ * roughly right for other Bayer sensors, but monotonic in temperature).
++ */
++const std::array<LocusPoint, 7> kGenericLocus = { {
++	{ 1900, 0.878997, 4.771635 },
++	{ 2300, 1.119141, 3.340533 },
++	{ 2856, 1.377957, 2.769483 },
++	{ 5000, 2.037341, 1.809127 },
++	{ 6504, 2.367133, 1.574040 },
++	{ 7504, 2.741927, 1.357219 },
++	{ 9500, 4.508486, 1.012164 },
++} };
++
++std::vector<LocusPoint> locus;
++
++void locusGains(double ct, double &r, double &b)
++{
++	if (ct <= locus.front().ct) {
++		r = locus.front().r;
++		b = locus.front().b;
++		return;
++	}
++	if (ct >= locus.back().ct) {
++		r = locus.back().r;
++		b = locus.back().b;
++		return;
++	}
++	for (size_t i = 1; i < locus.size(); i++) {
++		const LocusPoint &p0 = locus[i - 1];
++		const LocusPoint &p1 = locus[i];
++		if (ct > p1.ct)
++			continue;
++		/* interpolate in mired, which is closer to linear in gains */
++		const double m = 1e6 / ct, m0 = 1e6 / p0.ct, m1 = 1e6 / p1.ct;
++		const double t = (m - m0) / (m1 - m0);
++		r = p0.r + t * (p1.r - p0.r);
++		b = p0.b + t * (p1.b - p0.b);
++		return;
++	}
++}
++
++unsigned int locusTemperature(double r, double b)
++{
++	/* log(R/B) grows monotonically with the temperature along the locus */
++	const double q = std::log(r / std::max(b, 1e-3));
++	auto lq = [](const LocusPoint &p) { return std::log(p.r / p.b); };
++
++	if (q <= lq(locus.front()))
++		return std::lround(locus.front().ct);
++	if (q >= lq(locus.back()))
++		return std::lround(locus.back().ct);
++	for (size_t i = 1; i < locus.size(); i++) {
++		const double q0 = lq(locus[i - 1]), q1 = lq(locus[i]);
++		if (q > q1)
++			continue;
++		const double t = (q - q0) / (q1 - q0);
++		const double m = 1e6 / locus[i - 1].ct +
++				 t * (1e6 / locus[i].ct - 1e6 / locus[i - 1].ct);
++		return std::lround(1e6 / m);
++	}
++	return std::lround(locus.back().ct);
++}
++
++} /* namespace */
++
++void init(const ValueNode &algorithms, ControlInfoMap::Map &ctrlMap)
++{
++	ctrlMap[&controls::AeEnable] = ControlInfo(false, true, true);
++	ctrlMap[&controls::ExposureTimeMode] =
++		ControlInfo(controls::ExposureTimeModeValues,
++			    ControlValue(static_cast<int32_t>(controls::ExposureTimeModeAuto)));
++	ctrlMap[&controls::ExposureTime] = ControlInfo(1, kMaxExposureUs, 33333);
++	ctrlMap[&controls::AnalogueGainMode] =
++		ControlInfo(controls::AnalogueGainModeValues,
++			    ControlValue(static_cast<int32_t>(controls::AnalogueGainModeAuto)));
++	ctrlMap[&controls::AnalogueGain] = ControlInfo(1.0f, 64.0f, 1.0f);
++	ctrlMap[&controls::ExposureValue] = ControlInfo(-8.0f, 8.0f, 0.0f);
++	ctrlMap[&controls::AwbEnable] = ControlInfo(false, true, true);
++	ctrlMap[&controls::ColourGains] = ControlInfo(0.0f, 16.0f, 1.0f);
++	ctrlMap[&controls::ColourTemperature] = ControlInfo(1500, 15000, 5000);
++
++	locus.clear();
++	if (algorithms.isList()) {
++		for (const ValueNode &algo : algorithms.asList()) {
++			if (!algo.isDictionary() || !algo.contains("Awb"))
++				continue;
++			const ValueNode &wps = algo["Awb"]["whitePoints"];
++			if (!wps.isList())
++				continue;
++			for (const ValueNode &node : wps.asList()) {
++				auto ct = node["ct"].get<double>();
++				auto gains = node["gains"].get<Vector<double, 2>>();
++				if (ct && gains && (*gains)[0] > 0 && (*gains)[1] > 0)
++					locus.push_back({ *ct, (*gains)[0], (*gains)[1] });
++			}
++		}
++	}
++	if (locus.size() < 2)
++		locus.assign(kGenericLocus.begin(), kGenericLocus.end());
++	std::sort(locus.begin(), locus.end(),
++		  [](const LocusPoint &a, const LocusPoint &b) { return a.ct < b.ct; });
++}
++
++void configure(IPAContext &context, const ControlInfoMap &sensorControls)
++{
++	auto &f = context.configuration.fp6;
++	auto &s = context.activeState.fp6;
++
++	f = {};
++	f.exposureMaxDef = context.configuration.agc.exposureMax;
++	f.frameLinesDef = f.exposureMaxDef;
++
++	auto it = sensorControls.find(V4L2_CID_VBLANK);
++	if (it != sensorControls.end()) {
++		f.vblankAvailable = true;
++		f.vblankMin = it->second.min().get<int32_t>();
++		f.vblankMax = it->second.max().get<int32_t>();
++		f.vblankDef = it->second.def().get<int32_t>();
++		const int32_t h = context.sensorInfo.outputSize.height;
++		const int32_t lines = h + f.vblankDef;
++		/* the sensor info is from init time: use it only if consistent */
++		if (h > 0 && lines >= f.exposureMaxDef && lines - f.exposureMaxDef < 256)
++			f.frameLinesDef = lines;
++		if (f.vblankMax < f.vblankDef)
++			f.vblankAvailable = false;
++	}
++
++	s = {};
++
++	LOG(IPASoftFp6Manual, Info)
++		<< "vblank " << (f.vblankAvailable ? "available" : "unavailable")
++		<< " def " << f.vblankDef << " max " << f.vblankMax
++		<< ", exposure max " << f.exposureMaxDef << " lines at default"
++		<< ", " << f.exposureMaxDef + (f.vblankAvailable ? f.vblankMax - f.vblankDef : 0)
++		<< " lines extended";
++}
++
++void queueRequest(IPAContext &context, const ControlList &controls)
++{
++	auto &s = context.activeState.fp6;
++	const double lineUs = context.configuration.agc.lineDuration.get<std::micro>();
++	bool expManual = s.exposureManual, gainManual = s.gainManual;
++
++
++	if (const auto v = controls.get(controls::ExposureTime)) {
++		s.exposureUs = std::max(*v, 1);
++		LOG(IPASoftFp6Manual, Debug) << "ExposureTime " << *v;
++	}
++	if (const auto v = controls.get(controls::ExposureTimeMode))
++		LOG(IPASoftFp6Manual, Debug) << "ExposureTimeMode " << *v;
++	if (const auto v = controls.get(controls::AnalogueGain))
++		s.gain = std::max(static_cast<double>(*v), 1.0);
++
++	if (const auto v = controls.get(controls::AeEnable))
++		expManual = gainManual = !*v;
++	if (const auto v = controls.get(controls::ExposureTimeMode))
++		expManual = *v == controls::ExposureTimeModeManual;
++	if (const auto v = controls.get(controls::AnalogueGainMode))
++		gainManual = *v == controls::AnalogueGainModeManual;
++
++	if (expManual && !s.exposureManual && !s.exposureUs)
++		s.exposureUs = std::lround(context.activeState.agc.exposure * lineUs);
++	if (gainManual && !s.gainManual && s.gain <= 0)
++		s.gain = context.activeState.agc.again;
++	/*
++	 * The values are kept in auto mode too: applications (libcamerasrc
++	 * properties) may send the value and the mode in different requests.
++	 */
++	if (expManual != s.exposureManual || gainManual != s.gainManual)
++		LOG(IPASoftFp6Manual, Info)
++			<< "exposure " << (expManual ? "manual" : "auto")
++			<< " (" << s.exposureUs << " us), gain "
++			<< (gainManual ? "manual" : "auto") << " (" << s.gain << ")";
++	s.exposureManual = expManual;
++	s.gainManual = gainManual;
++
++	if (const auto v = controls.get(controls::ExposureValue)) {
++		s.ev = std::clamp(*v, -8.0f, 8.0f);
++		context.activeState.agc.evFactor = std::pow(2.0, s.ev);
++	}
++
++	/* white balance */
++	bool awbManual = s.awbManual;
++	if (const auto v = controls.get(controls::ColourTemperature)) {
++		s.colourTemperature = std::clamp(*v, 1500, 15000);
++		s.awbR = 0;
++	}
++	if (const auto v = controls.get(controls::ColourGains)) {
++		if ((*v)[0] > 0 && (*v)[1] > 0) {
++			s.awbR = (*v)[0];
++			s.awbB = (*v)[1];
++			s.colourTemperature = 0;
++		}
++	}
++	if (const auto v = controls.get(controls::AwbEnable))
++		awbManual = !*v;
++	if (awbManual && !s.awbManual && s.awbR <= 0 && !s.colourTemperature) {
++		s.awbR = context.activeState.awb.gains.r();
++		s.awbB = context.activeState.awb.gains.b();
++	}
++	s.awbManual = awbManual;
++}
++
++int32_t process(IPAContext &context, IPAFrameContext &frameContext,
++		const SwIspStats *stats, int32_t curExposure, double curGain,
++		const ControlList &sensorControls, ControlList &metadata)
++{
++	auto &s = context.activeState.fp6;
++	const auto &f = context.configuration.fp6;
++	const auto &agc = context.configuration.agc;
++	const double lineUs = agc.lineDuration.get<std::micro>();
++	const int32_t expLimit = f.vblankAvailable
++		? f.exposureMaxDef + (f.vblankMax - f.vblankDef)
++		: agc.exposureMax;
++	int32_t &exposure = frameContext.sensor.exposure;
++	double &gain = frameContext.sensor.gain;
++	const bool loop = s.exposureManual != s.gainManual;
++
++	if (s.exposureManual && lineUs > 0)
++		exposure = std::clamp<int32_t>(std::lround(s.exposureUs / lineUs),
++					       agc.exposureMin, expLimit);
++	if (s.gainManual)
++		gain = std::clamp(s.gain, agc.againMin, agc.againMax);
++
++	if (loop) {
++		/* the automatic parameter follows the Agc's correction */
++		if (!s.exposureManual)
++			exposure = std::clamp(curExposure, agc.exposureMin, agc.exposureMax);
++		if (!s.gainManual)
++			gain = std::clamp(curGain, agc.againMin, agc.againMax);
++
++		if (stats->valid) {
++			/*
++			 * Long frames give few statistics per second: take the
++			 * full correction then, so the automatic parameter
++			 * converges in a few frames rather than many seconds.
++			 */
++			const bool longFrame = exposure * lineUs > 200000.0;
++			const double k = std::clamp(std::pow(context.activeState.agc.correction,
++							     longFrame ? 1.0 : kCorrectionPower),
++						    0.25, 4.0);
++			if (s.exposureManual) {
++				gain = std::clamp(gain * k, agc.againMin, agc.againMax);
++			} else {
++				int32_t next = static_cast<int32_t>(std::lround(exposure * k));
++				exposure = std::clamp(next, agc.exposureMin, agc.exposureMax);
++			}
++		}
++	}
++
++	if (s.exposureManual || s.gainManual || loop) {
++		context.activeState.agc.exposure = std::min(exposure, agc.exposureMax);
++		context.activeState.agc.again = gain;
++	}
++
++	if (s.awbManual) {
++		double r = s.awbR, b = s.awbB;
++		unsigned int ct;
++		if (r <= 0 && s.colourTemperature) {
++			ct = s.colourTemperature;
++			locusGains(ct, r, b);
++		} else {
++			if (r <= 0) {
++				r = context.activeState.awb.gains.r();
++				b = context.activeState.awb.gains.b();
++			}
++			ct = locusTemperature(r, b);
++		}
++		context.activeState.awb.gains = { { static_cast<float>(r), 1.0f,
++						    static_cast<float>(b) } };
++		context.activeState.awb.temperatureK = ct;
++		metadata.set(controls::ColourTemperature, static_cast<int32_t>(ct));
++	}
++
++	metadata.set(controls::AeEnable, !(s.exposureManual && s.gainManual));
++	metadata.set(controls::ExposureTimeMode,
++		     static_cast<int32_t>(s.exposureManual ? controls::ExposureTimeModeManual
++							   : controls::ExposureTimeModeAuto));
++	metadata.set(controls::AnalogueGainMode,
++		     static_cast<int32_t>(s.gainManual ? controls::AnalogueGainModeManual
++						       : controls::AnalogueGainModeAuto));
++	metadata.set(controls::ExposureValue, s.ev);
++	metadata.set(controls::AwbEnable, !s.awbManual);
++
++	if (!f.vblankAvailable)
++		return -1;
++
++	int32_t vblankCur = f.vblankDef;
++	if (sensorControls.contains(V4L2_CID_VBLANK))
++		vblankCur = sensorControls.get(V4L2_CID_VBLANK).get<int32_t>();
++	const int64_t frameUs = std::llround((f.frameLinesDef + vblankCur - f.vblankDef) * lineUs);
++	const int64_t minUs = std::llround(f.frameLinesDef * lineUs);
++	const int64_t maxUs = std::llround((f.frameLinesDef + f.vblankMax - f.vblankDef) * lineUs);
++	metadata.set(controls::FrameDuration, frameUs);
++	metadata.set(controls::FrameDurationLimits, { minUs, maxUs });
++
++	/* automatic exposure always runs at the default frame length */
++	if (!s.exposureManual)
++		return f.vblankDef;
++	return std::clamp(f.vblankDef + std::max(0, exposure - f.exposureMaxDef),
++			  f.vblankDef, f.vblankMax);
++}
++
++} /* namespace ipa::soft::fp6 */
++
++} /* namespace libcamera */
+diff --git a/src/ipa/simple/fp6_manual.h b/src/ipa/simple/fp6_manual.h
+new file mode 100644
+index 00000000..d34bd821
+--- /dev/null
++++ b/src/ipa/simple/fp6_manual.h
+@@ -0,0 +1,42 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++/*
++ * FP6 manual camera controls for the simple (software ISP) IPA
++ *
++ * Manual exposure time (including long exposures by extending the sensor
++ * frame length through V4L2_CID_VBLANK), manual analogue gain, exposure
++ * value compensation and manual white balance (gains or colour
++ * temperature). Applied after the regular algorithms, so the automatic
++ * behaviour is untouched while nothing manual is requested.
++ */
++
++#pragma once
++
++#include <stdint.h>
++
++#include <libcamera/controls.h>
++
++#include "libcamera/internal/software_isp/swisp_stats.h"
++#include "libcamera/internal/value_node.h"
++
++#include "ipa_context.h"
++
++namespace libcamera {
++
++namespace ipa::soft::fp6 {
++
++void init(const ValueNode &algorithms, ControlInfoMap::Map &ctrlMap);
++void configure(IPAContext &context, const ControlInfoMap &sensorControls);
++void queueRequest(IPAContext &context, const ControlList &controls);
++
++/*
++ * Called after all algorithms processed the frame. curExposure/curGain are
++ * the values the sensor used for this frame. Returns the VBLANK value to
++ * apply with the next sensor controls, or -1 when the sensor has none.
++ */
++int32_t process(IPAContext &context, IPAFrameContext &frameContext,
++		const SwIspStats *stats, int32_t curExposure, double curGain,
++		const ControlList &sensorControls, ControlList &metadata);
++
++} /* namespace ipa::soft::fp6 */
++
++} /* namespace libcamera */
+diff --git a/src/ipa/simple/ipa_context.h b/src/ipa/simple/ipa_context.h
+index 4760f0c7..1c98a102 100644
+--- a/src/ipa/simple/ipa_context.h
++++ b/src/ipa/simple/ipa_context.h
+@@ -46,6 +46,15 @@ struct IPASessionConfiguration {
+ 		/* Consecutive stats frames the scene has looked different */
+ 		uint32_t lossCount;
+ 	} focus;
++	/* FP6 manual controls (frame length range for long exposures) */
++	struct {
++		bool vblankAvailable;
++		int32_t vblankMin, vblankMax, vblankDef;
++		/* V4L2 exposure maximum at vblankDef */
++		int32_t exposureMaxDef;
++		/* frame length in lines at vblankDef */
++		int32_t frameLinesDef;
++	} fp6;
+ };
+ 
+ struct IPAActiveState {
+@@ -93,6 +102,22 @@ struct IPAActiveState {
+ 		/* One of the controls::AfModeEnum values */
+ 		int32_t af_mode;
+ 	} knobs;
++
++	/* FP6 manual controls: what the application asked for */
++	struct {
++		bool exposureManual;
++		/* requested exposure time; 0 = keep the current one */
++		int32_t exposureUs;
++		bool gainManual;
++		/* requested analogue gain; 0 = keep the current one */
++		double gain;
++		float ev;
++		bool awbManual;
++		/* manual R/B gains; r <= 0 = derive from colourTemperature */
++		float awbR, awbB;
++		/* manual colour temperature; 0 = keep the current gains */
++		unsigned int colourTemperature;
++	} fp6;
+ };
+ 
+ struct IPAFrameContext : public FrameContext {
+diff --git a/src/ipa/simple/meson.build b/src/ipa/simple/meson.build
+index 2f9f15f4..d0f8afe3 100644
+--- a/src/ipa/simple/meson.build
++++ b/src/ipa/simple/meson.build
+@@ -6,6 +6,7 @@ subdir('data')
+ ipa_name = 'ipa_soft_simple'
+ 
+ soft_simple_sources = files([
++    'fp6_manual.cpp',
+     'ipa_context.cpp',
+     'soft_simple.cpp',
+ ])
+diff --git a/src/ipa/simple/soft_simple.cpp b/src/ipa/simple/soft_simple.cpp
+index 51a73d2d..d6abeb47 100644
+--- a/src/ipa/simple/soft_simple.cpp
++++ b/src/ipa/simple/soft_simple.cpp
+@@ -27,6 +27,7 @@
+ #include "libcamera/internal/yaml_parser.h"
+ 
+ #include "algorithms/adjust.h"
++#include "fp6_manual.h"
+ #include "libipa/camera_sensor_helper.h"
+ 
+ #include "module.h"
+@@ -136,6 +137,9 @@ int IPASoftSimple::init(const IPASettings &settings,
+ 	if (ret)
+ 		return ret;
+ 
++	/* FP6 manual controls (0090-fp6-manual-controls.patch) */
++	fp6::init((*data)["algorithms"], context_.ctrlMap);
++
+ 	*ccmEnabled = context_.ccmEnabled;
+ 
+ 	params_ = nullptr;
+@@ -204,6 +208,9 @@ int IPASoftSimple::configure(const IPAConfigInfo &configInfo)
+ {
+ 	sensorInfoMap_ = configInfo.sensorControls;
+ 	lensInfoMap_ = configInfo.lensControls;
++	/* FP6: use the configured mode's line length and size */
++	if (configInfo.sensorInfo.pixelRate && configInfo.sensorInfo.minLineLength)
++		context_.sensorInfo = configInfo.sensorInfo;
+ 
+ 	const ControlInfo &exposureInfo = sensorInfoMap_.find(V4L2_CID_EXPOSURE)->second;
+ 	const ControlInfo &gainInfo = sensorInfoMap_.find(V4L2_CID_ANALOGUE_GAIN)->second;
+@@ -273,6 +280,8 @@ int IPASoftSimple::configure(const IPAConfigInfo &configInfo)
+ 			return ret;
+ 	}
+ 
++	fp6::configure(context_, sensorInfoMap_);
++
+ 	LOG(IPASoft, Info)
+ 		<< "Exposure " << context_.configuration.agc.exposureMin << "-"
+ 		<< context_.configuration.agc.exposureMax
+@@ -299,6 +308,8 @@ void IPASoftSimple::queueRequest(const uint32_t frame, const ControlList &contro
+ 
+ 	for (const auto &algo : algorithms())
+ 		algo->queueRequest(context_, frame, frameContext, controls);
++
++	fp6::queueRequest(context_, controls);
+ }
+ 
+ void IPASoftSimple::computeParams(const uint32_t frame)
+@@ -323,10 +334,15 @@ void IPASoftSimple::processStats(const uint32_t frame,
+ 		sensorControls.get(V4L2_CID_EXPOSURE).get<int32_t>();
+ 	int32_t again = sensorControls.get(V4L2_CID_ANALOGUE_GAIN).get<int32_t>();
+ 	frameContext.sensor.gain = camHelper_ ? camHelper_->gain(again) : again;
++	const int32_t fp6Exposure = frameContext.sensor.exposure;
++	const double fp6Gain = frameContext.sensor.gain;
+ 
+ 	ControlList metadata(controls::controls);
+ 	for (const auto &algo : algorithms())
+ 		algo->process(context_, frame, frameContext, stats_, metadata);
++	const int32_t fp6Vblank = fp6::process(context_, frameContext, stats_,
++					       fp6Exposure, fp6Gain,
++					       sensorControls, metadata);
+ 	metadataReady.emit(frame, metadata);
+ 
+ 	/* Sanity check */
+@@ -342,6 +358,8 @@ void IPASoftSimple::processStats(const uint32_t frame,
+ 	ctrls.set(V4L2_CID_EXPOSURE, frameContext.sensor.exposure);
+ 	ctrls.set(V4L2_CID_ANALOGUE_GAIN,
+ 		  static_cast<int32_t>(camHelper_ ? camHelper_->gainCode(againNew) : againNew));
++	if (fp6Vblank >= 0)
++		ctrls.set(V4L2_CID_VBLANK, fp6Vblank);
+ 
+ 	ControlList lensCtrls(lensInfoMap_);
+ 	if (context_.configuration.focus.available)
+diff --git a/src/libcamera/pipeline/simple/simple.cpp b/src/libcamera/pipeline/simple/simple.cpp
+index 0095ea7a..12cca0ee 100644
+--- a/src/libcamera/pipeline/simple/simple.cpp
++++ b/src/libcamera/pipeline/simple/simple.cpp
+@@ -573,6 +573,13 @@ SimpleCameraData::SimpleCameraData(SimplePipelineHandler *pipe,
+ 		{ V4L2_CID_ANALOGUE_GAIN, { delays.gainDelay, false } },
+ 		{ V4L2_CID_EXPOSURE, { delays.exposureDelay, false } },
+ 	};
++	/*
++	 * FP6 manual controls: long exposures extend the frame length. VBLANK
++	 * is written before EXPOSURE (priority write), as the exposure range
++	 * depends on it.
++	 */
++	if (sensor_->controls().find(V4L2_CID_VBLANK) != sensor_->controls().end())
++		params[V4L2_CID_VBLANK] = { delays.vblankDelay, true };
+ 	delayedCtrls_ = std::make_unique<DelayedControls>(sensor_->device(), params);
+ 
+ 	LOG(SimplePipeline, Debug)
+@@ -832,6 +839,23 @@ int SimpleCameraData::setupFormats(V4L2SubdeviceFormat *format,
+ 	if (ret < 0)
+ 		return ret;
+ 
++	/*
++	 * FP6 manual controls: start every session at the mode's default frame
++	 * length (a previous long exposure may have left VBLANK extended, and
++	 * not every driver resets it on a format change), then refresh the
++	 * control ranges so the IPA sees the default exposure limits.
++	 */
++	if (whence == V4L2Subdevice::ActiveFormat) {
++		V4L2Subdevice *sd = sensor_->device();
++		auto vb = sd->controls().find(V4L2_CID_VBLANK);
++		if (vb != sd->controls().end()) {
++			ControlList vbCtrls(sd->controls());
++			vbCtrls.set(V4L2_CID_VBLANK, vb->second.def());
++			if (sd->setControls(&vbCtrls) == 0)
++				sd->updateControlInfo();
++		}
++	}
++
+ 	for (const Entity &e : entities_) {
+ 		if (!e.sourceLink)
+ 			break;
+@@ -1619,6 +1643,12 @@ int SimplePipelineHandler::configure(Camera *camera, CameraConfiguration *c)
+ 	} else {
+ 		ipa::soft::IPAConfigInfo configInfo;
+ 		configInfo.sensorControls = data->sensor_->controls();
++		/*
++		 * FP6: the IPA's line duration must come from the configured
++		 * mode, not the one the sensor had when the camera was created.
++		 */
++		if (data->sensor_->sensorInfo(&configInfo.sensorInfo))
++			configInfo.sensorInfo = {};
+ 		if (data->sensor_->focusLens() != nullptr)
+ 			configInfo.lensControls = data->sensor_->focusLens()->controls();
+ 		else
+diff --git a/utils/codegen/gen-gst-controls.py b/utils/codegen/gen-gst-controls.py
+index 31f18625..6531dffc 100755
+--- a/utils/codegen/gen-gst-controls.py
++++ b/utils/codegen/gen-gst-controls.py
+@@ -26,6 +26,10 @@ exposed_controls = [
+     'Saturation', 'Sharpness', 'ColourCorrectionMatrix', 'ScalerCrop',
+     'DigitalGain', 'AfMode', 'AfRange', 'AfSpeed', 'AfMetering', 'AfWindows',
+     'LensPosition', 'Gamma',
++    # FP6 manual controls: settable colour temperature and AF trigger,
++    # readable AF state and frame durations (metadata)
++    'ColourTemperature', 'AfTrigger', 'AfState', 'FrameDuration',
++    'FrameDurationLimits',
+ ]
+ 
+ 
