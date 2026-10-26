@@ -1,0 +1,92 @@
+diff --git a/qml/Stage/ChildWindow.qml b/qml/Stage/ChildWindow.qml
+index 0626ddc..ea0c3c4 100644
+--- a/qml/Stage/ChildWindow.qml
++++ b/qml/Stage/ChildWindow.qml
+@@ -42,6 +42,10 @@ FocusScope {
+ 
+     readonly property bool dragging: windowResizeArea.dragging || d.touchOverlayDragging || d.moveHandlerDragging
+ 
++    // fp6: used by ChildWindowTree to fit dialogs into a phone-stage app.
++    readonly property bool fitCandidate: d.decorated
++    readonly property real shownDecorationHeight: decorationLoader.active ? decorationLoader.height : 0
++
+     QtObject {
+         id: d
+         readonly property bool decorated:  surface ? surface.type === Mir.UtilityType
+diff --git a/qml/Stage/ChildWindowTree.qml b/qml/Stage/ChildWindowTree.qml
+index c8053a2..1766ccd 100644
+--- a/qml/Stage/ChildWindowTree.qml
++++ b/qml/Stage/ChildWindowTree.qml
+@@ -29,10 +29,37 @@ FocusScope {
+     property alias boundsItem: childWindow.boundsItem
+     property alias decorationHeight: childWindow.decorationHeight
+ 
+-    x: surface ? surface.position.x * clientScale + displacementX : 0
+-    y: surface ? surface.position.y * clientScale + displacementY : 0
++    // fp6: in the phone stage, decorated child windows (dialogs, transient
++    // toplevels) are fitted into the app's area: the shell asks for at most the
++    // area size (never below the window's minimum size), centres the window,
++    // and if the client still is larger (e.g. GTK's file chooser has a 630 px
++    // minimum width on a 372 px screen) scales it down uniformly so all of it,
++    // including its buttons, stays on screen and touchable. Popups/menus are not
++    // affected. Set from Stage.qml for top-level children.
++    property bool fitToArea: false
++    property real fitAreaX: 0
++    property real fitAreaY: 0
++    property real fitAreaWidth: 0
++    property real fitAreaHeight: 0
++    readonly property bool fitActive: fitToArea && childWindow.fitCandidate
++                                      && fitAreaWidth > 0 && fitAreaHeight > 0
++                                      && childWindow.width > 0 && childWindow.height > 0
++    readonly property real fitDecorationHeight: childWindow.shownDecorationHeight
++    readonly property real fitScale: fitActive
++        ? Math.min(1, fitAreaWidth / childWindow.width,
++                   fitAreaHeight / (childWindow.height + fitDecorationHeight))
++        : 1
++    readonly property real fitMinimumWidth: surface && surface.minimumWidth > 0 ? Math.ceil(surface.minimumWidth * clientScale) : 0
++    readonly property real fitMinimumHeight: surface && surface.minimumHeight > 0 ? Math.ceil(surface.minimumHeight * clientScale) : 0
++
++    x: fitActive ? fitAreaX + (fitAreaWidth - childWindow.width * fitScale) / 2
++                 : (surface ? surface.position.x * clientScale + displacementX : 0)
++    y: fitActive ? fitAreaY + fitDecorationHeight * fitScale
++                       + (fitAreaHeight - (childWindow.height + fitDecorationHeight) * fitScale) / 2
++                 : (surface ? surface.position.y * clientScale + displacementY : 0)
+     width: childWindow.width
+     height: childWindow.height
++    transform: Scale { xScale: root.fitScale; yScale: root.fitScale }
+ 
+     ////
+     // API expected by MoveHandler (and some by WindowResizeArea as well)
+@@ -95,8 +122,12 @@ FocusScope {
+     ChildWindow {
+         id: childWindow
+         target: root
+-        requestedWidth: root.windowedWidth
+-        requestedHeight: root.windowedHeight
++        requestedWidth: root.fitActive
++            ? Math.max(Math.min(root.windowedWidth, root.fitAreaWidth), root.fitMinimumWidth)
++            : root.windowedWidth
++        requestedHeight: root.fitActive
++            ? Math.max(Math.min(root.windowedHeight, root.fitAreaHeight - root.fitDecorationHeight), root.fitMinimumHeight)
++            : root.windowedHeight
+     }
+ 
+     Connections {
+diff --git a/qml/Stage/Stage.qml b/qml/Stage/Stage.qml
+index eae35ef..f0ff4fa 100644
+--- a/qml/Stage/Stage.qml
++++ b/qml/Stage/Stage.qml
+@@ -2261,6 +2261,13 @@ FocusScope {
+                             boundsItem: root.availableDesktopArea
+                             decorationHeight: priv.windowDecorationHeight
+ 
++                            // fp6: phone stage: keep dialogs inside the app's area.
++                            fitToArea: root.mode === "staged" || root.mode === "stagedWithSideStage"
++                            fitAreaX: appDelegate.clientAreaItem.x
++                            fitAreaY: appDelegate.clientAreaItem.y
++                            fitAreaWidth: appDelegate.clientAreaItem.width
++                            fitAreaHeight: appDelegate.clientAreaItem.height
++
+                             z: childWindowRepeater.count - model.index
+ 
+                             onFocusChanged: {

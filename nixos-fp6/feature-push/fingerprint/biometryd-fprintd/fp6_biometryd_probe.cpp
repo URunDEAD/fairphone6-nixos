@@ -24,6 +24,8 @@
 #include <biometry/user.h>
 #include <biometry/void.h>
 #include <biometry/dbus/service.h>
+#include <biometry/devices/fingerprint_reader.h>
+#include <biometry/variant.h>
 
 #include <unistd.h>
 
@@ -82,7 +84,12 @@ struct Printer : public biometry::Operation<T>::Observer
     void on_started() override { std::printf("started\n"); std::fflush(stdout); }
     void on_progress(const typename T::Progress& p) override
     {
-        std::printf("progress %.0f%%\n", 100.0 * *p.percent);
+        using Hints = biometry::devices::FingerprintReader::GuidedEnrollment::Hints;
+        auto it = p.details.find(Hints::key_masks);
+        if (it != p.details.end() && it->second.type() == biometry::Variant::Type::vector)
+            std::printf("progress %.0f%% masks=%zu\n", 100.0 * *p.percent, it->second.vector().size());
+        else
+            std::printf("progress %.0f%%\n", 100.0 * *p.percent);
         std::fflush(stdout);
     }
     void on_canceled(const typename T::Reason& r) override { std::printf("canceled: %s\n", r.c_str()); d.finish(3); }

@@ -44,9 +44,19 @@ let
 in {
   options.services.fp6BiometrydFprintd = {
     enable = lib.mkEnableOption "biometryd with the fprintd-backed device plugin (Lomiri Fingerprint ID + greeter fingerprint unlock)";
-    app = lib.mkOption {
+    greeterFeedback = lib.mkOption {
       type = lib.types.bool;
       default = true;
+      description = ''
+        Patch the Lomiri greeter's cover page with fingerprint feedback: an icon
+        while biometryd identification runs, a pulse on an undecided touch,
+        shake + red on a rejected finger, green on a match; and let the
+        "Try again" hint replace the charging line instead of being hidden by it.
+      '';
+    };
+    app = lib.mkOption {
+      type = lib.types.bool;
+      default = false;   # Settings has the same pages natively
       description = "Also install the standalone \"Fingerprint ID\" app (the same Lomiri pages as Settings).";
     };
   };
@@ -56,6 +66,19 @@ in {
       assertion = config.services.fp6FingerprintPersist.enable or false;
       message = "fp6BiometrydFprintd needs the fingerprint daemon (services.fp6FingerprintPersist).";
     }];
+
+    nixpkgs.overlays = lib.mkIf cfg.greeterFeedback (lib.mkAfter [ (final: prev: {
+      lomiri = prev.lomiri.overrideScope (_lfinal: lprev: {
+        lomiri = lprev.lomiri.overrideAttrs (old: {
+          patches = (old.patches or [ ]) ++ [ ./lomiri-greeter-fingerprint-feedback.patch ];
+          postPatch = (old.postPatch or "") + ''
+            substituteInPlace qml/Greeter/CoverPage.qml \
+              --replace-fail "@FP6_FINGERPRINT_ICON@" \
+                "file://${final.adwaita-icon-theme}/share/icons/Adwaita/symbolic/devices/auth-fingerprint-symbolic.svg"
+          '';
+        });
+      });
+    }) ]);
 
     # com.ubports.biometryd.Service.conf (root owns the name, everyone may call it).
     services.dbus.packages = [ biometryd ];

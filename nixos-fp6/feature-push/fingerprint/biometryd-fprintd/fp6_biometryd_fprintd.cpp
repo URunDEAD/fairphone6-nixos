@@ -37,6 +37,9 @@
 #include <biometry/verifier.h>
 #include <biometry/void.h>
 #include <biometry/devices/plugin/interface.h>
+#include <biometry/devices/fingerprint_reader.h>
+#include <biometry/geometry.h>
+#include <biometry/variant.h>
 
 #include <systemd/sd-bus.h>
 
@@ -316,6 +319,45 @@ bool active_seat_uid(uid_t& uid)
     return ok;
 }
 
+// Enrolment hints for Lomiri's fingerprint visual (lomiri-settings-components
+// Setup.qml -> FingerprintVisual): FingerprintReader::Hints::masks is a list of
+// rectangles in the unit square; every segment of the drawn fingerprint that
+// intersects one is filled (once; the renderer ignores already-filled ones).
+// fprintd reports only "stage passed", not where the finger lay, so coverage
+// grows from the centre outwards in proportion to the accepted samples.
+biometry::Dictionary enrol_hints(double fraction, bool finger_present)
+{
+    constexpr int cols = 6, rows = 8;
+    struct Tile { double d; int c, r; };
+    static const std::vector<Tile> order = [] {
+        std::vector<Tile> t;
+        for (int r = 0; r < rows; ++r)
+            for (int c = 0; c < cols; ++c)
+            {
+                double dx = (c + 0.5) / cols - 0.5, dy = (r + 0.5) / rows - 0.5;
+                t.push_back({dx * dx + dy * dy * 0.6, c, r});   // slightly taller than wide
+            }
+        std::stable_sort(t.begin(), t.end(), [](const Tile& a, const Tile& b) { return a.d < b.d; });
+        return t;
+    }();
+    std::size_t n = fraction >= 1.0 ? order.size()
+                                     : static_cast<std::size_t>(fraction * order.size() + 0.5);
+    std::vector<biometry::Variant> masks;
+    for (std::size_t i = 0; i < n && i < order.size(); ++i)
+    {
+        const auto& t = order[i];
+        biometry::Rectangle rect;
+        rect.top_left = biometry::Point{static_cast<double>(t.c) / cols, static_cast<double>(t.r) / rows};
+        rect.bottom_right = biometry::Point{static_cast<double>(t.c + 1) / cols, static_cast<double>(t.r + 1) / rows};
+        masks.push_back(biometry::Variant::r(rect));
+    }
+    using Hints = biometry::devices::FingerprintReader::GuidedEnrollment::Hints;
+    biometry::Dictionary d;
+    d[Hints::key_masks] = biometry::Variant::v(masks);
+    d[Hints::key_is_finger_present] = biometry::Variant::b(finger_present);
+    return d;
+}
+
 // ---------------------------------------------------------------------------
 // A biometry::Operation whose body runs on its own thread.
 template <typename T>
@@ -368,19 +410,31 @@ int run_verify(const std::atomic<bool>& cancelled, uid_t uid, std::string& err,
 {
     std::string user = user_name(uid);
     if (user.empty()) { err = "unknown user"; return -2; }
-    Fprint fp;
-    if (auto e = fp.open(); !e.empty()) { err = e; return -2; }
 
-    // Nothing enrolled: wait quietly (no failure that the greeter would count)
-    // until fingers appear or the caller cancels.
+    // fprintd not (yet) on the bus, still starting, or nothing enrolled: wait
+    // quietly until it can verify or the caller cancels. These are not
+    // verdicts, and the greeter counts every failure towards its lockout of
+    // fingerprint unlock (failedFingerprintLogins), e.g. at boot when the
+    // greeter starts before fingerprintd is ready.
+    std::unique_ptr<Fprint> fpp;
+    std::string last_wait;
     for (;;)
     {
-        std::vector<std::string> fingers;
-        if (auto e = fp.list(user, fingers); !e.empty()) { err = e; return -2; }
-        if (!fingers.empty()) break;
+        std::string why;
+        auto candidate = std::make_unique<Fprint>();
+        if (auto e = candidate->open(); !e.empty()) why = e;
+        else
+        {
+            std::vector<std::string> fingers;
+            if (auto e2 = candidate->list(user, fingers); !e2.empty()) why = e2;
+            else if (fingers.empty()) why = "no fingers enrolled";
+            else { fpp = std::move(candidate); break; }
+        }
+        if (why != last_wait) { log("identify waiting: %s", why.c_str()); last_wait = why; }
         for (int i = 0; i < 20 && !cancelled.load(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(100));
         if (cancelled.load()) return -1;
     }
+    Fprint& fp = *fpp;
 
     if (auto e = fp.claim(user, cancelled, -1); !e.empty())
     {
@@ -468,7 +522,7 @@ public:
                 return;
             }
             log("enrolment started for uid %u (slot %d, %d stages)", static_cast<unsigned>(uid), slot + 1, stages);
-            o->on_progress(biometry::Progress{biometry::Percent::from_raw_value(0.0), biometry::Dictionary{}});
+            o->on_progress(biometry::Progress{biometry::Percent::from_raw_value(0.0), enrol_hints(0.0, false)});
 
             int passed = 0;
             enum { Running, Done, Failed, Canceled } state = Running;
@@ -484,7 +538,7 @@ public:
                 {
                     ++passed;
                     double p = std::min(0.99, static_cast<double>(passed) / std::max(1, stages));
-                    o->on_progress(biometry::Progress{biometry::Percent::from_raw_value(p), biometry::Dictionary{}});
+                    o->on_progress(biometry::Progress{biometry::Percent::from_raw_value(p), enrol_hints(p, true)});
                 }
                 else if (st.done)
                 {
@@ -495,7 +549,7 @@ public:
                 {
                     // retry-scan & co.: same progress, the page keeps prompting.
                     double p = std::min(0.99, static_cast<double>(passed) / std::max(1, stages));
-                    o->on_progress(biometry::Progress{biometry::Percent::from_raw_value(p), biometry::Dictionary{}});
+                    o->on_progress(biometry::Progress{biometry::Percent::from_raw_value(p), enrol_hints(p, false)});
                 }
             }
             if (!fp.lost())
@@ -507,7 +561,7 @@ public:
             {
             case Done:
                 log("enrolment completed for uid %u (slot %d)", static_cast<unsigned>(uid), slot + 1);
-                o->on_progress(biometry::Progress{biometry::Percent::from_raw_value(1.0), biometry::Dictionary{}});
+                o->on_progress(biometry::Progress{biometry::Percent::from_raw_value(1.0), enrol_hints(1.0, false)});
                 o->on_succeeded(static_cast<TemplateId>(slot + 1));
                 break;
             case Canceled:

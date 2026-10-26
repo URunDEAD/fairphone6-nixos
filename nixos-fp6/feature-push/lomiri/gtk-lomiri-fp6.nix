@@ -42,6 +42,21 @@
 #    content subsurface is clipped the same way, so it stays aligned.
 #    qtmir-subsurface-stretch.patch (firefox-lomiri-fp6.nix) is kept; it only
 #    acts in Stretch mode, which other MirSurfaceItems still use.
+#  * Dialogs (2026-10-26, round 2). GTK4's portal-less file chooser is a
+#    transient xdg_toplevel with a 630x372 minimum size; Lomiri drew child
+#    windows at their own size, so on the 372 px wide screen its buttons were
+#    off-screen. lomiri-child-window-fit.patch fits decorated child windows
+#    in the phone stage into the app area (request <= area, >= min size,
+#    centred, uniformly scaled down if the client stays larger).
+#  * Swipe-away with a dialog open. GTK ignores xdg_toplevel.close on a
+#    window that has a modal dialog; qtmir then tore the shell window down
+#    after 5 s and the app kept running without a card (Fragments
+#    "disappeared"). qtmir-close-children-first.patch closes child windows
+#    before the parent (verified with Fragments in a private sway: dialog +
+#    main close -> exits in 1 s; main alone -> ignored).
+#  * qtmir-empty-buffer-bind.patch: Lomiri aborted with "Bind called without
+#    any buffers!" (Mir 2.15 miroil throws; qtmir's freeBuffer()/setBuffer()
+#    window races the render thread). Skip binding when there is no buffer.
 { config, lib, pkgs, ... }:
 let
   cfg = config.hardware.fairphone6.lomiriGtk;
@@ -68,6 +83,24 @@ in {
       description = ''
         Patch Lomiri so staged (phone) windows are in Mir's maximized state,
         so GTK drops its CSD shadow margin, rounded corners and resize borders.
+      '';
+    };
+    dialogFit = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Patch Lomiri so decorated child windows (dialogs, transient toplevels)
+        in the phone stage are sized to at most the app area (respecting the
+        client's minimum size), centred, and scaled down if still too large.
+      '';
+    };
+    closeChildrenFirst = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Patch qtmir so closing a window (swipe away in the spread) first asks
+        its child windows (e.g. a modal dialog) to close; GTK ignores a close
+        for a window with a modal dialog open.
       '';
     };
     spreadAspectCrop = lib.mkOption {
@@ -98,7 +131,8 @@ in {
       lomiri = prev.lomiri.overrideScope (lfinal: lprev: {
         lomiri = lprev.lomiri.overrideAttrs (old: {
           patches = (old.patches or [ ])
-            ++ lib.optional cfg.stagedMaximized ./lomiri-staged-maximized.patch;
+            ++ lib.optional cfg.stagedMaximized ./lomiri-staged-maximized.patch
+            ++ lib.optional cfg.dialogFit ./lomiri-child-window-fit.patch;
           # fillMode: Stretch comes from ../../lomiri-wayland-surface-scale.patch.
           postPatch = (old.postPatch or "") + lib.optionalString cfg.spreadAspectCrop ''
             substituteInPlace qml/Stage/SurfaceContainer.qml \
@@ -107,7 +141,11 @@ in {
         });
         qtmir = lprev.qtmir.overrideAttrs (old: {
           patches = (old.patches or [ ])
-            ++ lib.optional cfg.spreadAspectCrop ./qtmir-scaled-pad-or-crop.patch;
+            ++ lib.optional cfg.spreadAspectCrop ./qtmir-scaled-pad-or-crop.patch
+            # Mir 2.15 miroil throws on bind() without a buffer, aborting the
+            # shell (seen 2026-10-26 15:50:51); skip the frame instead.
+            ++ [ ./qtmir-empty-buffer-bind.patch ]
+            ++ lib.optional cfg.closeChildrenFirst ./qtmir-close-children-first.patch;
         });
       });
     }) ];

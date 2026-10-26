@@ -79,9 +79,13 @@ let
         # live backup/enroll procedure in results/feature-push-20261024/fingerprint passes.
         services.fp6FingerprintPersist = {
           enable = true;
-          startAtBoot = false;
-          standbyUnlock = true;
-          lomiriLockedHint = true;
+          # Enrolment checked live 2026-10-26: start at boot (backup + rw persist first).
+          startAtBoot = true;
+          # Unlock goes through the Lomiri greeter (biometryd identify) only;
+          # fingerprintd's own logind unlock and its LockedHint bridge would be
+          # a second reader competing for the sensor.
+          standbyUnlock = false;
+          lomiriLockedHint = false;
         };
         # biometryd with the fprintd plugin: Settings > Security & Privacy > Lock
         # security > Fingerprint ID (add/list/delete) and greeter fingerprint unlock.

@@ -1,0 +1,156 @@
+diff -ru a/qml/Greeter/CoverPage.qml b/qml/Greeter/CoverPage.qml
+--- a/qml/Greeter/CoverPage.qml
++++ b/qml/Greeter/CoverPage.qml
+@@ -38,6 +38,26 @@
+     property var infographicModel
+     property bool draggable: true
+ 
++    // FP6: fingerprint unlock feedback (set by GreeterView from the greeter's
++    // biometryd identification): an icon while the reader listens, a pulse
++    // while it reads, shake + red on a rejected finger, green on a match.
++    property bool fingerprintActive: false
++
++    function fingerprintReading() {
++        fingerprintReadingAnimation.restart();
++    }
++
++    function fingerprintFailed() {
++        fingerprintIndicator.tint = LomiriColors.red;
++        fingerprintFailAnimation.restart();
++        fingerprintTintReset.restart();
++    }
++
++    function fingerprintSucceeded() {
++        fingerprintIndicator.tint = LomiriColors.green;
++        fingerprintTintReset.restart();
++    }
++
+     property bool showInfographic: false
+     property real infographicsLeftMargin: 0
+     property real infographicsTopMargin: 0
+@@ -184,7 +204,47 @@
+         }
+         color: "white"
+         font.weight: Font.Light
++        // FP6: give way to swipeHint while it shows an error ("Try again"),
++        // otherwise fingerprint failures are invisible while charging.
+         visible: gsettings.showChargingInformationWhileLocked && (BatteryMonitor.charging || BatteryMonitor.fullyCharged)
++                 && d.errorMessage === ""
++    }
++
++    Item {
++        id: fingerprintIndicator
++        objectName: "fingerprintIndicator"
++        property color tint: "white"
++        width: units.gu(5)
++        height: units.gu(5)
++        anchors.horizontalCenter: parent.horizontalCenter
++        anchors.bottom: parent.bottom
++        anchors.bottomMargin: units.gu(10)
++        visible: root.fingerprintActive
++        opacity: 0.85
++
++        Icon {
++            anchors.fill: parent
++            source: "@FP6_FINGERPRINT_ICON@"
++            keyColor: "#000000" // the Adwaita symbolic SVG has no fill (= black)
++            color: fingerprintIndicator.tint
++        }
++
++        SequentialAnimation {
++            id: fingerprintReadingAnimation
++            NumberAnimation { target: fingerprintIndicator; property: "scale"; to: 0.85; duration: 120 }
++            NumberAnimation { target: fingerprintIndicator; property: "scale"; to: 1.0; duration: 200 }
++        }
++
++        WrongPasswordAnimation {
++            id: fingerprintFailAnimation
++            target: fingerprintIndicator
++        }
++
++        Timer {
++            id: fingerprintTintReset
++            interval: 1500
++            onTriggered: fingerprintIndicator.tint = "white"
++        }
+     }
+ 
+     Label {
+diff -ru a/qml/Greeter/Greeter.qml b/qml/Greeter/Greeter.qml
+--- a/qml/Greeter/Greeter.qml
++++ b/qml/Greeter/Greeter.qml
+@@ -391,6 +391,15 @@
+             }
+         }
+ 
++        // FP6: show the fingerprint indicator while identification can run.
++        Binding {
++            target: loader.item
++            property: "fingerprintActive"
++            value: biometryd.idEnabled && d.secureFingerprint
++            when: loader.item !== null && loader.item.fingerprintActive !== undefined
++            restoreMode: Binding.RestoreBinding
++        }
++
+         Binding {
+             target: loader.item
+             property: "panelHeight"
+@@ -633,6 +642,7 @@
+ 
+         function failOperation(reason) {
+             console.log("Failed to identify user by fingerprint:", reason);
++            if (loader.item && loader.item.fingerprintFailed) loader.item.fingerprintFailed(); // FP6
+             restartOperation();
+             var msg = d.secureFingerprint ? i18n.tr("Try again") :
+                       d.alphanumeric ? i18n.tr("Enter passphrase to unlock") :
+@@ -644,6 +654,11 @@
+         Component.onDestruction: cancelOperation()
+         onIdEnabledChanged: restartOperation()
+ 
++        // FP6: the reader saw a touch it could not decide on yet.
++        onProgressed: {
++            if (loader.item && loader.item.fingerprintReading) loader.item.fingerprintReading();
++        }
++
+         onSucceeded: {
+             if (!d.secureFingerprint) {
+                 failOperation("fingerprint reader is locked");
+@@ -655,6 +670,7 @@
+                 return;
+             }
+             console.log("Identified user by fingerprint:", result);
++            if (loader.item && loader.item.fingerprintSucceeded) loader.item.fingerprintSucceeded(); // FP6
+             if (loader.item) {
+                 loader.item.showFakePassword();
+             }
+diff -ru a/qml/Greeter/GreeterView.qml b/qml/Greeter/GreeterView.qml
+--- a/qml/Greeter/GreeterView.qml
++++ b/qml/Greeter/GreeterView.qml
+@@ -43,6 +43,7 @@
+     property bool waiting
+     property var userModel // Set from outside
+     property bool multiUser: false
++    property bool fingerprintActive: false // FP6
+     property int orientation
+     property bool isLandscape: root.orientation == Qt.LandscapeOrientation ||
+                                root.orientation == Qt.InvertedLandscapeOrientation ||
+@@ -107,6 +108,11 @@
+         coverPage.showErrorMessage(msg);
+     }
+ 
++    // FP6: fingerprint feedback on the cover page.
++    function fingerprintReading() { coverPage.fingerprintReading(); }
++    function fingerprintFailed() { coverPage.fingerprintFailed(); }
++    function fingerprintSucceeded() { coverPage.fingerprintSucceeded(); }
++
+     onLockedChanged: changeLockscreenState()
+     onMultiUserChanged: changeLockscreenState()
+ 
+@@ -357,6 +363,7 @@
+         infographicModel: root.infographicModel
+ 
+         showInfographic: !root.multiUser && root.usageMode != "desktop"
++        fingerprintActive: root.fingerprintActive
+ 
+         onShowProgressChanged: {
+             if (showProgress === 0) {

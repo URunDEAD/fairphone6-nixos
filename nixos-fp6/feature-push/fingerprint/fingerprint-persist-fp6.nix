@@ -27,7 +27,7 @@
 # mnt-persist.mount mounts it read-write. No raw partition is ever written;
 # persist is written only as ext4 (journal/superblock on mount, exactly as
 # pmOS did on every boot) and by the trustlet through the GPFile listener.
-{ config, lib, pkgs, ... }:
+{ config, lib, pkgs, utils, ... }:
 let
   cfg = config.services.fp6FingerprintPersist;
   # Fixed: the pmOS SFS symlinks persist-data/root3 point at /mnt/persist/data.
@@ -112,6 +112,12 @@ let
     set -euo pipefail
     export PATH=${lib.makeBinPath path}
     ${refuseOtherOwners}
+    # At boot the QTEE and UFS RPMB nodes can appear after this unit is
+    # scheduled (no systemd device units for them): wait up to 60 s, then fail.
+    for i in $(seq 1 120); do
+      test -c /dev/tee0 && test -c /dev/bsg/0:0:0:49476 && break
+      sleep 0.5
+    done
     test -c /dev/tee0
     test -c /dev/bsg/0:0:0:49476
     test "$(sha256sum <${lib.escapeShellArg cfg.trustlet} | cut -d' ' -f1)" = ${cfg.trustletSha256}
@@ -222,10 +228,20 @@ in {
       unitConfig = {
         # Assert (fail), never Condition (skip = success, which would let the
         # writable mount proceed without a backup).
-        AssertPathExists = [ device cfg.stateDir cfg.backupRoot ];
+        AssertPathExists = [ cfg.stateDir cfg.backupRoot ];
         RequiresMountsFor = [ cfg.backupRoot cfg.stateDir ];
+        # mnt-persist.mount is part of local-fs.target and is ordered after this
+        # unit; default dependencies (after basic.target -> sysinit.target ->
+        # local-fs.target) closed a cycle and systemd dropped
+        # systemd-tmpfiles-setup and others to break it (2026-10-26).
+        DefaultDependencies = false;
       };
-      before = [ "mnt-persist.mount" ];
+      conflicts = [ "shutdown.target" ];
+      before = [ "mnt-persist.mount" "shutdown.target" ];
+      # The persist by-uuid link is a udev device unit: wait for it at boot
+      # (a path Assert alone could run before udev and fail the chain).
+      requires = [ "${utils.escapeSystemdPath device}.device" ];
+      after = [ "${utils.escapeSystemdPath device}.device" ];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;   # once per boot
@@ -253,7 +269,9 @@ in {
       after = [ "dbus.service" "systemd-modules-load.service" "mnt-persist.mount" ];
       conflicts = otherOwners;
       unitConfig = {
-        ConditionPathExists = [ cfg.trustlet "/dev/tee0" "/dev/bsg/0:0:0:49476" ];
+        # Device nodes are waited for in ExecStartPre (a Condition would
+        # silently skip the daemon if udev had not created them yet).
+        ConditionPathExists = [ cfg.trustlet ];
         RequiresMountsFor = [ mountPoint cfg.stateDir ];
       };
       serviceConfig = {

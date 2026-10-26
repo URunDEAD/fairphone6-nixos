@@ -120,6 +120,7 @@ nixos-fp6/feature-push/fingerprint/fingerprint-id-app/main.cpp
 nixos-fp6/feature-push/fingerprint/fingerprint-id-app/package.nix
 nixos-fp6/feature-push/fingerprint/fingerprint-persist-fp6.nix
 nixos-fp6/feature-push/fingerprint/fp6-lomiri-fingerprint-lockedhint.py
+nixos-fp6/feature-push/fingerprint/lomiri-greeter-fingerprint-feedback.patch
 nixos-fp6/feature-push/fingerprint/trial-fingerprint-fp6.nix
 nixos-fp6/feature-push/haptics-kernel5-fp6.nix
 nixos-fp6/feature-push/lomiri-misc/lomiri-misc-fp6.nix
@@ -138,10 +139,13 @@ nixos-fp6/feature-push/lomiri/firefox-lomiri-fp6.nix
 nixos-fp6/feature-push/lomiri/firefox-subsurface-scale-shim.c
 nixos-fp6/feature-push/lomiri/firefox-wayland-buffer-scale-fallback.patch
 nixos-fp6/feature-push/lomiri/gtk-lomiri-fp6.nix
+nixos-fp6/feature-push/lomiri/lomiri-child-window-fit.patch
 nixos-fp6/feature-push/lomiri/lomiri-gpu-fp6.nix
 nixos-fp6/feature-push/lomiri/lomiri-staged-maximized.patch
 nixos-fp6/feature-push/lomiri/lomiri-weather-app.nix
 nixos-fp6/feature-push/lomiri/morph-browser-dpi-fp6.nix
+nixos-fp6/feature-push/lomiri/qtmir-close-children-first.patch
+nixos-fp6/feature-push/lomiri/qtmir-empty-buffer-bind.patch
 nixos-fp6/feature-push/lomiri/qtmir-scaled-pad-or-crop.patch
 nixos-fp6/feature-push/lomiri/qtmir-subsurface-stretch.patch
 nixos-fp6/feature-push/lomiri/trial-lomiri-gpu-fp6.nix
@@ -387,6 +391,8 @@ tools/drm-screenshot.py
 tools/fastboot-ram.py
 tools/feature-push/audio-mic2-diag.sh
 tools/feature-push/audio-test.sh
+tools/feature-push/camera-phase0/analyze.py
+tools/feature-push/camera-phase0/probe.sh
 tools/feature-push/camera-test.sh
 tools/feature-push/cellular-bringup.sh
 tools/feature-push/inspect-bootimg-v2.py

@@ -1,0 +1,28 @@
+--- a/src/modules/QtMir/Application/mirbuffersgtexture.cpp	2026-10-26 15:59:36.785942988 +0200
++++ b/src/modules/QtMir/Application/mirbuffersgtexture.cpp	2026-10-26 15:59:49.998981326 +0200
+@@ -221,7 +221,11 @@
+ {
+     QMutexLocker locker(&m_mutex);
+ 
+-    if (m_needsUpdate) {
++    // fp6: Mir 2.15's miroil::GLBuffer::bind() throws std::logic_error when
++    // it holds no buffer, which aborts the whole shell. The buffer is briefly
++    // empty between freeBuffer() and setBuffer() (dropPendingBuffer() on the
++    // GUI thread vs. the render thread). Retry on the next call instead.
++    if (m_needsUpdate && hasBuffer()) {
+         updateTextureId();
+         m_needsUpdate = false;
+     }
+@@ -242,7 +246,11 @@
+ void MirGlBuffer::bind() {
+     QMutexLocker locker(&m_mutex);
+ 
+-    Q_ASSERT(hasBuffer());
++    // fp6: see textureId(). Skip this frame rather than abort the shell.
++    if (!hasBuffer()) {
++        qWarning() << "MirGlBuffer::bind: no buffer, skipping";
++        return;
++    }
+ 
+     bindTexture();
+ }

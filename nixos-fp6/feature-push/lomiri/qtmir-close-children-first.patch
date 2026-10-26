@@ -1,0 +1,23 @@
+diff --git a/src/modules/QtMir/Application/mirsurface.cpp b/src/modules/QtMir/Application/mirsurface.cpp
+index 987cbf1..cbf5421 100644
+--- a/src/modules/QtMir/Application/mirsurface.cpp
++++ b/src/modules/QtMir/Application/mirsurface.cpp
+@@ -675,6 +675,18 @@ void MirSurface::close()
+     Q_EMIT closeRequested();
+     m_closeTimer->start();
+ 
++    // fp6: ask transient children (dialogs, popups) to close first. A toolkit
++    // ignores a close request for a window that has a modal dialog open (GTK
++    // does), so swiping such an app away in the spread did nothing; qtmir
++    // then tore the window down and left the app running without a window.
++    // Closing the dialog first (as a user would) lets the parent close.
++    for (int i = m_childSurfaceList->count() - 1; i >= 0; --i) {
++        auto childSurface = static_cast<MirSurface*>(m_childSurfaceList->get(i));
++        if (childSurface && childSurface->live() && childSurface->m_window) {
++            m_controller->requestClose(childSurface->m_window);
++        }
++    }
++
+     if (m_window) {
+         m_controller->requestClose(m_window);
+     }
