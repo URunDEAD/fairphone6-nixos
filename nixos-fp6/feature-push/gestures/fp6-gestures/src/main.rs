@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 
 use actions::{log, Buses};
 use config::{decide, Action, Config, Decision, Source};
-use detector::{Params, Sensitivity, ShakeDetector};
+use detector::{AdaptiveRate, Params, Sensitivity, ShakeDetector};
 use gio::prelude::*;
 
 const SCHEMA: &str = "com.fairphone6.gestures";
@@ -265,26 +265,26 @@ fn sampler(shared: Arc<Shared>, wake_rx: mpsc::Receiver<Wake>, exec_tx: mpsc::Se
     };
     let start = Instant::now();
     let mut detector: Option<(Sensitivity, ShakeDetector)> = None;
+    let mut rate: Option<((u32, u32), AdaptiveRate)> = None;
     let mut errors = 0u32;
-    let mut current_hz = None;
+    let mut was_active = false;
     loop {
         let config = shared.config.lock().unwrap().clone();
         let hz = config.sampling_hz(shared.display_on.load(Ordering::SeqCst));
-        if hz != current_hz {
+        if hz != rate.as_ref().map(|r| r.0) {
             log(match hz {
-                Some(hz) => format!("sampling at {hz} Hz"),
+                Some((idle, active)) => format!("sampling at {idle} Hz, {active} Hz while moving"),
                 None => "sampling paused".to_string(),
             });
-            current_hz = hz;
+            rate = hz.map(|h| (h, AdaptiveRate::new(h.0 as f64, h.1 as f64)));
         }
-        let Some(hz) = hz else {
+        let Some((_, adaptive)) = rate.as_mut() else {
             detector = None;
             if wake_rx.recv().is_err() {
                 return;
             }
             continue;
         };
-        let period = Duration::from_secs_f64(1.0 / hz as f64);
         let tick = Instant::now();
         let det = match &mut detector {
             Some((s, d)) if *s == config.sensitivity => d,
@@ -293,13 +293,17 @@ fn sampler(shared: Arc<Shared>, wake_rx: mpsc::Receiver<Wake>, exec_tx: mpsc::Se
                 &mut detector.as_mut().unwrap().1
             }
         };
+        let t = start.elapsed().as_secs_f64();
+        let mut period = 1.0 / adaptive.idle_hz;
         match accel.read_raw() {
             Ok(raw) => {
                 errors = 0;
-                if det.push(start.elapsed().as_secs_f64(), accel.to_g(raw)) {
+                let a = accel.to_g(raw);
+                if det.push(t, a) {
                     log("shake detected");
                     let _ = exec_tx.send(Source::Shake);
                 }
+                period = adaptive.next_period(t, det.dynamic());
             }
             Err(e) => {
                 errors += 1;
@@ -309,11 +313,20 @@ fn sampler(shared: Arc<Shared>, wake_rx: mpsc::Receiver<Wake>, exec_tx: mpsc::Se
                 det.reset();
             }
         }
-        let wait = period.saturating_sub(tick.elapsed());
+        if adaptive.active(t) != was_active {
+            was_active = !was_active;
+            if std::env::var_os("FP6_GESTURES_DEBUG").is_some() {
+                log(if was_active { "motion: full rate" } else { "still: idle rate" });
+            }
+        }
+        let wait = Duration::from_secs_f64(period).saturating_sub(tick.elapsed());
         match wake_rx.recv_timeout(wait) {
             Ok(Wake::Display) => {
                 if let Some((_, d)) = &mut detector {
                     d.reset();
+                }
+                if let Some((_, r)) = &mut rate {
+                    r.reset();
                 }
             }
             Ok(Wake::Config) | Err(RecvTimeoutError::Timeout) => {}

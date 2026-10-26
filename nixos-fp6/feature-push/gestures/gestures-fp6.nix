@@ -6,8 +6,10 @@
 #    com.fairphone6.gestures, read live. Shake: polls the ICM-42631
 #    accelerometer through IIO sysfs (in_accel_*_raw, the same attributes
 #    iio-sensor-proxy polls; sampling_frequency is never written) only while
-#    the shake is on: 50 Hz with the display on, 25 Hz off (only if the action
-#    may run locked), paused otherwise.
+#    the shake is on: idle 15 Hz with the display on, 10 Hz off (only if the
+#    action may run locked; paused otherwise), 50 Hz for 2 s once the phone
+#    moves (> 0.8 g). The IMU is on a bit-banged spi-gpio bus: each axis read
+#    is ~0.1 ms of kernel CPU (50 Hz = 4.7 % of a core, 25 Hz = 2.5 %).
 #  * Power key: fp6-lomiri-powerd counts presses (com.fairphone6.PowerKey on
 #    com.lomiri.Repowerd). fp6-gestures sets the max press count from the
 #    settings (0 = nothing assigned = the instant single press of before).

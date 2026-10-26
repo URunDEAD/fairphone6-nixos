@@ -53,11 +53,9 @@ Column {
 
     Label {
         width: parent.width
-        visible: chooser.kind === "app"
+        visible: chooser.kind === "app" && chooser.apps.length === 0
         wrapMode: Text.WordWrap
-        text: chooser.apps.length === 0 ? i18n.tr("Looking for installed apps…")
-            : chooser.appIndex() < 0 ? i18n.tr("Choose the app:")
-            : i18n.tr("App: %1").arg(chooser.apps[chooser.appIndex()].name)
+        text: i18n.tr("Looking for installed apps…")
     }
 
     OptionSelector {
@@ -65,17 +63,18 @@ Column {
         objectName: chooser.prefix + "AppSelector"
         width: parent.width
         visible: chooser.kind === "app" && chooser.apps.length > 0
-        containerHeight: units.gu(30)
-        model: chooser.apps
-        selectedIndex: Math.max(0, chooser.appIndex())
+        containerHeight: units.gu(36)
+        // Entry 0 is the "nothing chosen yet" placeholder.
+        model: [{ id: "", name: i18n.tr("Choose an app…") }].concat(chooser.apps)
+        selectedIndex: chooser.appIndex() + 1
+        // Waydroid apps share names with native ones (Contacts, Phone).
         delegate: OptionSelectorDelegate {
-            text: modelData.name
-            iconSource: modelData.icon === "" ? ""
-                : modelData.icon.charAt(0) === "/" ? "file://" + modelData.icon
-                : "image://theme/" + modelData.icon
-            constrainImage: true
+            text: modelData.name + (modelData.id.indexOf("waydroid.") === 0 ? i18n.tr(" (Android)") : "")
         }
-        onDelegateClicked: chooser.settings[chooser.prefix + "App"] = chooser.apps[index].id
+        onDelegateClicked: {
+            if (index > 0)
+                chooser.settings[chooser.prefix + "App"] = chooser.apps[index - 1].id
+        }
     }
 
     TextField {

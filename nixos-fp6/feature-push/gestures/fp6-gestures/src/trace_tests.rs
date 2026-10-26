@@ -3,12 +3,14 @@
 //! (tests/data/rest-window-50hz.txt, ICM-42631, upright at a window) gives
 //! the noise floor; synthetic motions are added on top of its samples.
 
-use crate::detector::{Params, Sensitivity, ShakeDetector};
+use crate::detector::{AdaptiveRate, Params, Sensitivity, ShakeDetector};
 use crate::load_trace;
 use std::f64::consts::PI;
 
 const SCALE: f64 = 0.004788403 / 9.80665;
 const REST: &str = include_str!("../tests/data/rest-window-50hz.txt");
+// Same pose, recorded by `fp6-gestures record 20 50` (exact 20 ms steps).
+const REST_RUST: &str = include_str!("../tests/data/rest-window-50hz-rust.txt");
 const ALL: [Sensitivity; 3] = [Sensitivity::Low, Sensitivity::Medium, Sensitivity::High];
 
 /// Real rest noise (mean-removed) resampled to `hz` for `seconds`.
@@ -56,10 +58,12 @@ fn shake(axis: [f64; 3], amp: f64, f: f64, t0: f64, dur: f64) -> impl Fn(f64) ->
 
 #[test]
 fn recorded_rest_never_triggers() {
-    let rows = load_trace(REST, SCALE);
-    assert!(rows.len() > 500);
-    for s in ALL {
-        assert!(triggers(&rows, s).is_empty(), "{s:?}");
+    for text in [REST, REST_RUST] {
+        let rows = load_trace(text, SCALE);
+        assert!(rows.len() > 500);
+        for s in ALL {
+            assert!(triggers(&rows, s).is_empty(), "{s:?}");
+        }
     }
 }
 
@@ -183,5 +187,56 @@ fn rotation_without_shake_does_not_trigger() {
         for s in ALL {
             assert!(triggers(&trace, s).is_empty(), "{hz} {s:?}");
         }
+    }
+}
+
+/// What the daemon's sampler does: sample the continuous signal at the
+/// times AdaptiveRate asks for (recorded noise by sample index).
+fn adaptive(idle: f64, active: f64, seconds: f64, motion: impl Fn(f64) -> [f64; 3]) -> Vec<(f64, [f64; 3])> {
+    let noise = rest_noise(50.0, 20.0);
+    let g = load_trace(REST, SCALE)[0].1;
+    let mut rate = AdaptiveRate::new(idle, active);
+    // The daemon's own detector supplies the dynamic acceleration.
+    let mut probe = ShakeDetector::new(Params::for_sensitivity(Sensitivity::Medium));
+    let (mut t, mut i, mut out) = (0.0, 0usize, Vec::new());
+    while t < seconds {
+        let n = noise[i % noise.len()].1;
+        let m = motion(t);
+        let a = [g[0] + n[0] + m[0], g[1] + n[1] + m[1], g[2] + n[2] + m[2]];
+        out.push((t, a));
+        probe.push(t, a);
+        t += rate.next_period(t, probe.dynamic());
+        i += 1;
+    }
+    out
+}
+
+#[test]
+fn adaptive_rate_idles_at_rest_and_catches_shakes() {
+    for (idle, active) in [(25.0, 50.0), (15.0, 50.0), (10.0, 50.0)] {
+        let rest = adaptive(idle, active, 20.0, |_| [0.0; 3]);
+        assert!((rest.len() as f64) < idle * 20.0 + 2.0, "{idle}: {} samples", rest.len());
+        for s in ALL {
+            assert!(triggers(&rest, s).is_empty());
+        }
+        for f in [3.0, 4.0, 5.5] {
+            let trace = adaptive(idle, active, 4.0, shake([1.0, 0.0, 0.0], 2.8, f, 1.0, 1.0));
+            for s in ALL {
+                let t = triggers(&trace, s);
+                assert_eq!(t.len(), 1, "idle {idle} f {f} {s:?}: {t:?}");
+                assert!(t[0] < 1.0 + 0.8, "idle {idle} f {f} {s:?} latency {t:?}");
+            }
+        }
+        let moderate = adaptive(idle, active, 3.0, shake([0.0, 0.0, 1.0], 1.7, 3.5, 1.0, 0.8));
+        assert_eq!(triggers(&moderate, Sensitivity::Medium).len(), 1, "idle {idle}");
+        let walk = adaptive(idle, active, 20.0, |t| {
+            let v = 0.45 * (2.0 * PI * 1.9 * t).sin() + 0.12 * (2.0 * PI * 3.8 * t).sin();
+            [0.2 * (2.0 * PI * 0.95 * t).sin(), -v, 0.0]
+        });
+        for s in ALL {
+            assert!(triggers(&walk, s).is_empty(), "walk idle {idle} {s:?}");
+        }
+        // Walking does not leave the idle rate (motion boost needs 0.8 g).
+        assert!((walk.len() as f64) < idle * 20.0 + 2.0, "walk idle {idle}: {} samples", walk.len());
     }
 }

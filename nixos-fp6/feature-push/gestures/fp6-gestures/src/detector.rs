@@ -87,6 +87,7 @@ pub struct ShakeDetector {
     last: Option<Lobe>,
     reversals: u32,
     cooldown_until: f64,
+    dynamic: f64,
 }
 
 const GRAVITY_TAU: f64 = 0.8;
@@ -111,6 +112,7 @@ impl ShakeDetector {
             last: None,
             reversals: 0,
             cooldown_until: f64::NEG_INFINITY,
+            dynamic: 0.0,
         }
     }
 
@@ -127,6 +129,11 @@ impl ShakeDetector {
         self.reversals = 0;
     }
 
+    /// |a - gravity| (g) of the last sample.
+    pub fn dynamic(&self) -> f64 {
+        self.dynamic
+    }
+
     /// Feed one sample; returns true when a shake is recognised.
     pub fn push(&mut self, t: f64, a: [f64; 3]) -> bool {
         let dt = match self.last_t {
@@ -138,11 +145,13 @@ impl ShakeDetector {
         let g = match self.gravity {
             None => {
                 self.gravity = Some(a);
+                self.dynamic = 0.0;
                 return false;
             }
             Some(g) => g,
         };
         let d = [a[0] - g[0], a[1] - g[1], a[2] - g[2]];
+        self.dynamic = norm(d);
         if (norm(a) - 1.0).abs() < 0.15 {
             let alpha = dt / (GRAVITY_TAU + dt);
             self.gravity = Some([
@@ -205,5 +214,42 @@ impl ShakeDetector {
             return true;
         }
         false
+    }
+}
+
+/// Polling rate with a motion boost. The ICM-42631 hangs off a bit-banged
+/// spi-gpio bus on the FP6, so each axis read costs ~0.1 ms of kernel CPU:
+/// 50 Hz polling is ~4.7 % of a core. The sampler idles at a low rate and
+/// switches to the full rate for `boost` seconds once the dynamic
+/// acceleration (ShakeDetector::dynamic) exceeds `motion` g. Walking stays
+/// below it; every sensitivity's lobe threshold is above it.
+pub struct AdaptiveRate {
+    pub idle_hz: f64,
+    pub active_hz: f64,
+    pub motion: f64,
+    pub boost: f64,
+    active_until: f64,
+}
+
+impl AdaptiveRate {
+    pub fn new(idle_hz: f64, active_hz: f64) -> AdaptiveRate {
+        AdaptiveRate { idle_hz, active_hz, motion: 0.8, boost: 2.0, active_until: f64::NEG_INFINITY }
+    }
+
+    /// `dynamic`: |a - gravity| of the sample taken at `t`; returns the
+    /// delay to the next sample (s).
+    pub fn next_period(&mut self, t: f64, dynamic: f64) -> f64 {
+        if dynamic > self.motion {
+            self.active_until = t + self.boost;
+        }
+        1.0 / if t < self.active_until { self.active_hz } else { self.idle_hz }
+    }
+
+    pub fn active(&self, t: f64) -> bool {
+        t < self.active_until
+    }
+
+    pub fn reset(&mut self) {
+        self.active_until = f64::NEG_INFINITY;
     }
 }

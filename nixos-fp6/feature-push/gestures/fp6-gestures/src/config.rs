@@ -100,18 +100,18 @@ impl Config {
         }
     }
 
-    /// Accelerometer polling rate, or None to stop sampling. With the display
-    /// off only the actions that may run locked keep the sensor polled, and
-    /// at half rate.
-    pub fn sampling_hz(&self, display_on: bool) -> Option<u32> {
+    /// Accelerometer polling (idle Hz, Hz while moving), or None to stop
+    /// sampling. With the display off only the actions that may run locked
+    /// keep the sensor polled, at a lower idle rate.
+    pub fn sampling_hz(&self, display_on: bool) -> Option<(u32, u32)> {
         if !self.shake_enabled || self.shake_action == Action::None {
             return None;
         }
         if display_on {
-            return Some(50);
+            return Some((15, 50));
         }
         match self.shake_action {
-            Action::Flashlight | Action::App(_) if self.shake_when_locked => Some(25),
+            Action::Flashlight | Action::App(_) if self.shake_when_locked => Some((10, 50)),
             _ => None,
         }
     }
@@ -167,14 +167,14 @@ mod tests {
     #[test]
     fn sampling_follows_display_and_lock_setting() {
         let mut c = Config { shake_enabled: true, ..Config::default() };
-        assert_eq!(c.sampling_hz(true), Some(50));
-        assert_eq!(c.sampling_hz(false), Some(25));
+        assert_eq!(c.sampling_hz(true), Some((15, 50)));
+        assert_eq!(c.sampling_hz(false), Some((10, 50)));
         c.shake_when_locked = false;
         assert_eq!(c.sampling_hz(false), None);
         c.shake_when_locked = true;
         c.shake_action = Action::Command("true".into());
         assert_eq!(c.sampling_hz(false), None);
-        assert_eq!(c.sampling_hz(true), Some(50));
+        assert_eq!(c.sampling_hz(true), Some((15, 50)));
     }
 
     #[test]
