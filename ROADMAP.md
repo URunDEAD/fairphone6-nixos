@@ -33,10 +33,15 @@ Every user-facing feature gets a setting/toggle in System Settings. Status:
 - ⏳ Do Not Disturb with schedules and exceptions; bedtime mode
 - ⏳ Notification history
 - ⏳ Camera / microphone / location in-use indicators in the status bar
-- ⏳ Clipboard privacy (auto-clear, read notifications)
+- ⏳ Clipboard privacy (auto-clear, read notifications) — blocked: Mir 2.15 has no
+  data-control protocol; needs a Mir upgrade (see below) or a backport
 - ⏳ Wi-Fi MAC address randomisation
 
 ## Priority 2 — system
+
+- ⏳ Upgrade Mir (2.15 → current, e.g. 2.28 in nixpkgs) for Lomiri/qtmir —
+  brings data-control (clipboard privacy), viewporter/fractional scale (removes the
+  Firefox scaling shim) and newer Wayland protocols; needs qtmir porting
 
 - ⏳ Over-the-air updates with automatic rollback (same safe boot procedure)
 - ⏳ Backup and restore (settings, messages, contacts, photos; encrypted)
