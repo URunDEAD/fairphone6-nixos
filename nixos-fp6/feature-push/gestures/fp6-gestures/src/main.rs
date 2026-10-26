@@ -417,6 +417,23 @@ fn run_job(buses: &Buses, shared: &Shared, job: Job) {
 /// Raise to wake keeps the display on this long without input.
 const RAISE_PEEK_SECONDS: i32 = 10;
 
+/// Signals on the system bus can be broadcast by anyone: act only on those
+/// sent by the current owner of `name` (fp6-lomiri-powerd owns
+/// com.lomiri.Repowerd and com.canonical.Unity.Screen on one connection).
+fn from_owner(conn: &zbus::blocking::Connection, msg: &zbus::Message, name: &str) -> bool {
+    let header = msg.header();
+    let Some(sender) = header.sender() else { return false };
+    let owner: Option<String> = conn
+        .call_method(Some("org.freedesktop.DBus"), "/org/freedesktop/DBus", Some("org.freedesktop.DBus"), "GetNameOwner", &(name,))
+        .ok()
+        .and_then(|r| r.body().deserialize::<String>().ok());
+    let ok = owner.as_deref() == Some(sender.as_str());
+    if !ok {
+        log(format!("ignoring {:?} from {sender}: not the owner of {name}", header.member().map(|m| m.to_string())));
+    }
+    ok
+}
+
 fn spawn_signal_threads(
     system: zbus::blocking::Connection,
     shared: Arc<Shared>,
@@ -440,9 +457,13 @@ fn spawn_signal_threads(
         let it = MessageIterator::for_match_rule(rule("com.canonical.Unity.Screen", "DisplayPowerStateChange"), &system, Some(32));
         let shared = shared.clone();
         let prox_tx = prox_tx.clone();
+        let conn = system.clone();
         std::thread::spawn(move || {
             let Ok(it) = it else { return log("cannot watch DisplayPowerStateChange") };
             for msg in it.flatten() {
+                if !from_owner(&conn, &msg, REPOWERD) {
+                    continue;
+                }
                 if let Ok((status, _reason)) = msg.body().deserialize::<(i32, i32)>() {
                     shared.display_on.store(status != 0, Ordering::SeqCst);
                     let _ = wake_tx.send(Wake::Display);
@@ -456,9 +477,13 @@ fn spawn_signal_threads(
     {
         let it = MessageIterator::for_match_rule(rule(POWERKEY_IFACE, "MultiPress"), &system, Some(32));
         let shared = shared.clone();
+        let conn = system.clone();
         std::thread::spawn(move || {
             let Ok(it) = it else { return log("cannot watch PowerKey.MultiPress") };
             for msg in it.flatten() {
+                if !from_owner(&conn, &msg, REPOWERD) {
+                    continue;
+                }
                 if let Ok((count, display_on)) = msg.body().deserialize::<(i32, bool)>() {
                     shared.display_on.store(display_on, Ordering::SeqCst);
                     if shared.covered.load(Ordering::SeqCst) && !display_on {
@@ -760,9 +785,13 @@ fn proximity_thread(
             .build();
         let it = MessageIterator::for_match_rule(rule, &conn, Some(32));
         let tx = tx.clone();
+        let conn = conn.clone();
         std::thread::spawn(move || {
             let Ok(it) = it else { return log("cannot watch SensorProxy") };
             for msg in it.flatten() {
+                if !from_owner(&conn, &msg, "net.hadess.SensorProxy") {
+                    continue;
+                }
                 type Changed = (String, std::collections::HashMap<String, zbus::zvariant::OwnedValue>, Vec<String>);
                 if let Ok((_, changed, _)) = msg.body().deserialize::<Changed>() {
                     if let Some(v) = changed.get("ProximityNear") {

@@ -139,7 +139,7 @@ ItemPage {
                 anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
                 wrapMode: Text.WordWrap
                 fontSize: "small"
-                text: i18n.tr("Works with the screen off too. The flashlight toggles without unlocking; an app opens after you unlock; custom commands only run while unlocked. While a double or triple press is assigned, a single press turns the screen off or on about a third of a second later.")
+                text: i18n.tr("Works with the screen off too. The flashlight toggles without unlocking; an app opens after you unlock; custom commands only run while unlocked. While a double or triple press is assigned, a single press turns the screen off or on about a third of a second later. The emergency (SOS) five presses still work; with a triple press assigned they also run it once.")
             }
 
             ListItem.ThinDivider {}
