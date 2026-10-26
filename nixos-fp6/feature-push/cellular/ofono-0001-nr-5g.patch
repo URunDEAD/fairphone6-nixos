@@ -1,0 +1,428 @@
+diff --git a/drivers/qmimodem/dms.h b/drivers/qmimodem/dms.h
+index 13793f2..e50fdaa 100644
+--- a/drivers/qmimodem/dms.h
++++ b/drivers/qmimodem/dms.h
+@@ -82,6 +82,7 @@ struct qmi_dms_device_caps {
+ #define QMI_DMS_RADIO_IF_GSM			0x04
+ #define QMI_DMS_RADIO_IF_UMTS			0x05
+ #define QMI_DMS_RADIO_IF_LTE			0x08
++#define QMI_DMS_RADIO_IF_5GNR			0x0A
+ 
+ /* Get device manfacturer */
+ #define QMI_DMS_RESULT_MANUFACTURER		0x01
+diff --git a/drivers/qmimodem/nas.c b/drivers/qmimodem/nas.c
+index 1ad4a6f..3a2b0c2 100644
+--- a/drivers/qmimodem/nas.c
++++ b/drivers/qmimodem/nas.c
+@@ -20,6 +20,8 @@ int qmi_nas_rat_to_tech(uint8_t rat)
+ 		return ACCESS_TECHNOLOGY_UTRAN;
+ 	case QMI_NAS_NETWORK_RAT_LTE:
+ 		return ACCESS_TECHNOLOGY_EUTRAN;
++	case QMI_NAS_NETWORK_RAT_NR5G:
++		return ACCESS_TECHNOLOGY_NR_5GCN;
+ 	}
+ 
+ 	return -1;
+diff --git a/drivers/qmimodem/nas.h b/drivers/qmimodem/nas.h
+index c9df8fd..109c9bd 100644
+--- a/drivers/qmimodem/nas.h
++++ b/drivers/qmimodem/nas.h
+@@ -61,6 +61,7 @@ struct qmi_nas_network_rat {
+ #define QMI_NAS_NETWORK_RAT_UMTS		0x05
+ #define QMI_NAS_NETWORK_RAT_LTE			0x08
+ #define QMI_NAS_NETWORK_RAT_TDSCDMA		0x09
++#define QMI_NAS_NETWORK_RAT_NR5G		0x0C
+ #define QMI_NAS_NETWORK_RAT_NO_CHANGE		0xff
+ 
+ /* Initiate a network registration */
+@@ -140,9 +141,20 @@ struct qmi_nas_home_network {
+ #define QMI_NAS_RAT_MODE_PREF_GSM		(1 << 2)
+ #define QMI_NAS_RAT_MODE_PREF_UMTS		(1 << 3)
+ #define QMI_NAS_RAT_MODE_PREF_LTE		(1 << 4)
++#define QMI_NAS_RAT_MODE_PREF_NR5G		(1 << 6)
++
++/* Change Duration: 0x00 = until power cycle (never stored in NV) */
++#define QMI_NAS_PARAM_SYSTEM_SELECTION_CHANGE_DURATION	0x17
++#define QMI_NAS_CHANGE_DURATION_POWER_CYCLE		0x00
+ 
+ #define QMI_NAS_PARAM_SYSTEM_SELECTION_PREF_MODE	0x11
+ 
++/* Get System Info response / System Info indication: 5G NSA (EN-DC) */
++#define QMI_NAS_RESULT_SYSINFO_ENDC_AVAILABLE	0x4E	/* uint8 */
++#define QMI_NAS_RESULT_SYSINFO_DCNR_RESTRICTED	0x4F	/* uint8 */
++#define QMI_NAS_NOTIFY_SYSINFO_ENDC_AVAILABLE	0x50	/* uint8 */
++#define QMI_NAS_NOTIFY_SYSINFO_DCNR_RESTRICTED	0x51	/* uint8 */
++
+ #define QMI_NAS_RESULT_SYSTEM_SELECTION_PREF_MODE	0x11
+ 
+ enum qmi_nas_data_capability {
+diff --git a/drivers/qmimodem/network-registration.c b/drivers/qmimodem/network-registration.c
+index 3c9df0c..83a7925 100644
+--- a/drivers/qmimodem/network-registration.c
++++ b/drivers/qmimodem/network-registration.c
+@@ -31,6 +31,7 @@ struct netreg_data {
+ 	int lac;
+ 	int cellid;
+ 	bool is_roaming;
++	bool nsa;	/* LTE cell with EN-DC available, DCNR not restricted */
+ };
+ 
+ enum roaming_status {
+@@ -221,6 +222,9 @@ static void ss_info_notify(struct qmi_result *result, void *user_data)
+ 
+ 	status = remember_ss_info(data, status, lac, cellid, roaming);
+ 
++	if (tech == ACCESS_TECHNOLOGY_EUTRAN && data->nsa)
++		tech = ACCESS_TECHNOLOGY_EUTRA_NR;
++
+ 	ofono_netreg_status_notify(netreg, status, data->lac, data->cellid,
+ 									tech);
+ }
+@@ -248,6 +252,9 @@ static void get_ss_info_cb(struct qmi_result *result, void *user_data)
+ 
+ 	status = remember_ss_info(data, status, lac, cellid, roaming);
+ 
++	if (tech == ACCESS_TECHNOLOGY_EUTRAN && data->nsa)
++		tech = ACCESS_TECHNOLOGY_EUTRA_NR;
++
+ 	CALLBACK_WITH_SUCCESS(cb, status, data->lac, data->cellid, tech,
+ 								cbd->data);
+ }
+@@ -521,11 +528,54 @@ static void qmi_signal_strength(struct ofono_netreg *netreg,
+ 	l_free(cbd);
+ }
+ 
++/*
++ * 5G NSA: the serving system only lists the LTE anchor.  Like Android's
++ * default "not restricted" policy, report E-UTRA-NR ("nr") while the LTE
++ * cell offers EN-DC and the network does not restrict DCNR for us.
++ */
++static void update_nsa(struct ofono_netreg *netreg, struct qmi_result *result,
++				uint8_t endc_tlv, uint8_t dcnr_tlv)
++{
++	struct netreg_data *data = ofono_netreg_get_data(netreg);
++	uint8_t endc = 0, restricted = 0;
++	bool nsa;
++
++	qmi_result_get_uint8(result, endc_tlv, &endc);
++	qmi_result_get_uint8(result, dcnr_tlv, &restricted);
++
++	nsa = endc && !restricted;
++
++	DBG("EN-DC available %u, DCNR restricted %u", endc, restricted);
++
++	if (nsa == data->nsa)
++		return;
++
++	data->nsa = nsa;
++
++	/* Re-evaluate Technology from the current serving system */
++	qmi_service_send(data->nas, QMI_NAS_GET_SERVING_SYSTEM, NULL,
++					ss_info_notify, netreg, NULL);
++}
++
+ static void system_info_notify(struct qmi_result *result, void *user_data)
+ {
++	struct ofono_netreg *netreg = user_data;
++
+ 	DBG("");
+ 
+-	qmi_result_print_tlvs(result);
++	update_nsa(netreg, result, QMI_NAS_NOTIFY_SYSINFO_ENDC_AVAILABLE,
++				QMI_NAS_NOTIFY_SYSINFO_DCNR_RESTRICTED);
++}
++
++static void get_system_info_cb(struct qmi_result *result, void *user_data)
++{
++	struct ofono_netreg *netreg = user_data;
++
++	if (qmi_result_set_error(result, NULL))
++		return;
++
++	update_nsa(netreg, result, QMI_NAS_RESULT_SYSINFO_ENDC_AVAILABLE,
++				QMI_NAS_RESULT_SYSINFO_DCNR_RESTRICTED);
+ }
+ 
+ static void signal_info_notify(struct qmi_result *result, void *user_data)
+@@ -592,6 +642,9 @@ static void register_indications_cb(struct qmi_result *result,
+ 	qmi_service_register(data->nas, QMI_NAS_SYSTEM_INFO_INDICATION,
+ 					system_info_notify, netreg, NULL);
+ 
++	qmi_service_send(data->nas, QMI_NAS_GET_SYSTEM_INFO, NULL,
++					get_system_info_cb, netreg, NULL);
++
+ 	qmi_service_register(data->nas, QMI_NAS_SIGNAL_INFO_INDICATION,
+ 					signal_info_notify, netreg, NULL);
+ }
+@@ -663,6 +716,7 @@ static int qmi_netreg_probe(struct ofono_netreg *netreg,
+ 	data->operator.tech = -1;
+ 	data->current_rat = QMI_NAS_NETWORK_RAT_NO_CHANGE;
+ 	data->is_roaming = false;
++	data->nsa = false;
+ 	data->lac = -1;
+ 	data->cellid = -1;
+ 
+diff --git a/drivers/qmimodem/radio-settings.c b/drivers/qmimodem/radio-settings.c
+index 0a1d562..bcde7d8 100644
+--- a/drivers/qmimodem/radio-settings.c
++++ b/drivers/qmimodem/radio-settings.c
+@@ -39,23 +39,24 @@ static void get_system_selection_pref_cb(struct qmi_result *result,
+ 		return;
+ 	}
+ 
+-	qmi_result_get_uint16(result,
+-			QMI_NAS_RESULT_SYSTEM_SELECTION_PREF_MODE, &pref);
+-
+-	switch (pref) {
+-	case QMI_NAS_RAT_MODE_PREF_GSM:
+-		mode = OFONO_RADIO_ACCESS_MODE_GSM;
+-		break;
+-	case QMI_NAS_RAT_MODE_PREF_UMTS:
+-		mode = OFONO_RADIO_ACCESS_MODE_UMTS;
+-		break;
+-	case QMI_NAS_RAT_MODE_PREF_LTE:
++	if (!qmi_result_get_uint16(result,
++			QMI_NAS_RESULT_SYSTEM_SELECTION_PREF_MODE, &pref))
++		pref = 0;
++
++	/*
++	 * FP6/Lomiri: TechnologyPreference names the highest generation
++	 * allowed ("lte" = 2G/3G/4G, "nr" = 2G/3G/4G/5G), as Ubuntu Touch's
++	 * oFono and lomiri-system-settings-cellular expect.  Report the
++	 * highest RAT enabled in the modem's mode preference.
++	 */
++	if (pref & QMI_NAS_RAT_MODE_PREF_NR5G)
++		mode = OFONO_RADIO_ACCESS_MODE_NR;
++	else if (pref & QMI_NAS_RAT_MODE_PREF_LTE)
+ 		mode = OFONO_RADIO_ACCESS_MODE_LTE;
+-		break;
+-	case QMI_NAS_RAT_MODE_PREF_GSM|QMI_NAS_RAT_MODE_PREF_LTE:
+-		mode = OFONO_RADIO_ACCESS_MODE_GSM|OFONO_RADIO_ACCESS_MODE_LTE;
+-		break;
+-	}
++	else if (pref & QMI_NAS_RAT_MODE_PREF_UMTS)
++		mode = OFONO_RADIO_ACCESS_MODE_UMTS;
++	else if (pref & QMI_NAS_RAT_MODE_PREF_GSM)
++		mode = OFONO_RADIO_ACCESS_MODE_GSM;
+ 
+ 	CALLBACK_WITH_SUCCESS(cb, mode, cbd->data);
+ }
+@@ -104,9 +105,29 @@ static void qmi_set_rat_mode(struct ofono_radio_settings *rs, unsigned int mode,
+ 
+ 	DBG("");
+ 
+-	if (mode == OFONO_RADIO_ACCESS_MODE_ANY)
++	/*
++	 * A single generation means "up to and including" it (Ubuntu Touch
++	 * semantics, see get_system_selection_pref_cb); explicit combinations
++	 * such as "lte,umts" are passed through unchanged.
++	 */
++	switch (mode) {
++	case OFONO_RADIO_ACCESS_MODE_ANY:
+ 		pref = data->rat_mode_any;
+-	else {
++		break;
++	case OFONO_RADIO_ACCESS_MODE_NR:
++		pref = data->rat_mode_any;
++		break;
++	case OFONO_RADIO_ACCESS_MODE_LTE:
++		pref = QMI_NAS_RAT_MODE_PREF_LTE | QMI_NAS_RAT_MODE_PREF_UMTS |
++					QMI_NAS_RAT_MODE_PREF_GSM;
++		break;
++	case OFONO_RADIO_ACCESS_MODE_UMTS:
++		pref = QMI_NAS_RAT_MODE_PREF_UMTS | QMI_NAS_RAT_MODE_PREF_GSM;
++		break;
++	case OFONO_RADIO_ACCESS_MODE_GSM:
++		pref = QMI_NAS_RAT_MODE_PREF_GSM;
++		break;
++	default:
+ 		if (mode & OFONO_RADIO_ACCESS_MODE_GSM)
+ 			pref |= QMI_NAS_RAT_MODE_PREF_GSM;
+ 
+@@ -115,12 +136,30 @@ static void qmi_set_rat_mode(struct ofono_radio_settings *rs, unsigned int mode,
+ 
+ 		if (mode & OFONO_RADIO_ACCESS_MODE_LTE)
+ 			pref |= QMI_NAS_RAT_MODE_PREF_LTE;
++
++		if (mode & OFONO_RADIO_ACCESS_MODE_NR)
++			pref |= QMI_NAS_RAT_MODE_PREF_NR5G;
++		break;
+ 	}
+ 
++	/* Never ask for a RAT the modem does not have */
++	if (data->rat_mode_any && (pref & data->rat_mode_any))
++		pref &= data->rat_mode_any;
++
++	DBG("mode 0x%x -> QMI mode preference 0x%x", mode, pref);
++
+ 	param = qmi_param_new();
+ 
+ 	qmi_param_append_uint16(param, QMI_NAS_PARAM_SYSTEM_SELECTION_PREF_MODE,
+ 			pref);
++	/*
++	 * Runtime only: without this TLV the modem defaults to a permanent
++	 * change (NV write).  oFono re-applies the stored preference each
++	 * time the modem registers, so power-cycle duration is sufficient.
++	 */
++	qmi_param_append_uint8(param,
++			QMI_NAS_PARAM_SYSTEM_SELECTION_CHANGE_DURATION,
++			QMI_NAS_CHANGE_DURATION_POWER_CYCLE);
+ 
+ 	if (qmi_service_send(data->nas,
+ 				QMI_NAS_SET_SYSTEM_SELECTION_PREFERENCE, param,
+@@ -154,6 +193,10 @@ static unsigned int _update_available_rats(struct settings_data *rsd,
+ 			available_rats |= OFONO_RADIO_ACCESS_MODE_LTE;
+ 			rsd->rat_mode_any |= QMI_NAS_RAT_MODE_PREF_LTE;
+ 			break;
++		case QMI_DMS_RADIO_IF_5GNR:
++			available_rats |= OFONO_RADIO_ACCESS_MODE_NR;
++			rsd->rat_mode_any |= QMI_NAS_RAT_MODE_PREF_NR5G;
++			break;
+ 		}
+ 	}
+ 
+diff --git a/drivers/qmimodem/wds.c b/drivers/qmimodem/wds.c
+index 07c96d4..0017bfa 100644
+--- a/drivers/qmimodem/wds.c
++++ b/drivers/qmimodem/wds.c
+@@ -114,10 +114,15 @@ int qmi_wds_parse_extended_data_bearer_technology(const void *edbt, uint16_t len
+ 	case QMI_WDS_RAT_LTE:
+ 		bearer = PACKET_BEARER_EPS;
+ 		break;
++	case QMI_WDS_RAT_5GNR:
++		return PACKET_BEARER_NR;
+ 	default:
+ 		return -ENOENT;
+ 	}
+ 
++	if (so & (QMI_WDS_SO_5G_NSA | QMI_WDS_SO_5G_SA))
++		return PACKET_BEARER_NR;
++
+ 	if (so & (QMI_WDS_SO_LTE_LIMITED | QMI_WDS_SO_LTE_FDD |
+ 			QMI_WDS_SO_LTE_TDD))
+ 		return PACKET_BEARER_EPS;
+diff --git a/drivers/qmimodem/wds.h b/drivers/qmimodem/wds.h
+index 9343d1f..a9f5473 100644
+--- a/drivers/qmimodem/wds.h
++++ b/drivers/qmimodem/wds.h
+@@ -81,6 +81,7 @@ enum qmi_wds_rat {
+ 	QMI_WDS_RAT_LTE				= 0x03,
+ 	QMI_WDS_RAT_TDSCDMA			= 0x04,
+ 	QMI_WDS_RAT_WLAN			= 0x05,
++	QMI_WDS_RAT_5GNR			= 0x06,
+ };
+ 
+ enum qmi_wds_service_option {
+diff --git a/include/radio-settings.h b/include/radio-settings.h
+index 487963c..58f0b91 100644
+--- a/include/radio-settings.h
++++ b/include/radio-settings.h
+@@ -21,6 +21,7 @@ enum ofono_radio_access_mode {
+ 	OFONO_RADIO_ACCESS_MODE_GSM	= 0x1,
+ 	OFONO_RADIO_ACCESS_MODE_UMTS	= 0x2,
+ 	OFONO_RADIO_ACCESS_MODE_LTE	= 0x4,
++	OFONO_RADIO_ACCESS_MODE_NR	= 0x8,
+ };
+ 
+ enum ofono_radio_band_gsm {
+diff --git a/src/common.c b/src/common.c
+index 06f29b9..5e09be0 100644
+--- a/src/common.c
++++ b/src/common.c
+@@ -659,6 +659,13 @@ const char *registration_tech_to_string(int tech)
+ 		return "lte-cat-m1";
+ 	case ACCESS_TECHNOLOGY_NB_IOT_NB1:
+ 		return "lte-cat-nb1";
++	case ACCESS_TECHNOLOGY_EUTRA_5GCN:
++		return "lte";
++	/* NR standalone and E-UTRA-NR dual connectivity (EN-DC, 5G NSA) */
++	case ACCESS_TECHNOLOGY_NR_5GCN:
++	case ACCESS_TECHNOLOGY_NG_RAN:
++	case ACCESS_TECHNOLOGY_EUTRA_NR:
++		return "nr";
+ 	default:
+ 		return "";
+ 	}
+diff --git a/src/common.h b/src/common.h
+index 67c6376..f351267 100644
+--- a/src/common.h
++++ b/src/common.h
+@@ -22,6 +22,10 @@ enum access_technology {
+ 	ACCESS_TECHNOLOGY_EUTRAN =		7,
+ 	ACCESS_TECHNOLOGY_NB_IOT_M1 =		8,
+ 	ACCESS_TECHNOLOGY_NB_IOT_NB1 =		9,
++	ACCESS_TECHNOLOGY_EUTRA_5GCN =		10,
++	ACCESS_TECHNOLOGY_NR_5GCN =		11,
++	ACCESS_TECHNOLOGY_NG_RAN =		12,
++	ACCESS_TECHNOLOGY_EUTRA_NR =		13,
+ };
+ 
+ /* 27.007 Section 7.2 <stat> */
+@@ -61,6 +65,7 @@ enum packet_bearer {
+ 	PACKET_BEARER_HSDPA =		5,
+ 	PACKET_BEARER_HSUPA_HSDPA =	6,
+ 	PACKET_BEARER_EPS =		7,
++	PACKET_BEARER_NR =		8,	/* not in 27.007 7.29 */
+ };
+ 
+ /* 27.007 Section 7.30 */
+diff --git a/src/gprs.c b/src/gprs.c
+index c528766..5ef5974 100644
+--- a/src/gprs.c
++++ b/src/gprs.c
+@@ -146,6 +146,8 @@ const char *packet_bearer_to_string(int bearer)
+ 		return "hspa";
+ 	case PACKET_BEARER_EPS:
+ 		return "lte";
++	case PACKET_BEARER_NR:
++		return "nr";
+ 	}
+ 	return "";
+ }
+@@ -1604,8 +1606,12 @@ static void detach_active_contexts(struct ofono_gprs *gprs)
+ 
+ static gboolean on_lte(struct ofono_gprs *gprs)
+ {
+-	if (ofono_netreg_get_technology(gprs->netreg) ==
+-			ACCESS_TECHNOLOGY_EUTRAN && have_read_settings(gprs))
++	int tech = ofono_netreg_get_technology(gprs->netreg);
++
++	if (L_IN_SET(tech, ACCESS_TECHNOLOGY_EUTRAN,
++			ACCESS_TECHNOLOGY_EUTRA_5GCN, ACCESS_TECHNOLOGY_NR_5GCN,
++			ACCESS_TECHNOLOGY_NG_RAN, ACCESS_TECHNOLOGY_EUTRA_NR) &&
++			have_read_settings(gprs))
+ 		return TRUE;
+ 
+ 	return FALSE;
+diff --git a/src/radio-settings.c b/src/radio-settings.c
+index 588a355..4a0eb70 100644
+--- a/src/radio-settings.c
++++ b/src/radio-settings.c
+@@ -55,6 +55,8 @@ static const char *radio_access_mode_to_string(unsigned int m)
+ 		return "umts";
+ 	case OFONO_RADIO_ACCESS_MODE_LTE:
+ 		return "lte";
++	case OFONO_RADIO_ACCESS_MODE_NR:
++		return "nr";
+ 	}
+ 
+ 	if (m == (OFONO_RADIO_ACCESS_MODE_UMTS|OFONO_RADIO_ACCESS_MODE_GSM))
+@@ -85,6 +87,9 @@ static gboolean radio_access_mode_from_string(const char *str,
+ 	} else if (g_str_equal(str, "lte")) {
+ 		*mode = OFONO_RADIO_ACCESS_MODE_LTE;
+ 		return TRUE;
++	} else if (g_str_equal(str, "nr")) {
++		*mode = OFONO_RADIO_ACCESS_MODE_NR;
++		return TRUE;
+ 	} else if (g_str_equal(str, "umts,gsm")) {
+ 		*mode = OFONO_RADIO_ACCESS_MODE_UMTS|OFONO_RADIO_ACCESS_MODE_GSM;
+ 		return TRUE;
+@@ -428,7 +433,7 @@ static void radio_available_rats_query_callback(const struct ofono_error *error,
+ 	struct ofono_radio_settings *rs = data;
+ 
+ 	if (error->type == OFONO_ERROR_TYPE_NO_ERROR)
+-		rs->available_rats = available_rats & 0x7;
++		rs->available_rats = available_rats & 0xf;
+ 	else
+ 		DBG("Error while querying available rats");
+ 

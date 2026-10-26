@@ -1,0 +1,25 @@
+diff --git a/drivers/qmimodem/devinfo.c b/drivers/qmimodem/devinfo.c
+index fd1ca3c..dd7b9d8 100644
+--- a/drivers/qmimodem/devinfo.c
++++ b/drivers/qmimodem/devinfo.c
+@@ -131,10 +131,16 @@ static void get_ids_cb(struct qmi_result *result, void *user_data)
+ 	if (str == NULL && meid && strcmp(meid, "0"))
+ 		str = meid;
+ 
+-	if (str)
+-		CALLBACK_WITH_SUCCESS(cb, str, cbd->data);
+-	else
+-		CALLBACK_WITH_FAILURE(cb, NULL, cbd->data);
++	/*
++	 * FP6: the multi-SIM modem reports no ESN/IMEI/MEID through plain
++	 * DMS Get IDs.  Without a Serial property lomiri-indicator-network
++	 * never marks the modem ready (no cellular indicator, no mobile data
++	 * switch), so publish a placeholder instead of failing.
++	 */
++	if (str == NULL)
++		str = "unknown";
++
++	CALLBACK_WITH_SUCCESS(cb, str, cbd->data);
+ 
+ 	l_free(esn);
+ 	l_free(imei);

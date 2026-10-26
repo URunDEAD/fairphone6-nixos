@@ -117,6 +117,9 @@ in rec {
     text = builtins.readFile ./fp6-modem-mcfg-activate.sh;
   };
 
+  # System Settings > Cellular panel (network mode, APNs, data roaming).
+  lomiri-system-settings-cellular = pkgs.lomiri.callPackage ./lomiri-system-settings-cellular.nix { };
+
   # IPA data port + QMAP format + rmnet premux links (see the script).
   fp6-modem-data-port = pkgs.writeShellApplication {
     name = "fp6-modem-data-port";
@@ -131,8 +134,30 @@ in rec {
   #  * the provisioning DB is looked up only at /usr/share/ofono/provision.db
   #    ("Unable to open provisioning database!", "Provisioning failed"), while
   #    the build installs it to $out/share/ofono/provision.db.
+  #
+  # FP6 patches (results/feature-push-20261024/cellular/4g5g-README.md):
+  #  * 0001: 5G NR. RadioSettings "nr" (TechnologyPreference values name the
+  #    highest generation, as Ubuntu Touch / lomiri-system-settings-cellular
+  #    expect: "lte" = 2G/3G/4G, "nr" = 2G/3G/4G/5G); QMI mode preference
+  #    changes are sent with Change Duration = power-cycle (no NV write);
+  #    NetworkRegistration.Technology / ConnectionManager.Bearer "nr" for
+  #    NR SA and for LTE cells with EN-DC available and DCNR not restricted.
+  #  * 0002: mobile data off (ConnectionManager.Powered=false) keeps the PS
+  #    attach (modem stays on LTE, SMS over SGs and IMS unaffected) and only
+  #    releases the non-IMS contexts; data on re-reports the LTE default
+  #    bearer (qmimodem list_active_contexts).
+  #  * 0003: re-apply TechnologyPreference whenever the modem goes online
+  #    (QMI falls back to the stored NV mode preference on LPM -> online).
+  #  * 0004: Modem.Serial "unknown" when DMS reports no IMEI/ESN/MEID (this
+  #    modem); lomiri-indicator-network needs a Serial to use the modem.
   ofono = pkgs.ofono.overrideAttrs (old: {
     pname = "ofono-fp6";
+    patches = (old.patches or [ ]) ++ [
+      ./ofono-0001-nr-5g.patch
+      ./ofono-0002-keep-ps-attach-when-data-off.patch
+      ./ofono-0003-radio-settings-reapply-on-online.patch
+      ./ofono-0004-qmimodem-serial-placeholder.patch
+    ];
     configureFlags = (old.configureFlags or [ ]) ++ [ "--localstatedir=/var" ];
     postPatch = (old.postPatch or "") + ''
       substituteInPlace src/provisiondb.c \

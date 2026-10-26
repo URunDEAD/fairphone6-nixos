@@ -5,5 +5,5 @@ let
   pkgs = import pin { system = "aarch64-linux"; config.allowUnfree = true; };
   fp6 = import ./packages.nix { inherit pkgs; };
 in {
-  inherit (fp6) tqftpserv fp6-modem-mcfg-activate fp6-modem-data-port ofono fp6-loc-nmea fp6-location-indicator msm-modem-uim-selection fp6-ofono-account-wrapped;
+  inherit (fp6) tqftpserv fp6-modem-mcfg-activate fp6-modem-data-port ofono fp6-loc-nmea fp6-location-indicator msm-modem-uim-selection fp6-ofono-account-wrapped lomiri-system-settings-cellular;
 }

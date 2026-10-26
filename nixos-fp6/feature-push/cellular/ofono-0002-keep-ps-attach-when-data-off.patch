@@ -1,0 +1,219 @@
+diff --git a/drivers/qmimodem/gprs.c b/drivers/qmimodem/gprs.c
+index 4925923..41f7855 100644
+--- a/drivers/qmimodem/gprs.c
++++ b/drivers/qmimodem/gprs.c
+@@ -24,9 +24,11 @@ struct gprs_data {
+ 	struct qmi_service *nas;
+ 	struct qmi_service *wds;
+ 	unsigned int default_profile;
++	bool on_eps;	/* serving RAT is LTE or NR: default bearer exists */
+ };
+ 
+-static bool extract_ss_info(struct qmi_result *result, int *status, int *tech)
++static bool extract_ss_info(struct qmi_result *result, int *status, int *tech,
++				bool *on_eps)
+ {
+ 	const struct qmi_nas_serving_system *ss;
+ 	uint16_t len;
+@@ -50,6 +52,10 @@ static bool extract_ss_info(struct qmi_result *result, int *status, int *tech)
+ 		*tech = qmi_nas_rat_to_tech(ss->radio_if[i]);
+ 	}
+ 
++	*on_eps = ss->ps_state == QMI_NAS_ATTACH_STATE_ATTACHED &&
++			(*tech == ACCESS_TECHNOLOGY_EUTRAN ||
++			 *tech == ACCESS_TECHNOLOGY_NR_5GCN);
++
+ 	return true;
+ }
+ 
+@@ -102,12 +108,13 @@ static void get_lte_attach_params(struct ofono_gprs* gprs)
+ 
+ static int handle_ss_info(struct qmi_result *result, struct ofono_gprs *gprs)
+ {
++	struct gprs_data *data = ofono_gprs_get_data(gprs);
+ 	int status;
+ 	int tech;
+ 
+ 	DBG("");
+ 
+-	if (!extract_ss_info(result, &status, &tech))
++	if (!extract_ss_info(result, &status, &tech, &data->on_eps))
+ 		return -1;
+ 
+ 	return status;
+@@ -227,6 +234,23 @@ static void qmi_set_attached(struct ofono_gprs *gprs, int attached,
+ 	l_free(cbd);
+ }
+ 
++/*
++ * Report the LTE/NR default bearer (again).  Used at registration and when
++ * mobile data is switched back on while the modem stayed attached.
++ */
++static void qmi_list_active_contexts(struct ofono_gprs *gprs,
++					ofono_gprs_cb_t cb, void *user_data)
++{
++	struct gprs_data *data = ofono_gprs_get_data(gprs);
++
++	DBG("on_eps %d", data->on_eps);
++
++	if (data->on_eps)
++		get_lte_attach_params(gprs);
++
++	CALLBACK_WITH_SUCCESS(cb, user_data);
++}
++
+ static void get_ss_info_cb(struct qmi_result *result, void *user_data)
+ {
+ 	struct cb_data *cbd = user_data;
+@@ -472,6 +496,7 @@ static const struct ofono_gprs_driver driver = {
+ 	.remove			= qmi_gprs_remove,
+ 	.set_attached		= qmi_set_attached,
+ 	.attached_status	= qmi_attached_status,
++	.list_active_contexts	= qmi_list_active_contexts,
+ };
+ 
+ OFONO_ATOM_DRIVER_BUILTIN(gprs, qmimodem, &driver)
+diff --git a/src/gprs.c b/src/gprs.c
+index 5ef5974..56610a8 100644
+--- a/src/gprs.c
++++ b/src/gprs.c
+@@ -1257,6 +1257,14 @@ static DBusMessage *pri_set_property(DBusConnection *conn,
+ 		if (value && !ctx->gprs->attached)
+ 			return __ofono_error_not_attached(msg);
+ 
++		/*
++		 * Mobile data off only blocks internet contexts; MMS, IMS,
++		 * SUPL etc. keep working (as on Android).
++		 */
++		if (value && !ctx->gprs->powered &&
++				ctx->type == OFONO_GPRS_CONTEXT_TYPE_INTERNET)
++			return __ofono_error_not_allowed(msg);
++
+ 		if (ctx->gprs->flags & GPRS_FLAG_ATTACHING)
+ 			return __ofono_error_attach_in_progress(msg);
+ 
+@@ -1617,6 +1625,52 @@ static gboolean on_lte(struct ofono_gprs *gprs)
+ 	return FALSE;
+ }
+ 
++static void gprs_list_active_contexts_callback(const struct ofono_error *error,
++						void *data);
++
++/*
++ * Powered=false: release the active internet contexts (the modem stays
++ * attached and on LTE).  Powered=true on LTE/NR: the default bearer is
++ * still up in the modem, so ask the driver to report it again; elsewhere
++ * the context manager (NetworkManager) activates contexts as usual.
++ */
++static void gprs_set_powered_contexts(struct ofono_gprs *gprs)
++{
++	GSList *l;
++
++	if (gprs->powered) {
++		if (on_lte(gprs) && !have_active_contexts(gprs) &&
++				gprs->driver->list_active_contexts)
++			gprs->driver->list_active_contexts(gprs,
++					gprs_list_active_contexts_callback,
++					gprs);
++		return;
++	}
++
++	for (l = gprs->contexts; l; l = l->next) {
++		struct pri_context *ctx = l->data;
++		struct ofono_gprs_context *gc = ctx->context_driver;
++
++		if (ctx->active == FALSE || ctx->pending)
++			continue;
++
++		/* Data off only affects internet contexts (MMS, IMS stay) */
++		if (ctx->type != OFONO_GPRS_CONTEXT_TYPE_INTERNET)
++			continue;
++
++		DBG("mobile data off: releasing %s", ctx->path);
++
++		if (gc && gc->driver->detach_shutdown != NULL)
++			gc->driver->detach_shutdown(gc, ctx->context.cid);
++
++		pri_reset_context_settings(ctx);
++		release_context(ctx);
++		pri_context_signal_active(ctx);
++	}
++
++	gprs_attached_update(gprs);
++}
++
+ static void gprs_attached_update(struct ofono_gprs *gprs)
+ {
+ 	ofono_bool_t attached;
+@@ -1631,7 +1685,19 @@ static void gprs_attached_update(struct ofono_gprs *gprs)
+ 		 * expect the gprs status to be unknown. That must not
+ 		 * result in detaching...
+ 		 */
+-		attached = have_active_contexts(gprs);
++		attached = have_active_contexts(gprs) ||
++			/*
++			 * Mobile data off: the modem is still PS attached;
++			 * report it so MMS/IMS contexts can be activated.
++			 * (With data on, Attached keeps following the
++			 * automatic default-bearer context, as upstream.)
++			 */
++			(!gprs->powered && gprs->driver_attached &&
++				L_IN_SET(status,
++				NETWORK_REGISTRATION_STATUS_REGISTERED,
++				NETWORK_REGISTRATION_STATUS_REGISTERED_SMS_EUTRAN,
++				NETWORK_REGISTRATION_STATUS_ROAMING,
++				NETWORK_REGISTRATION_STATUS_ROAMING_SMS_EUTRAN));
+ 	else
+ 		attached = gprs->driver_attached && L_IN_SET(status,
+ 			NETWORK_REGISTRATION_STATUS_REGISTERED,
+@@ -1746,7 +1812,13 @@ static void gprs_netreg_update(struct ofono_gprs *gprs)
+ 		((gprs->netreg_status == NETWORK_REGISTRATION_STATUS_ROAMING) ||
+ 		(gprs->netreg_status == NETWORK_REGISTRATION_STATUS_ROAMING_SMS_EUTRAN)));
+ 
+-	attach = attach && gprs->powered;
++	/*
++	 * FP6: keep the packet-domain attach while mobile data is off
++	 * (Powered=false), as Android does.  Detaching made QMI modems drop
++	 * to a CS-only service domain and leave LTE for GSM, which also
++	 * kills IMS/VoLTE and SMS over SGs/IMS.  Powered only controls the
++	 * user-facing contexts (see gprs_set_powered_contexts()).
++	 */
+ 
+ 	DBG("attach: %u, driver_attached: %u", attach, gprs->driver_attached);
+ 
+@@ -1904,6 +1976,7 @@ static DBusMessage *gprs_set_property(DBusConnection *conn,
+ 					gprs->settings);
+ 		}
+ 
++		gprs_set_powered_contexts(gprs);
+ 		gprs_netreg_update(gprs);
+ 	} else {
+ 		return __ofono_error_invalid_args(msg);
+@@ -2041,6 +2114,16 @@ void ofono_gprs_cid_activated(struct ofono_gprs  *gprs, unsigned int cid,
+ 		return;
+ 	}
+ 
++	/*
++	 * Mobile data off: the modem keeps its default EPS bearer (we stay
++	 * attached), but it is not exposed as an active internet context.
++	 * Powered=true asks the driver again (list_active_contexts).
++	 */
++	if (!gprs->powered) {
++		DBG("cid %u not exposed: ConnectionManager not powered", cid);
++		return;
++	}
++
+ 	if (strlen(apn) > OFONO_GPRS_MAX_APN_LENGTH
+ 				|| is_valid_apn(apn) == FALSE) {
+ 		ofono_error("Context activated with an invalid APN");
+@@ -2653,10 +2736,6 @@ void ofono_gprs_status_notify(struct ofono_gprs *gprs, int status)
+ 		return;
+ 	}
+ 
+-	/* We registered without being powered */
+-	if (gprs->powered == FALSE)
+-		goto detach;
+-
+ 	if (gprs->roaming_allowed == FALSE &&
+ 			status == NETWORK_REGISTRATION_STATUS_ROAMING)
+ 		goto detach;

@@ -30,6 +30,7 @@ in {
   nuntium = on.systemd.user.services ? nuntium;
   account = on.systemd.user.services.fp6-ofono-account.serviceConfig.ExecStart;
   userGroups = on.users.users.user.extraGroups;
+  indicatorNetworkCondition = on.systemd.user.services.lomiri-indicator-network.unitConfig.ConditionUser;
   writableRmtfsRejected = failed rw;
   agps = {
     enabled = on.services.fp6Agps.enable;

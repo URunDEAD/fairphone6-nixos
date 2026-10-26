@@ -1,0 +1,66 @@
+diff --git a/src/radio-settings.c b/src/radio-settings.c
+index 4a0eb70..1160b3c 100644
+--- a/src/radio-settings.c
++++ b/src/radio-settings.c
+@@ -37,6 +37,7 @@ struct ofono_radio_settings {
+ 	enum ofono_radio_band_umts pending_band_umts;
+ 	ofono_bool_t fast_dormancy_pending;
+ 	uint32_t available_rats;
++	unsigned int online_watch;
+ 	GKeyFile *settings;
+ 	char *imsi;
+ 	const struct ofono_radio_settings_driver *driver;
+@@ -704,6 +705,11 @@ static void radio_settings_unregister(struct ofono_atom *atom)
+ 	ofono_modem_remove_interface(modem, OFONO_RADIO_SETTINGS_INTERFACE);
+ 	g_dbus_unregister_interface(conn, path, OFONO_RADIO_SETTINGS_INTERFACE);
+ 
++	if (rs->online_watch) {
++		__ofono_modem_remove_online_watch(modem, rs->online_watch);
++		rs->online_watch = 0;
++	}
++
+ 	if (rs->settings) {
+ 		storage_close(rs->imsi, SETTINGS_STORE, rs->settings, TRUE);
+ 
+@@ -732,6 +738,31 @@ OFONO_DEFINE_ATOM_CREATE(radio_settings, OFONO_ATOM_TYPE_RADIO_SETTINGS, {
+ 	atom->mode = -1;
+ })
+ 
++static void radio_mode_reapply_cb(const struct ofono_error *error, void *data)
++{
++	if (error->type != OFONO_ERROR_TYPE_NO_ERROR)
++		DBG("Error re-applying radio access mode");
++}
++
++/*
++ * Drivers may apply the mode for the current power cycle only (qmimodem
++ * does, to avoid NV writes); QMI modems fall back to their stored mode
++ * preference on every low-power -> online transition (flight mode, oFono
++ * Online toggles).  Re-apply the user's TechnologyPreference then.
++ */
++static void radio_online_notify(struct ofono_modem *modem,
++					ofono_bool_t online, void *data)
++{
++	struct ofono_radio_settings *rs = data;
++
++	if (!online || rs->pending || rs->driver->set_rat_mode == NULL)
++		return;
++
++	DBG("modem online: re-applying mode %u", rs->mode);
++
++	rs->driver->set_rat_mode(rs, rs->mode, radio_mode_reapply_cb, rs);
++}
++
+ static void ofono_radio_finish_register(struct ofono_radio_settings *rs)
+ {
+ 	DBusConnection *conn = ofono_dbus_get_connection();
+@@ -749,6 +780,9 @@ static void ofono_radio_finish_register(struct ofono_radio_settings *rs)
+ 
+ 	ofono_modem_add_interface(modem, OFONO_RADIO_SETTINGS_INTERFACE);
+ 
++	rs->online_watch = __ofono_modem_add_online_watch(modem,
++					radio_online_notify, rs, NULL);
++
+ 	__ofono_atom_register(rs->atom, radio_settings_unregister);
+ }
+ 

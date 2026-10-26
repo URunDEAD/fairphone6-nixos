@@ -241,6 +241,23 @@ in {
       services.udev.extraRules = ''
         ACTION=="add", SUBSYSTEM=="net", KERNEL=="rmnet_ipa0", RUN+="${pkgs.systemd}/bin/systemctl --no-block try-restart ofono.service"
       '';
+      # ---- mobile data policy: one owner -------------------------------
+      # lomiri-indicator-network-service is the data policy manager: it keeps
+      # its own per-user MobileDataEnabled and forces oFono's
+      # ConnectionManager.Powered back to it on every change. The pre-login
+      # greeter (lightdm user, own ~/.config/connectivity-service, default
+      # "false") ran a second instance next to the user's; after a
+      # display-manager restart both fought over Powered thousands of times
+      # (NetworkManager's gsm device flapped and gave up). oFono already
+      # stores Powered persistently per SIM, so the greeter does not need a
+      # policy instance at all: the user's choice stays system-wide.
+      # Cost: no network indicator / SIM-PIN prompt on the pre-login greeter
+      # (the user session prompts after login).
+      systemd.user.services.lomiri-indicator-network = {
+        overrideStrategy = "asDropin";
+        unitConfig.ConditionUser = "!lightdm";
+      };
+
       # telepathy-ofono's ofono.manager must be visible to mission-control
       # (XDG_DATA_DIRS -> /run/current-system/sw/share/telepathy/managers).
       environment.pathsToLink = [ "/share/telepathy" ];
@@ -253,6 +270,21 @@ in {
       services.fp6TelephonyMiddleware.enable = true;
       programs.fp6TelephonyFrontends.enable = lib.mkDefault true;
       services.fp6Mms.enable = cfg.mms;
+
+      # System Settings > Cellular: network mode ("2G/3G/4G/5G" via oFono
+      # RadioSettings), APNs, data roaming. Added as a wrapper plugin, so
+      # only the lomiri-system-settings wrapper is rebuilt.
+      nixpkgs.overlays = [ (_final: prev: {
+        lomiri = prev.lomiri.overrideScope (lfinal: lprev: {
+          lomiri-system-settings = lprev.lomiri-system-settings.override (old: {
+            plugins = (old.plugins or [ ]) ++ [
+              (lfinal.callPackage ./lomiri-system-settings-cellular.nix {
+                inherit (lprev) lomiri-system-settings-unwrapped;
+              })
+            ];
+          });
+        });
+      }) ];
 
       environment.systemPackages = [ fp6.ofono pkgs.libqmi fp6.fp6-loc-nmea ];
       system.build.fp6-cellular = {
