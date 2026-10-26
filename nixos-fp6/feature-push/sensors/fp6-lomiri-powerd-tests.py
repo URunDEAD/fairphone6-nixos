@@ -71,6 +71,13 @@ check(calls[-1] == ("off", m.REASON_POWERKEY), "plain short press after a chord 
 n = len(calls)
 core.volume_down(1); core.power_key(1, now=90.0); core.power_key(0, now=90.2); core.volume_down(0)
 check(len(calls) == n + 1 and calls[-1] == ("on", m.REASON_POWERKEY), "chord with the display off still wakes it")
+# no usable Volume-Down node (no device, or one that cannot be opened): no crash
+with tempfile.TemporaryDirectory() as root:
+    check(core._start_volume_down(Path(root)) is False, "no Volume-Down device: chord detection off, no crash")
+    dev = Path(root) / "event9999" / "device" / "capabilities"
+    dev.mkdir(parents=True)
+    (dev / "key").write_text(f"{1 << (m.KEY_VOLUMEDOWN - 64):x} 0\n")
+    check(core._start_volume_down(Path(root)) is False, "Volume-Down node that cannot be opened: no crash")
 
 # power key double/triple press (gestures): deterministic fake timer
 timers = {}

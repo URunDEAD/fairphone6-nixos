@@ -672,11 +672,15 @@ class Core:
             except (OSError, ValueError):
                 continue
             if bits >> KEY_VOLUMEDOWN & 1:
-                fd = os.open(Path("/dev/input") / entry.name, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+                try:
+                    fd = os.open(Path("/dev/input") / entry.name, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+                except OSError as error:
+                    log("cannot open", entry.name, "for Volume-Down:", error)
+                    continue
                 break
         else:
             log("Volume-Down evdev node not found; Power+Volume-Down may toggle the display")
-            return
+            return False
 
         def readable(source, condition):
             try:
@@ -693,6 +697,7 @@ class Core:
             return GLib.SOURCE_CONTINUE
 
         GLib.io_add_watch(fd, GLib.IO_IN | GLib.IO_ERR | GLib.IO_HUP, readable)
+        return True
 
     def volume_down(self, value):
         if value == 1:
