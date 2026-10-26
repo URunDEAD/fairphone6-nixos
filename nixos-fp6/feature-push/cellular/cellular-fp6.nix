@@ -49,6 +49,7 @@ in {
     ../../mms-fp6.nix                  # nuntium user service
     ../../telephony-frontends-fp6.nix  # Lomiri dialer / messaging / contacts
     ./messaging-fp6.nix                # SMS notifications + telepathy-ofono SQLite
+    ./mms-fp6.nix                      # nuntium fixes (modem-removal panic, MMSC response text)
     ./agps/agps-fp6.nix                # assisted GPS (XTRA / time / coarse position)
   ];
 

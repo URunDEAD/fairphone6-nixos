@@ -1,0 +1,49 @@
+diff --git a/cmd/nuntium/mediator.go b/cmd/nuntium/mediator.go
+index 2d7e7d9..4f597ca 100644
+--- a/cmd/nuntium/mediator.go
++++ b/cmd/nuntium/mediator.go
+@@ -575,6 +575,9 @@ func (mediator *Mediator) sendMSendReq(mSendReqFile, uuid string) {
+ 	}
+ 
+ 	log.Println("m-send.conf ResponseStatus for", uuid, "is", mSendConf.ResponseStatus)
++	if mSendConf.ResponseText != "" {
++		log.Printf("m-send.conf ResponseText for %s: %q", uuid, mSendConf.ResponseText)
++	}
+ 	var status string
+ 	switch mSendConf.Status() {
+ 	case nil:
+diff --git a/ofono/modem.go b/ofono/modem.go
+index 5c2ac58..63e4c3d 100644
+--- a/ofono/modem.go
++++ b/ofono/modem.go
+@@ -159,13 +159,20 @@ func (modem *Modem) watchStatus() {
+ 	const simChanged = SIM_MANAGER_INTERFACE + ".PropertyChanged"
+ 	var propName string
+ 	var propValue dbus.Variant
++	// Delete() closes modem.signal before signalling endWatch; a receive
++	// from the closed channel yields nil. Stop selecting on it then.
++	signals := modem.signal
+ watchloop:
+ 	for {
+ 		select {
+ 		case <-modem.endWatch:
+ 			log.Printf("Ending modem watch for %s", modem.Modem)
+ 			break watchloop
+-		case s := <-modem.signal:
++		case s, ok := <-signals:
++			if !ok || s == nil {
++				signals = nil
++				continue watchloop
++			}
+ 			if s.Sender == modem.ofonoConnName && s.Path == modem.Modem && s.Name == modemChanged {
+ 				if err := dbus.Store(s.Body, &propName, &propValue); err != nil {
+ 					log.Printf("Cannot interpret Modem Property change: %s", err)
+@@ -309,7 +316,7 @@ func activationErrorNeedsWait(err error) bool {
+ 
+ func (context *OfonoContext) getContextProperties(conn *dbus.Conn) {
+ 	ctxObj := conn.Object(OFONO_SENDER, context.ObjectPath)
+-	if err := ctxObj.Call(CONNECTION_CONTEXT_INTERFACE + "." + DBUS_CALL_GET_PROPERTIES, 0).Store(&context.Properties); err == nil {
++	if err := ctxObj.Call(CONNECTION_CONTEXT_INTERFACE + "." + DBUS_CALL_GET_PROPERTIES, 0).Store(&context.Properties); err != nil {
+ 		log.Println("Cannot get properties for", context.ObjectPath, err)
+ 	}
+ }
