@@ -19,6 +19,37 @@ pub struct Accel {
     axes: [File; 3],
     /// g per LSB.
     scale: f64,
+    /// mount_matrix rows (identity when absent): device frame, "gravity"
+    /// convention of iio-sensor-proxy: upright portrait reads y = -1 g, lying
+    /// face up z = -1 g, face down z = +1 g.
+    pub mount: [[f64; 3]; 3],
+}
+
+pub const IDENTITY: [[f64; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+
+/// "a, b, c; d, e, f; g, h, i" (IIO mount_matrix) -> rows.
+pub fn parse_mount(text: &str) -> Option<[[f64; 3]; 3]> {
+    let rows: Vec<Vec<f64>> = text
+        .trim()
+        .split(';')
+        .map(|r| r.split(',').filter_map(|v| v.trim().parse().ok()).collect())
+        .collect();
+    if rows.len() != 3 || rows.iter().any(|r| r.len() != 3) {
+        return None;
+    }
+    let mut m = [[0.0; 3]; 3];
+    for (i, r) in rows.iter().enumerate() {
+        m[i].copy_from_slice(r);
+    }
+    Some(m)
+}
+
+pub fn apply_mount(m: &[[f64; 3]; 3], a: [f64; 3]) -> [f64; 3] {
+    [
+        m[0][0] * a[0] + m[0][1] * a[1] + m[0][2] * a[2],
+        m[1][0] * a[0] + m[1][1] * a[1] + m[1][2] * a[2],
+        m[2][0] * a[0] + m[2][1] * a[1] + m[2][2] * a[2],
+    ]
 }
 
 fn read_text(path: &Path) -> io::Result<String> {
@@ -51,6 +82,7 @@ impl Accel {
             path: dir.to_path_buf(),
             axes: [open("x")?, open("y")?, open("z")?],
             scale: scale_ms2 / STANDARD_GRAVITY,
+            mount: read_text(&dir.join("mount_matrix")).ok().and_then(|t| parse_mount(&t)).unwrap_or(IDENTITY),
         })
     }
 
@@ -77,5 +109,37 @@ impl Accel {
 
     pub fn scale(&self) -> f64 {
         self.scale
+    }
+
+    /// Sample in g, rotated into the device frame (mount_matrix).
+    pub fn to_mounted(&self, raw: [i32; 3]) -> [f64; 3] {
+        apply_mount(&self.mount, self.to_g(raw))
+    }
+}
+
+/// Lux from the first IIO light sensor with in_illuminance_raw and _scale
+/// (STK36C61). Read directly: an iio-sensor-proxy light claim costs ~16 % of
+/// a core on the FP6, one sysfs read ~9 ms of I2C.
+pub fn read_lux(root: &Path) -> Option<f64> {
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(root).ok()?.filter_map(|e| e.ok().map(|e| e.path())).collect();
+    entries.sort();
+    for dir in entries {
+        let Ok(raw) = read_text(&dir.join("in_illuminance_raw")) else { continue };
+        let scale: f64 = read_text(&dir.join("in_illuminance_scale")).ok().and_then(|s| s.parse().ok()).unwrap_or(1.0);
+        return raw.parse::<f64>().ok().map(|r| r * scale);
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fp6_mount_matrix() {
+        let m = parse_mount("-1, 0, 0; 0, 1, 0; 0, 0, -1").unwrap();
+        // Raw upright reading on the FP6 (y = -1 g) stays upright.
+        assert_eq!(apply_mount(&m, [0.01, -1.0, 0.02]), [-0.01, -1.0, -0.02]);
+        assert_eq!(parse_mount("1,2;3"), None);
     }
 }

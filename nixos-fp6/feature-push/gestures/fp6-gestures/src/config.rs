@@ -2,6 +2,7 @@
 //! Settings snapshot (GSettings com.fairphone6.gestures) and the lock policy.
 
 use crate::detector::Sensitivity;
+use crate::motion::Armed;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
@@ -40,6 +41,8 @@ pub enum Source {
     Shake,
     PowerDouble,
     PowerTriple,
+    BackDouble,
+    BackTriple,
 }
 
 impl Source {
@@ -48,6 +51,8 @@ impl Source {
             Source::Shake => "shake",
             Source::PowerDouble => "power key double press",
             Source::PowerTriple => "power key triple press",
+            Source::BackDouble => "back double tap",
+            Source::BackTriple => "back triple tap",
         }
     }
 }
@@ -62,6 +67,13 @@ pub struct Config {
     pub triple_press: Action,
     pub command_timeout: u32,
     pub vibrate: bool,
+    pub pocket_mode: bool,
+    pub flip_to_silence: bool,
+    pub raise_to_wake: bool,
+    pub back_double: Action,
+    pub back_triple: Action,
+    pub back_sensitivity: Sensitivity,
+    pub volume_tracks: bool,
 }
 
 impl Default for Config {
@@ -75,6 +87,13 @@ impl Default for Config {
             triple_press: Action::None,
             command_timeout: 10,
             vibrate: true,
+            pocket_mode: false,
+            flip_to_silence: false,
+            raise_to_wake: false,
+            back_double: Action::None,
+            back_triple: Action::None,
+            back_sensitivity: Sensitivity::Medium,
+            volume_tracks: false,
         }
     }
 }
@@ -85,7 +104,38 @@ impl Config {
             Source::Shake => &self.shake_action,
             Source::PowerDouble => &self.double_press,
             Source::PowerTriple => &self.triple_press,
+            Source::BackDouble => &self.back_double,
+            Source::BackTriple => &self.back_triple,
         }
+    }
+
+    /// Highest back tap count assigned (0, 2 or 3).
+    pub fn back_tap_max(&self) -> u32 {
+        if self.back_triple != Action::None {
+            3
+        } else if self.back_double != Action::None {
+            2
+        } else {
+            0
+        }
+    }
+
+    /// Which wake-on-motion gestures need the accelerometer now. Raise to
+    /// wake only with the display off; nothing but flip while covered (a
+    /// pocket is no place for taps or raises, and it saves the IMU reads
+    /// while walking).
+    pub fn armed(&self, display_on: bool, covered: bool) -> Armed {
+        Armed {
+            flip: self.flip_to_silence,
+            raise: self.raise_to_wake && !display_on && !covered,
+            tap: if covered { 0 } else { self.back_tap_max() },
+        }
+    }
+
+    /// iio-sensor-proxy proximity is needed for pocket mode, and for raise
+    /// to wake while the display is off (no wake in a pocket).
+    pub fn wants_proximity(&self, display_on: bool) -> bool {
+        self.pocket_mode || (self.raise_to_wake && !display_on)
     }
 
     /// Value for com.fairphone6.PowerKey.SetMultiPress: 0 keeps the instant
@@ -127,6 +177,7 @@ pub enum Decision {
 }
 
 /// locked: the Lomiri greeter is shown or the display is off.
+/// Back taps follow the power key's rules (they work locked).
 pub fn decide(action: &Action, source: Source, locked: bool, shake_when_locked: bool) -> Decision {
     let shake_blocked = source == Source::Shake && !shake_when_locked;
     match action {
@@ -194,6 +245,27 @@ mod tests {
         assert_eq!(decide(&cmd, Shake, true, true), Refuse);
         assert_eq!(decide(&cmd, PowerDouble, true, true), Refuse);
         assert_eq!(decide(&Action::None, PowerDouble, false, true), Refuse);
+    }
+
+    #[test]
+    fn new_gestures_are_off_by_default_and_arm_sensibly() {
+        let c = Config::default();
+        assert_eq!(c.armed(false, false), Armed::default());
+        assert!(!c.wants_proximity(false) && !c.pocket_mode && !c.volume_tracks);
+        let c = Config {
+            flip_to_silence: true,
+            raise_to_wake: true,
+            back_double: Action::Flashlight,
+            ..Config::default()
+        };
+        assert_eq!(c.armed(false, false), Armed { flip: true, raise: true, tap: 2 });
+        assert_eq!(c.armed(true, false), Armed { flip: true, raise: false, tap: 2 });
+        assert_eq!(c.armed(false, true), Armed { flip: true, raise: false, tap: 0 });
+        assert!(c.wants_proximity(false) && !c.wants_proximity(true));
+        let c = Config { back_triple: Action::App("x".into()), ..c };
+        assert_eq!(c.back_tap_max(), 3);
+        assert_eq!(decide(&Action::Flashlight, Source::BackDouble, true, false), Decision::Run);
+        assert_eq!(decide(&Action::Command("true".into()), Source::BackTriple, true, true), Decision::Refuse);
     }
 
     #[test]

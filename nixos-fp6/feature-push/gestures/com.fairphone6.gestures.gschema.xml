@@ -68,6 +68,57 @@
       <default>''</default>
       <summary>Shell command for the triple press</summary>
     </key>
+    <key name="pocket-mode" type="b">
+      <default>false</default>
+      <summary>Pocket mode</summary>
+      <description>While the proximity sensor is covered and it is dark for more than a second, the power key, double tap and notifications do not wake the screen and touches are ignored. Calls still wake it. Press the power key twice to wake anyway.</description>
+    </key>
+    <key name="flip-to-silence" type="b">
+      <default>false</default>
+      <summary>Flip to silence</summary>
+      <description>Face down and still for 1.5 s turns silent mode on; picking the phone up turns it off again (only if flip turned it on).</description>
+    </key>
+    <key name="flip-silenced" type="b">
+      <default>false</default>
+      <summary>Internal: silent mode was turned on by flip to silence</summary>
+    </key>
+    <key name="raise-to-wake" type="b">
+      <default>false</default>
+      <summary>Raise to wake</summary>
+      <description>Picking the phone up from rest into view turns the screen on (lock screen) while it is off; it goes off again after 10 s without a touch.</description>
+    </key>
+    <key name="back-double-tap-action" enum="com.fairphone6.gestures.PressAction">
+      <default>'none'</default>
+      <summary>Back double tap</summary>
+    </key>
+    <key name="back-double-tap-app" type="s">
+      <default>''</default>
+      <summary>App id for the back double tap</summary>
+    </key>
+    <key name="back-double-tap-command" type="s">
+      <default>''</default>
+      <summary>Shell command for the back double tap</summary>
+    </key>
+    <key name="back-triple-tap-action" enum="com.fairphone6.gestures.PressAction">
+      <default>'none'</default>
+      <summary>Back triple tap</summary>
+    </key>
+    <key name="back-triple-tap-app" type="s">
+      <default>''</default>
+      <summary>App id for the back triple tap</summary>
+    </key>
+    <key name="back-triple-tap-command" type="s">
+      <default>''</default>
+      <summary>Shell command for the back triple tap</summary>
+    </key>
+    <key name="back-tap-sensitivity" enum="com.fairphone6.gestures.Sensitivity">
+      <default>'medium'</default>
+      <summary>Back tap sensitivity</summary>
+    </key>
+    <key name="volume-long-press-tracks" type="b">
+      <default>false</default>
+      <summary>Volume keys long press: next / previous track while the screen is off</summary>
+    </key>
     <key name="command-timeout" type="i">
       <range min="1" max="300"/>
       <default>10</default>

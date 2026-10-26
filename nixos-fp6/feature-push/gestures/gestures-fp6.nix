@@ -16,6 +16,13 @@
 #  * Actions: the indicator-power flashlight action (status bar stays in
 #    sync), url-dispatcher for apps, /bin/sh as the user for commands
 #    (timeout), hfd vibration as feedback.
+#  * Pocket mode, flip to silence, raise to wake, back tap (follow-up,
+#    2026-10-26): flip/raise/back tap sleep on the ICM-42631's wake-on-motion
+#    interrupt (IIO event, no polling at rest); pocket = iio-sensor-proxy
+#    proximity near + dark (direct lux read) > 1 s, gated in
+#    fp6-lomiri-powerd (com.fairphone6.Gestures SetPocket / Peek).
+#  * Volume keys long press = next/previous track with the display off
+#    (read-only evdev, MPRIS), volume put back afterwards.
 #  * System Settings > Gesture Shortcuts (QML plugin page).
 #
 # Everything is off by default: the module installs the service and the page;
@@ -43,6 +50,16 @@ in {
     }];
 
     environment.systemPackages = [ package ];
+
+    # Wake-on-motion for fp6-gestures (user "${user}", group input): read the
+    # accelerometer's IIO chardev (only to get the event fd; it is closed
+    # again, the buffer stays free) and switch the WoM event on/off. Raw
+    # reads by iio-sensor-proxy and the sensor apps are unaffected.
+    services.udev.packages = [ (pkgs.writeTextDir "lib/udev/rules.d/82-fp6-gestures-wom.rules" ''
+      SUBSYSTEM=="iio", KERNEL=="iio:device*", ATTR{name}=="icm426*-accel", GROUP="input", MODE="0640", RUN+="${pkgs.coreutils}/bin/chgrp input /sys%p/events/in_accel_x|y|z_roc_rising_en /sys%p/events/in_accel_x|y|z_roc_rising_value", RUN+="${pkgs.coreutils}/bin/chmod 0664 /sys%p/events/in_accel_x|y|z_roc_rising_en /sys%p/events/in_accel_x|y|z_roc_rising_value"
+    '') ];
+    # The phone user is in group input (also needed for the volume keys and
+    # the touchscreen veto, read-only evdev).
     system.build.fp6-gestures = { inherit package lssPlugin; };
 
     nixpkgs.overlays = [ (_final: prev: {
@@ -54,7 +71,7 @@ in {
     }) ];
 
     systemd.user.services.fp6-gestures = {
-      description = "FP6 gesture shortcuts (shake, power key double/triple press)";
+      description = "FP6 gesture shortcuts (shake, power key, pocket, flip, raise, back tap, volume keys)";
       wantedBy = [ "graphical-session.target" ];
       partOf = [ "graphical-session.target" ];
       after = [ "graphical-session.target" ];

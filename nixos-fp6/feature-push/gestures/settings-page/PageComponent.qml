@@ -1,6 +1,7 @@
 /*
- * System Settings > Gesture Shortcuts (FP6): shake and power-key
- * double/triple press. Backend: fp6-gestures (user service), GSettings
+ * System Settings > Gesture Shortcuts (FP6): shake, power-key
+ * double/triple press, pocket mode, flip to silence, raise to wake, back tap
+ * and volume-key track skipping. Backend: fp6-gestures (user service), GSettings
  * com.fairphone6.gestures.
  * SPDX-License-Identifier: GPL-3.0-only
  */
@@ -143,6 +144,124 @@ ItemPage {
 
             ListItem.ThinDivider {}
 
+            SettingsItemTitle { text: i18n.tr("Pocket and table") }
+
+            SettingsListItems.Standard {
+                text: i18n.tr("Pocket mode")
+                Switch {
+                    objectName: "pocketModeSwitch"
+                    property bool serverChecked: gs.pocketMode
+                    onServerCheckedChanged: checked = serverChecked
+                    Component.onCompleted: checked = serverChecked
+                    onTriggered: gs.pocketMode = checked
+                }
+                showDivider: false
+            }
+            Label {
+                anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
+                wrapMode: Text.WordWrap
+                fontSize: "small"
+                text: i18n.tr("While the proximity sensor is covered and it is dark (in a pocket or bag) for more than a second, the power key, double tap and notifications do not turn the screen on, and touches are ignored. Incoming calls still turn it on. Press the power key twice in a row to turn the screen on anyway.")
+            }
+            SettingsListItems.Standard {
+                text: i18n.tr("Flip to silence")
+                Switch {
+                    objectName: "flipSwitch"
+                    property bool serverChecked: gs.flipToSilence
+                    onServerCheckedChanged: checked = serverChecked
+                    Component.onCompleted: checked = serverChecked
+                    onTriggered: gs.flipToSilence = checked
+                }
+                showDivider: false
+            }
+            Label {
+                anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
+                wrapMode: Text.WordWrap
+                fontSize: "small"
+                text: i18n.tr("Put the phone face down on a table to turn silent mode on; pick it up to turn it off again. Silent mode you set yourself is left alone.")
+            }
+            SettingsListItems.Standard {
+                text: i18n.tr("Raise to wake")
+                Switch {
+                    objectName: "raiseSwitch"
+                    property bool serverChecked: gs.raiseToWake
+                    onServerCheckedChanged: checked = serverChecked
+                    Component.onCompleted: checked = serverChecked
+                    onTriggered: gs.raiseToWake = checked
+                }
+                showDivider: false
+            }
+            Label {
+                anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
+                wrapMode: Text.WordWrap
+                fontSize: "small"
+                text: i18n.tr("While the screen is off, picking the phone up from a table (or from lying still) and looking at it shows the lock screen. Not in a pocket and not while walking. The screen turns off again after 10 seconds if you do not touch it.")
+            }
+
+            ListItem.ThinDivider {}
+
+            SettingsItemTitle { text: i18n.tr("Back tap (experimental)") }
+
+            ActionSettings {
+                title: i18n.tr("Double tap on the back")
+                settings: gs
+                prefix: "backDoubleTap"
+                apps: root.apps
+            }
+
+            ActionSettings {
+                title: i18n.tr("Triple tap on the back")
+                settings: gs
+                prefix: "backTripleTap"
+                apps: root.apps
+            }
+
+            Column {
+                visible: gs.backDoubleTapAction !== "none" || gs.backTripleTapAction !== "none"
+                anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
+                spacing: units.gu(1)
+                Label { text: i18n.tr("Back tap sensitivity"); font.weight: Font.Medium }
+                OptionSelector {
+                    objectName: "backTapSensitivitySelector"
+                    width: parent.width
+                    readonly property var values: ["low", "medium", "high"]
+                    model: [i18n.tr("Low (firm taps)"), i18n.tr("Medium"), i18n.tr("High (light taps)")]
+                    selectedIndex: Math.max(0, values.indexOf(gs.backTapSensitivity))
+                    onDelegateClicked: gs.backTapSensitivity = values[index]
+                }
+            }
+
+            Label {
+                anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
+                wrapMode: Text.WordWrap
+                fontSize: "small"
+                text: i18n.tr("Tap the back of the phone firmly with a fingertip, two or three times in quick succession, while holding it still. Taps on the screen are ignored. The accelerometer only wakes up when the phone moves. Same rules as the power key: the flashlight works locked, apps open after unlocking.")
+            }
+
+            ListItem.ThinDivider {}
+
+            SettingsItemTitle { text: i18n.tr("Volume keys") }
+
+            SettingsListItems.Standard {
+                text: i18n.tr("Long press for next / previous track")
+                Switch {
+                    objectName: "volumeTracksSwitch"
+                    property bool serverChecked: gs.volumeLongPressTracks
+                    onServerCheckedChanged: checked = serverChecked
+                    Component.onCompleted: checked = serverChecked
+                    onTriggered: gs.volumeLongPressTracks = checked
+                }
+                showDivider: false
+            }
+            Label {
+                anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
+                wrapMode: Text.WordWrap
+                fontSize: "small"
+                text: i18n.tr("With the screen off, hold Volume Up for the next track or Volume Down for the previous one (about two thirds of a second). The volume stays as it was. Short presses still change the volume.")
+            }
+
+            ListItem.ThinDivider {}
+
             SettingsListItems.Standard {
                 text: i18n.tr("Vibrate when a shortcut runs")
                 Switch {
@@ -159,7 +278,7 @@ ItemPage {
                 anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
                 wrapMode: Text.WordWrap
                 fontSize: "small"
-                text: i18n.tr("About custom commands: a command runs with your user's full rights (your files, network, messages), not in a sandbox. Anyone who can shake the phone or press the power key while it is unlocked can run it. Only enter commands you understand and trust.")
+                text: i18n.tr("About custom commands: a command runs with your user's full rights (your files, network, messages), not in a sandbox. Anyone who can shake or tap the phone or press the power key while it is unlocked can run it. Only enter commands you understand and trust.")
             }
         }
     }

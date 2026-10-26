@@ -138,6 +138,153 @@ pub fn wake_display(system: Option<&Connection>, reason: i32) -> Result<(), Stri
         .map_err(|e| format!("setScreenPowerMode: {e}"))
 }
 
+// ------------------------------------------- sound, media, powerd gestures
+const INDICATOR_SOUND: &str = "org.ayatana.indicator.sound";
+const INDICATOR_SOUND_PATH: &str = "/org/ayatana/indicator/sound";
+const GESTURES_PATH: &str = "/com/fairphone6/Gestures";
+const GESTURES_IFACE: &str = "com.fairphone6.Gestures";
+const SENSOR_PROXY: &str = "net.hadess.SensorProxy";
+const SENSOR_PROXY_PATH: &str = "/net/hadess/SensorProxy";
+
+fn action_state(session: &Connection, dest: &str, path: &str, name: &str) -> zbus::Result<OwnedValue> {
+    let reply = session.call_method(Some(dest), path, Some("org.gtk.Actions"), "Describe", &(name,))?;
+    let (_enabled, _param, state): (bool, zbus::zvariant::Signature, Vec<OwnedValue>) = reply.body().deserialize()?;
+    state.into_iter().next().ok_or_else(|| zbus::Error::Failure(format!("{name} has no state")))
+}
+
+fn set_action_state(session: &Connection, dest: &str, path: &str, name: &str, value: Value) -> zbus::Result<()> {
+    let platform: HashMap<&str, Value> = HashMap::new();
+    session.call_method(Some(dest), path, Some("org.gtk.Actions"), "SetState", &(name, value, platform))?;
+    Ok(())
+}
+
+/// Lomiri's silent mode: indicator-sound's "silent-mode" action (it keeps
+/// AccountsService com.lomiri.touch.AccountsService.Sound.SilentMode, which
+/// Lomiri and telephony-service follow for the ringer and notifications).
+pub fn silent_mode(session: Option<&Connection>) -> Result<bool, String> {
+    let session = session.ok_or("no session bus")?;
+    let v = action_state(session, INDICATOR_SOUND, INDICATOR_SOUND_PATH, "silent-mode").map_err(|e| format!("silent-mode: {e}"))?;
+    bool::try_from(&v).map_err(|e| format!("silent-mode state: {e}"))
+}
+
+pub fn set_silent_mode(session: Option<&Connection>, on: bool) -> Result<(), String> {
+    let session = session.ok_or("no session bus")?;
+    set_action_state(session, INDICATOR_SOUND, INDICATOR_SOUND_PATH, "silent-mode", Value::from(on))
+        .map_err(|e| format!("silent-mode SetState: {e}"))
+}
+
+/// indicator-sound "volume" state (0..1).
+pub fn volume(session: Option<&Connection>) -> Option<f64> {
+    let v = action_state(session?, INDICATOR_SOUND, INDICATOR_SOUND_PATH, "volume").ok()?;
+    f64::try_from(&v).ok()
+}
+
+pub fn set_volume(session: Option<&Connection>, value: f64) -> Result<(), String> {
+    let session = session.ok_or("no session bus")?;
+    set_action_state(session, INDICATOR_SOUND, INDICATOR_SOUND_PATH, "volume", Value::from(value.clamp(0.0, 1.0)))
+        .map_err(|e| format!("volume SetState: {e}"))
+}
+
+fn mpris_status(session: &Connection, name: &str) -> Option<String> {
+    let reply = session
+        .call_method(
+            Some(name),
+            "/org/mpris/MediaPlayer2",
+            Some("org.freedesktop.DBus.Properties"),
+            "Get",
+            &("org.mpris.MediaPlayer2.Player", "PlaybackStatus"),
+        )
+        .ok()?;
+    let v: OwnedValue = reply.body().deserialize().ok()?;
+    String::try_from(v).ok()
+}
+
+/// Choose the player like a media key would: playing first, then paused.
+pub fn pick_player(players: &[(String, String)]) -> Option<&str> {
+    ["Playing", "Paused"]
+        .iter()
+        .find_map(|want| players.iter().find(|(_, s)| s == want).map(|(n, _)| n.as_str()))
+}
+
+/// MPRIS Next/Previous on the active player; without one, indicator-sound's
+/// next.<app>/previous.<app> actions.
+pub fn media_skip(session: Option<&Connection>, next: bool) -> Result<String, String> {
+    let session = session.ok_or("no session bus")?;
+    let names: Vec<String> = session
+        .call_method(Some("org.freedesktop.DBus"), "/org/freedesktop/DBus", Some("org.freedesktop.DBus"), "ListNames", &())
+        .and_then(|r| r.body().deserialize())
+        .map_err(|e| format!("ListNames: {e}"))?;
+    let players: Vec<(String, String)> = names
+        .into_iter()
+        .filter(|n| n.starts_with("org.mpris.MediaPlayer2."))
+        .map(|n| {
+            let status = mpris_status(session, &n).unwrap_or_default();
+            (n, status)
+        })
+        .collect();
+    let method = if next { "Next" } else { "Previous" };
+    if let Some(player) = pick_player(&players) {
+        session
+            .call_method(Some(player), "/org/mpris/MediaPlayer2", Some("org.mpris.MediaPlayer2.Player"), method, &())
+            .map_err(|e| format!("{player} {method}: {e}"))?;
+        return Ok(player.to_string());
+    }
+    let actions: Vec<String> = session
+        .call_method(Some(INDICATOR_SOUND), INDICATOR_SOUND_PATH, Some("org.gtk.Actions"), "List", &())
+        .and_then(|r| r.body().deserialize())
+        .map_err(|e| format!("no MPRIS player, indicator-sound: {e}"))?;
+    let prefix = if next { "next." } else { "previous." };
+    let action = actions.into_iter().find(|a| a.starts_with(prefix)).ok_or("no media player")?;
+    let platform: HashMap<&str, Value> = HashMap::new();
+    let params: Vec<Value> = Vec::new();
+    session
+        .call_method(Some(INDICATOR_SOUND), INDICATOR_SOUND_PATH, Some("org.gtk.Actions"), "Activate", &(action.as_str(), params, platform))
+        .map_err(|e| format!("{action}: {e}"))?;
+    Ok(action)
+}
+
+/// fp6-lomiri-powerd com.fairphone6.Gestures.Peek: display on (lock
+/// screen), off again after `seconds` without input. false = refused.
+pub fn peek(system: Option<&Connection>, seconds: i32) -> Result<bool, String> {
+    let system = system.ok_or("no system bus")?;
+    system
+        .call_method(Some("com.lomiri.Repowerd"), GESTURES_PATH, Some(GESTURES_IFACE), "Peek", &(seconds,))
+        .and_then(|r| r.body().deserialize::<bool>())
+        .map_err(|e| format!("Peek: {e}"))
+}
+
+pub fn set_pocket(system: Option<&Connection>, covered: bool) -> Result<bool, String> {
+    let system = system.ok_or("no system bus")?;
+    system
+        .call_method(Some("com.lomiri.Repowerd"), GESTURES_PATH, Some(GESTURES_IFACE), "SetPocket", &(covered,))
+        .and_then(|r| r.body().deserialize::<bool>())
+        .map_err(|e| format!("SetPocket: {e}"))
+}
+
+/// iio-sensor-proxy proximity claim (per connection; polkit allow_active,
+/// which covers the session's user units).
+pub fn claim_proximity(system: &Connection, claim: bool) -> Result<(), String> {
+    let method = if claim { "ClaimProximity" } else { "ReleaseProximity" };
+    system
+        .call_method(Some(SENSOR_PROXY), SENSOR_PROXY_PATH, Some(SENSOR_PROXY), method, &())
+        .map(|_| ())
+        .map_err(|e| format!("{method}: {e}"))
+}
+
+pub fn proximity_near(system: &Connection) -> Option<bool> {
+    let reply = system
+        .call_method(
+            Some(SENSOR_PROXY),
+            SENSOR_PROXY_PATH,
+            Some("org.freedesktop.DBus.Properties"),
+            "Get",
+            &(SENSOR_PROXY, "ProximityNear"),
+        )
+        .ok()?;
+    let v: OwnedValue = reply.body().deserialize().ok()?;
+    bool::try_from(&v).ok()
+}
+
 pub fn valid_app_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() < 256
@@ -210,6 +357,15 @@ mod tests {
         assert!(!valid_app_id("../x"));
         assert!(!valid_app_id("a b"));
         assert!(!valid_app_id(""));
+    }
+
+    #[test]
+    fn player_choice() {
+        let p = |n: &str, s: &str| (n.to_string(), s.to_string());
+        let list = vec![p("org.mpris.MediaPlayer2.a", "Stopped"), p("org.mpris.MediaPlayer2.b", "Paused"), p("org.mpris.MediaPlayer2.c", "Playing")];
+        assert_eq!(pick_player(&list), Some("org.mpris.MediaPlayer2.c"));
+        assert_eq!(pick_player(&list[..2]), Some("org.mpris.MediaPlayer2.b"));
+        assert_eq!(pick_player(&list[..1]), None);
     }
 
     #[test]
