@@ -30,6 +30,7 @@ let
       ./lomiri-polish/lomiri-polish-fp6.nix
       ./lomiri-misc/lomiri-misc-fp6.nix
       ./osk-wayland/osk-wayland-fp6.nix
+      ./lomiri-multiwindow/lomiri-multiwindow-fp6.nix
       ./settings/settings-fp6.nix
       ./fingerprint/fingerprint-persist-fp6.nix
       ./fingerprint/biometryd-fprintd-fp6.nix
@@ -81,6 +82,9 @@ let
         # Maliit for Wayland text-input clients (Qt6 Morph, GTK3 Firefox) next to
         # the D-Bus path of the Qt5 apps. See osk-wayland/osk-wayland-fp6.nix.
         hardware.fairphone6.oskWayland.enable = true;
+        # Split screen / floating window in the phone stage: press and hold an
+        # app in the spread. See lomiri-multiwindow/lomiri-multiwindow-fp6.nix.
+        hardware.fairphone6.lomiriMultiWindow.enable = true;
         # Battery, Brightness & Display and About pages in System Settings.
         hardware.fairphone6.settingsPanels.enable = true;
         # Writable fingerprint storage (user-approved). Manual start only until the

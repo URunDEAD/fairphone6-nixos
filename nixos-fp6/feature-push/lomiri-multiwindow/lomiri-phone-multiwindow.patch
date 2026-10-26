@@ -1,0 +1,861 @@
+diff --git a/qml/Stage/PhoneMultiWindow.qml b/qml/Stage/PhoneMultiWindow.qml
+new file mode 100644
+index 0000000..17084b2
+--- /dev/null
++++ b/qml/Stage/PhoneMultiWindow.qml
+@@ -0,0 +1,656 @@
++/*
++ * Copyright (C) 2026 Paul Schuldesz
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; version 3.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++// fp6: split screen and a floating window for the phone ("staged") stage.
++//
++// Roles (see roleFor()):
++//   1 = split, top (portrait) or left (landscape)
++//   2 = split, bottom or right
++//   3 = floating window (drawn above everything, not maximized for Mir)
++//   4 = full-screen app behind the floating window (no split)
++//   0 = plain staged behaviour (upstream)
++//
++// Stage.qml gives each app delegate a role and puts role delegates into the
++// "multiWindowTiled" / "multiWindowFloating" states, whose geometry comes from
++// rectFor(). This item is the controller plus the overlay UI: the divider, the
++// floating window's title bar and resize grip, the press-to-focus area, the
++// long-press menu of the spread and its hint.
++//
++// Nothing changes until the user picks "Split screen" or "Floating window" in
++// the spread's long-press menu.
++
++import QtQuick 2.15
++import Lomiri.Components 1.3
++
++Item {
++    id: root
++
++    // ---- inputs (set by Stage.qml)
++    property var stage: null
++    property var stagePriv: null
++    property var appRepeater: null
++    property var topLevelSurfaceList: null
++    property Item availableDesktopArea: null
++    property var spreadItem: null
++    property bool active: false            // stage.mode === "staged"
++
++    // ---- state
++    property int splitAId: 0
++    property int splitBId: 0
++    property int floatId: 0
++    property real ratio: 0.5
++    property int lastSplitFocusId: 0
++    // floating geometry as fractions of the free area, survives rotation
++    property real floatFx: 1
++    property real floatFy: 0.92
++    property real floatFw: 0.56
++    property real floatFh: 0.44
++    // the spread hint goes away once the user has used the menu (per session)
++    property bool used: false
++    property int listRevision: 0
++
++    // ---- derived
++    readonly property bool splitActive: active && splitAId > 0 && splitBId > 0
++    readonly property bool floatActive: active && floatId > 0
++    readonly property bool anyActive: splitActive || floatActive
++    readonly property int focusedId: topLevelSurfaceList && topLevelSurfaceList.focusedWindow
++                                     ? topLevelSurfaceList.focusedWindow.id : 0
++    readonly property bool oskShown: stage && stage.oskEnabled && stage.inputMethodRect.height > 0
++    readonly property real ax: availableDesktopArea ? availableDesktopArea.x : 0
++    readonly property real ay: availableDesktopArea ? availableDesktopArea.y : 0
++    readonly property real aw: availableDesktopArea ? availableDesktopArea.width : width
++    readonly property real ah: availableDesktopArea ? availableDesktopArea.height : height
++    readonly property bool landscape: aw > ah
++    readonly property bool stagedShown: stage && stage.state === "staged"
++
++    // While the OSK is up for a portrait split half or for the floating window,
++    // that app is shown full screen (plain staged state, so the OSK resize of
++    // the staged stage applies, and Qt5 apps that lift their content by the
++    // keyboard height see a window that ends at the screen bottom). The layout
++    // comes back when the keyboard closes. Landscape halves end at the screen
++    // bottom anyway and keep the split.
++    readonly property bool suspended: oskShown
++                                      && ((splitActive && !landscape && (focusedId === splitAId || focusedId === splitBId))
++                                          || (floatActive && focusedId === floatId))
++
++    readonly property real dividerThickness: units.gu(1)
++    readonly property real floatBarHeight: units.gu(3.5)
++    // at least the client's minimum size (otherwise the app is cropped)
++    readonly property var floatDelegate: { listRevision; return floatId > 0 ? delegateFor(floatId) : null; }
++    readonly property real floatMinWidth: Math.min(aw, Math.max(units.gu(15), floatDelegate ? floatDelegate.minimumWidth : 0))
++    readonly property real floatMinHeight: Math.min(ah - floatBarHeight, Math.max(units.gu(12), floatDelegate ? floatDelegate.minimumHeight : 0))
++
++    readonly property int backgroundId: {
++        listRevision; // dependency
++        if (!floatActive || splitActive || !topLevelSurfaceList) return 0;
++        for (var i = 0; i < topLevelSurfaceList.count; i++) {
++            var id = topLevelSurfaceList.idAt(i);
++            if (id !== floatId) return id;
++        }
++        return 0;
++    }
++
++    function roleFor(id) {
++        if (!active || suspended || id <= 0) return 0;
++        if (splitActive) {
++            if (id === splitAId) return 1;
++            if (id === splitBId) return 2;
++        }
++        if (floatActive) {
++            if (id === floatId) return 3;
++            if (!splitActive && id === backgroundId) return 4;
++        }
++        return 0;
++    }
++
++    readonly property rect floatRect: {
++        var freeH = ah - floatBarHeight;
++        var w = Math.round(Math.max(floatMinWidth, Math.min(aw, floatFw * aw)));
++        var h = Math.round(Math.max(floatMinHeight, Math.min(freeH, floatFh * freeH)));
++        var x = Math.round(ax + Math.max(0, Math.min(1, floatFx)) * Math.max(0, aw - w));
++        var y = Math.round(ay + floatBarHeight + Math.max(0, Math.min(1, floatFy)) * Math.max(0, freeH - h));
++        return Qt.rect(x, y, w, h);
++    }
++
++    function splitRect(first, r) {
++        var t = dividerThickness;
++        if (landscape) {
++            var wA = Math.round((aw - t) * r);
++            return first ? Qt.rect(ax, ay, wA, ah) : Qt.rect(ax + wA + t, ay, aw - wA - t, ah);
++        }
++        var hA = Math.round((ah - t) * r);
++        return first ? Qt.rect(ax, ay, aw, hA) : Qt.rect(ax, ay + hA + t, aw, ah - hA - t);
++    }
++
++    function rectFor(role) {
++        switch (role) {
++        case 1: return splitRect(true, ratio);
++        case 2: return splitRect(false, ratio);
++        case 3: return floatRect;
++        case 4: return Qt.rect(0, ay, width, ah);
++        }
++        return Qt.rect(0, ay, width, ah);
++    }
++
++    // ---- helpers
++    function indexFor(id) { return topLevelSurfaceList && id > 0 ? topLevelSurfaceList.indexForId(id) : -1; }
++    function delegateFor(id) {
++        var i = indexFor(id);
++        return i >= 0 && appRepeater ? appRepeater.itemAt(i) : null;
++    }
++    function activateId(id) {
++        var d = delegateFor(id);
++        if (d && !d.window.focused) d.activate();
++    }
++    function leaveSpreadTo(id) {
++        var i = indexFor(id);
++        if (stage && stage.state === "spread") {
++            if (spreadItem) spreadItem.highlightedIndex = i;
++            stagePriv.goneToSpread = false;
++        } else {
++            activateId(id);
++        }
++    }
++    function otherWindowThan(id) {
++        if (!topLevelSurfaceList) return 0;
++        for (var i = 0; i < topLevelSurfaceList.count; i++) {
++            var other = topLevelSurfaceList.idAt(i);
++            if (other !== id && other !== floatId) return other;
++        }
++        return 0;
++    }
++    function appNameFor(id) {
++        var i = indexFor(id);
++        var app = i >= 0 ? topLevelSurfaceList.applicationAt(i) : null;
++        return app ? app.name : "";
++    }
++
++    // ---- actions
++    function startSplit(id) {
++        var top = topLevelSurfaceList.idAt(0);
++        if (top === floatId) top = otherWindowThan(floatId);
++        var a, b;
++        if (id !== top && top > 0) { a = top; b = id; }
++        else { a = id; b = otherWindowThan(id); }
++        if (a <= 0 || b <= 0 || a === b) return false;
++        if (floatId === a || floatId === b) floatId = 0;
++        used = true;
++        ratio = 0.5;
++        splitAId = a;
++        splitBId = b;
++        lastSplitFocusId = b;
++        leaveSpreadTo(b);
++        return true;
++    }
++    function endSplit(keepId) {
++        splitAId = 0;
++        splitBId = 0;
++        lastSplitFocusId = 0;
++        if (keepId > 0) Qt.callLater(activateId, keepId);
++    }
++    function swapSplit() {
++        var a = splitAId;
++        splitAId = splitBId;
++        splitBId = a;
++    }
++    function startFloat(id) {
++        if (id <= 0) return;
++        if (id === splitAId || id === splitBId) {
++            endSplit(0);
++        }
++        used = true;
++        floatId = id;
++        leaveSpreadTo(id);
++    }
++    function endFloat() {
++        var id = floatId;
++        floatId = 0;
++        if (id > 0) leaveSpreadTo(id);
++    }
++    function reset() {
++        splitAId = 0; splitBId = 0; floatId = 0; lastSplitFocusId = 0;
++        menu.close();
++    }
++
++    onActiveChanged: if (!active) reset()
++
++    // A third app taking the focus (launched, or picked in the spread) takes
++    // the place of the half that had the focus last, like on Android.
++    onFocusedIdChanged: {
++        if (!splitActive || focusedId <= 0) return;
++        if (focusedId === splitAId || focusedId === splitBId) {
++            lastSplitFocusId = focusedId;
++            return;
++        }
++        if (focusedId === floatId) return;
++        if (lastSplitFocusId === splitAId) splitAId = focusedId;
++        else splitBId = focusedId;
++        lastSplitFocusId = focusedId;
++    }
++
++    function validate() {
++        if (!topLevelSurfaceList) return;
++        listRevision++;
++        if (floatId > 0 && indexFor(floatId) < 0) floatId = 0;
++        if (splitAId > 0 || splitBId > 0) {
++            var aGone = splitAId > 0 && indexFor(splitAId) < 0;
++            var bGone = splitBId > 0 && indexFor(splitBId) < 0;
++            if (aGone || bGone) endSplit(aGone ? (bGone ? 0 : splitBId) : splitAId);
++        }
++        if (menu.windowId > 0 && indexFor(menu.windowId) < 0) menu.close();
++    }
++    Connections {
++        target: root.topLevelSurfaceList
++        function onListChanged() { root.validate(); }
++        function onCountChanged() { root.validate(); }
++    }
++
++    // ---- press-to-focus. Mir's touch focus uses Mir's stacking, which does not
++    // know that the floating window is drawn on top, so focus the window under
++    // the finger here and let the press through to the app.
++    MouseArea {
++        id: focusArea
++        anchors.fill: parent
++        enabled: root.anyActive && root.stagedShown && !root.suspended
++        visible: enabled
++        acceptedButtons: Qt.AllButtons
++        onPressed: {
++            mouse.accepted = false;
++            var p = Qt.point(mouse.x, mouse.y);
++            function inside(r) { return p.x >= r.x && p.x < r.x + r.width && p.y >= r.y && p.y < r.y + r.height; }
++            var target = 0;
++            if (root.roleFor(root.floatId) === 3 && inside(root.floatRect)) target = root.floatId;
++            else if (root.splitActive && inside(root.splitRect(true, root.ratio))) target = root.splitAId;
++            else if (root.splitActive && inside(root.splitRect(false, root.ratio))) target = root.splitBId;
++            else if (root.backgroundId > 0) target = root.backgroundId;
++            if (target > 0 && target !== root.focusedId) root.activateId(target);
++        }
++    }
++
++    // ---- divider
++    Item {
++        id: divider
++        readonly property bool shown: root.splitActive && root.stagedShown && !root.suspended
++        visible: shown
++        property real dragPos: -1   // position along the split axis while dragging
++        readonly property rect firstRect: root.splitRect(true, root.ratio)
++        readonly property real restPos: root.landscape ? firstRect.x + firstRect.width : firstRect.y + firstRect.height
++        readonly property real pos: dragPos >= 0 ? dragPos : restPos
++
++        x: root.landscape ? pos : root.ax
++        y: root.landscape ? root.ay : pos
++        width: root.landscape ? root.dividerThickness : root.aw
++        height: root.landscape ? root.ah : root.dividerThickness
++
++        Rectangle {
++            anchors.fill: parent
++            color: "black"
++        }
++        Rectangle {
++            id: pill
++            anchors.centerIn: parent
++            width: root.landscape ? units.gu(0.5) : units.gu(6)
++            height: root.landscape ? units.gu(6) : units.gu(0.5)
++            radius: units.gu(0.25)
++            color: dividerMouse.pressed ? "white" : "#b0b0b0"
++        }
++
++        // Dim the side that will close when the divider is released near an edge.
++        Rectangle {
++            visible: dividerMouse.dragging && divider.closeSide !== 0
++            color: "black"
++            opacity: 0.55
++            x: root.landscape ? (divider.closeSide < 0 ? root.ax - divider.x : root.dividerThickness) : 0
++            y: root.landscape ? 0 : (divider.closeSide < 0 ? root.ay - divider.y : root.dividerThickness)
++            width: root.landscape ? (divider.closeSide < 0 ? divider.x - root.ax : root.ax + root.aw - divider.x - root.dividerThickness) : root.aw
++            height: root.landscape ? root.ah : (divider.closeSide < 0 ? divider.y - root.ay : root.ay + root.ah - divider.y - root.dividerThickness)
++        }
++
++        readonly property real fraction: root.landscape ? (pos - root.ax) / Math.max(1, root.aw)
++                                                        : (pos - root.ay) / Math.max(1, root.ah)
++        // -1: first app would close, 1: second app would close
++        readonly property int closeSide: fraction < 0.15 ? -1 : fraction > 0.85 ? 1 : 0
++
++        MouseArea {
++            id: dividerMouse
++            objectName: "multiWindowDividerArea"
++            property bool dragging: false
++            property real pressOffset: 0
++            // a finger-sized grab area around the thin divider
++            anchors.centerIn: parent
++            width: root.landscape ? units.gu(4) : parent.width
++            height: root.landscape ? parent.height : units.gu(4)
++            preventStealing: true
++            onPressed: {
++                var g = mapToItem(root, mouse.x, mouse.y);
++                pressOffset = (root.landscape ? g.x : g.y) - divider.restPos;
++                dragging = false;
++            }
++            onPositionChanged: {
++                var g = mapToItem(root, mouse.x, mouse.y);
++                var p = (root.landscape ? g.x : g.y) - pressOffset;
++                if (!dragging && Math.abs(p - divider.restPos) < units.gu(1)) return;
++                dragging = true;
++                var lo = root.landscape ? root.ax : root.ay;
++                var len = root.landscape ? root.aw : root.ah;
++                divider.dragPos = Math.max(lo, Math.min(lo + len - root.dividerThickness, p));
++            }
++            onReleased: {
++                if (dragging) {
++                    var side = divider.closeSide;
++                    var f = divider.fraction;
++                    divider.dragPos = -1;
++                    dragging = false;
++                    if (side < 0) root.endSplit(root.splitBId);
++                    else if (side > 0) root.endSplit(root.splitAId);
++                    else root.ratio = Math.max(0.25, Math.min(0.75, f));
++                }
++            }
++            onCanceled: { divider.dragPos = -1; dragging = false; }
++            onDoubleClicked: root.swapSplit()
++        }
++    }
++
++    // ---- floating window chrome: title bar (move, full screen, close) and resize grip
++    Item {
++        id: floatChrome
++        readonly property bool shown: root.floatActive && root.stagedShown && root.roleFor(root.floatId) === 3
++        visible: shown
++        readonly property rect r: root.floatRect
++        readonly property bool focused: root.focusedId === root.floatId
++
++        Rectangle {
++            id: floatFrame
++            x: floatChrome.r.x - border.width
++            y: floatChrome.r.y - root.floatBarHeight
++            width: floatChrome.r.width + 2 * border.width
++            height: floatChrome.r.height + root.floatBarHeight + border.width
++            color: "transparent"
++            border.width: units.dp(1)
++            border.color: floatChrome.focused ? "#e0e0e0" : "#707070"
++            radius: units.gu(0.5)
++        }
++
++        Rectangle {
++            id: floatBar
++            objectName: "multiWindowFloatBar"
++            x: floatChrome.r.x
++            y: floatChrome.r.y - root.floatBarHeight
++            width: floatChrome.r.width
++            height: root.floatBarHeight
++            color: floatChrome.focused ? "#303030" : "#202020"
++            radius: units.gu(0.5)
++            Rectangle { // square off the bottom corners
++                anchors { left: parent.left; right: parent.right; bottom: parent.bottom }
++                height: parent.radius
++                color: parent.color
++            }
++
++            MouseArea {
++                id: moveArea
++                anchors.fill: parent
++                preventStealing: true
++                property real startX
++                property real startY
++                property real startRx
++                property real startRy
++                onPressed: {
++                    var g = mapToItem(root, mouse.x, mouse.y);
++                    startX = g.x; startY = g.y;
++                    startRx = root.floatRect.x;
++                    startRy = root.floatRect.y;
++                    root.activateId(root.floatId);
++                }
++                onPositionChanged: {
++                    var g = mapToItem(root, mouse.x, mouse.y);
++                    var freeW = Math.max(1, root.aw - root.floatRect.width);
++                    var freeH = Math.max(1, root.ah - root.floatBarHeight - root.floatRect.height);
++                    root.floatFx = Math.max(0, Math.min(1, (startRx + g.x - startX - root.ax) / freeW));
++                    root.floatFy = Math.max(0, Math.min(1, (startRy + g.y - startY - root.ay - root.floatBarHeight) / freeH));
++                }
++            }
++
++            Label {
++                anchors { left: fullButton.right; right: closeButton.left; verticalCenter: parent.verticalCenter; margins: units.gu(0.5) }
++                text: root.appNameFor(root.floatId)
++                color: "white"
++                elide: Text.ElideRight
++                horizontalAlignment: Text.AlignHCenter
++                textSize: Label.Small
++            }
++
++            AbstractButton {
++                id: fullButton
++                objectName: "multiWindowFloatFullscreen"
++                anchors { left: parent.left; top: parent.top; bottom: parent.bottom }
++                width: height + units.gu(1)
++                onClicked: root.endFloat()
++                Icon {
++                    anchors.centerIn: parent
++                    width: units.gu(2); height: width
++                    name: "view-fullscreen"
++                    color: "white"
++                }
++            }
++            AbstractButton {
++                id: closeButton
++                objectName: "multiWindowFloatClose"
++                anchors { right: parent.right; top: parent.top; bottom: parent.bottom }
++                width: height + units.gu(1)
++                onClicked: {
++                    var d = root.delegateFor(root.floatId);
++                    if (d) d.close();
++                }
++                Icon {
++                    anchors.centerIn: parent
++                    width: units.gu(2); height: width
++                    name: "close"
++                    color: "white"
++                }
++            }
++        }
++
++        // resize preview while dragging the grip (the app is resized on release)
++        Rectangle {
++            visible: resizeArea.pressed
++            x: floatChrome.r.x
++            y: floatChrome.r.y
++            width: resizeArea.previewW
++            height: resizeArea.previewH
++            color: Qt.rgba(1, 1, 1, 0.15)
++            border.color: "white"
++            border.width: units.dp(2)
++        }
++
++        Item {
++            id: grip
++            x: floatChrome.r.x + floatChrome.r.width - width + units.gu(1)
++            y: floatChrome.r.y + floatChrome.r.height - height + units.gu(1)
++            width: units.gu(4.5)
++            height: units.gu(4.5)
++            Rectangle {
++                anchors { right: parent.right; bottom: parent.bottom; margins: units.gu(1) }
++                width: units.gu(2.5); height: width
++                radius: width / 2
++                color: "#303030"
++                border.color: "#e0e0e0"
++                border.width: units.dp(1)
++                // two diagonal strokes: the usual "resize corner" mark
++                Repeater {
++                    model: 2
++                    Rectangle {
++                        anchors.centerIn: parent
++                        anchors.horizontalCenterOffset: index * units.gu(0.4)
++                        anchors.verticalCenterOffset: index * units.gu(0.4)
++                        width: units.gu(1.4) - index * units.gu(0.7)
++                        height: units.dp(1.5)
++                        rotation: -45
++                        color: "white"
++                    }
++                }
++            }
++            MouseArea {
++                id: resizeArea
++                objectName: "multiWindowFloatResize"
++                anchors.fill: parent
++                preventStealing: true
++                property real startX
++                property real startY
++                property real previewW
++                property real previewH
++                property real startRx
++                property real startRy
++                property real startW
++                property real startH
++                onPressed: {
++                    var g = mapToItem(root, mouse.x, mouse.y);
++                    startX = g.x; startY = g.y;
++                    startRx = root.floatRect.x; startRy = root.floatRect.y;
++                    startW = root.floatRect.width; startH = root.floatRect.height;
++                    previewW = startW;
++                    previewH = startH;
++                    root.activateId(root.floatId);
++                }
++                onPositionChanged: {
++                    var g = mapToItem(root, mouse.x, mouse.y);
++                    previewW = Math.max(root.floatMinWidth, Math.min(root.ax + root.aw - startRx, startW + g.x - startX));
++                    previewH = Math.max(root.floatMinHeight, Math.min(root.ay + root.ah - startRy, startH + g.y - startY));
++                }
++                onReleased: {
++                    // numbers only: rect values read back live from floatRect
++                    var x0 = startRx, y0 = startRy, w = previewW, h = previewH;
++                    var freeH = root.ah - root.floatBarHeight;
++                    var freeW2 = root.aw - w;
++                    var freeH2 = freeH - h;
++                    root.floatFw = w / Math.max(1, root.aw);
++                    root.floatFh = h / Math.max(1, freeH);
++                    // keep the top-left corner where it is
++                    root.floatFx = freeW2 > 0 ? Math.max(0, Math.min(1, (x0 - root.ax) / freeW2)) : 0;
++                    root.floatFy = freeH2 > 0 ? Math.max(0, Math.min(1, (y0 - root.ay - root.floatBarHeight) / freeH2)) : 0;
++                }
++            }
++        }
++    }
++
++    // ---- spread: hint and long-press menu
++    Label {
++        objectName: "multiWindowSpreadHint"
++        visible: root.active && !root.used && root.stage && root.stage.state === "spread"
++                 && root.topLevelSurfaceList && root.topLevelSurfaceList.count > 0 && !menu.shown
++        anchors { horizontalCenter: parent.horizontalCenter; bottom: parent.bottom; bottomMargin: units.gu(2) }
++        width: parent.width - units.gu(4)
++        horizontalAlignment: Text.AlignHCenter
++        wrapMode: Text.WordWrap
++        color: "white"
++        opacity: 0.75
++        textSize: Label.Small
++        text: i18n.tr("Press and hold an app for split screen or a floating window")
++    }
++
++    function openMenu(index) {
++        if (!active || !topLevelSurfaceList) return;
++        menu.windowId = topLevelSurfaceList.idAt(index);
++        menu.shown = menu.windowId > 0;
++    }
++
++    Item {
++        id: menu
++        objectName: "multiWindowMenu"
++        property bool shown: false
++        property int windowId: 0
++        function close() { shown = false; windowId = 0; }
++        anchors.fill: parent
++        visible: shown && root.stage && root.stage.state === "spread"
++        onVisibleChanged: if (!visible && shown && root.stage && root.stage.state !== "spread") close()
++
++        readonly property bool inSplit: windowId > 0 && root.splitActive && (windowId === root.splitAId || windowId === root.splitBId)
++        readonly property bool isFloat: windowId > 0 && windowId === root.floatId
++        readonly property bool canSplit: root.otherWindowThan(windowId) > 0
++
++        MouseArea {
++            anchors.fill: parent
++            onClicked: menu.close()
++            Rectangle { anchors.fill: parent; color: "black"; opacity: 0.5 }
++        }
++
++        Rectangle {
++            id: menuCard
++            anchors.centerIn: parent
++            width: Math.min(units.gu(36), parent.width - units.gu(4))
++            height: menuColumn.height + units.gu(4)
++            radius: units.gu(1)
++            color: "#2b2b2b"
++            MouseArea { anchors.fill: parent } // eat clicks
++
++            Column {
++                id: menuColumn
++                anchors { left: parent.left; right: parent.right; top: parent.top; margins: units.gu(2) }
++                spacing: units.gu(1.5)
++
++                Label {
++                    width: parent.width
++                    text: root.appNameFor(menu.windowId)
++                    color: "white"
++                    elide: Text.ElideRight
++                    horizontalAlignment: Text.AlignHCenter
++                    textSize: Label.Large
++                }
++                Button {
++                    objectName: "multiWindowSplitButton"
++                    width: parent.width
++                    visible: !menu.inSplit
++                    enabled: menu.canSplit
++                    text: menu.canSplit ? i18n.tr("Split screen") : i18n.tr("Split screen (open a second app first)")
++                    color: theme.palette.normal.positive
++                    onClicked: { var id = menu.windowId; menu.close(); root.startSplit(id); }
++                }
++                Button {
++                    objectName: "multiWindowSwapButton"
++                    width: parent.width
++                    visible: menu.inSplit
++                    text: root.landscape ? i18n.tr("Swap left and right") : i18n.tr("Swap top and bottom")
++                    onClicked: { menu.close(); root.swapSplit(); root.leaveSpreadTo(root.focusedId > 0 ? root.focusedId : root.splitBId); }
++                }
++                Button {
++                    objectName: "multiWindowEndSplitButton"
++                    width: parent.width
++                    visible: menu.inSplit
++                    text: i18n.tr("Exit split screen")
++                    onClicked: { var id = menu.windowId; menu.close(); root.endSplit(0); root.leaveSpreadTo(id); }
++                }
++                Button {
++                    objectName: "multiWindowFloatButton"
++                    width: parent.width
++                    visible: !menu.isFloat
++                    text: i18n.tr("Floating window")
++                    onClicked: { var id = menu.windowId; menu.close(); root.startFloat(id); }
++                }
++                Button {
++                    objectName: "multiWindowEndFloatButton"
++                    width: parent.width
++                    visible: menu.isFloat
++                    text: i18n.tr("Full screen")
++                    onClicked: { menu.close(); root.endFloat(); }
++                }
++                Button {
++                    width: parent.width
++                    text: i18n.tr("Cancel")
++                    onClicked: menu.close()
++                }
++            }
++        }
++    }
++}
+diff --git a/qml/Stage/Spread/SpreadDelegateInputArea.qml b/qml/Stage/Spread/SpreadDelegateInputArea.qml
+index 72c9830..ae6d15f 100644
+--- a/qml/Stage/Spread/SpreadDelegateInputArea.qml
++++ b/qml/Stage/Spread/SpreadDelegateInputArea.qml
+@@ -33,6 +33,20 @@ Item {
+ 
+     signal clicked()
+     signal close()
++    // fp6: press and hold without moving (split screen / floating window menu)
++    signal longPressed()
++
++    Timer {
++        id: longPressTimer
++        interval: 600
++        property bool fired: false
++        onTriggered: {
++            if (!d.moving) {
++                fired = true;
++                root.longPressed();
++            }
++        }
++    }
+ 
+     QtObject {
+         id: d
+@@ -103,10 +117,13 @@ Item {
+ 
+         onPressed: {
+             startY = tp.y
++            longPressTimer.fired = false;
++            longPressTimer.restart();
+         }
+ 
+         onTouchUpdated: {
+             if (!tp.pressed) {
++                longPressTimer.stop();
+                 dragDelegate.Drag.active = false;
+                 dragDelegate.surface = null;
+                 d.moving = false
+@@ -114,6 +131,7 @@ Item {
+                 return;
+             } else if (!d.moving) {
+                 if (Math.abs(startY - tp.y) > d.threshold) {
++                    longPressTimer.stop();
+                     d.moving = true;
+                     d.dragEvents = []
+                     offset = tp.y - tp.startY;
+@@ -144,10 +162,11 @@ Item {
+         }
+ 
+         onReleased: {
++            longPressTimer.stop();
+             var result = dragDelegate.Drag.drop();
+             dragDelegate.surface = null;
+ 
+-            if (!d.moving) {
++            if (!d.moving && !longPressTimer.fired) {
+                 root.clicked()
+             }
+ 
+@@ -166,6 +185,7 @@ Item {
+         }
+ 
+         onCanceled: {
++            longPressTimer.stop();
+             dragDelegate.Drag.active = false;
+             dragDelegate.surface = null;
+             d.moving = false
+diff --git a/qml/Stage/Stage.qml b/qml/Stage/Stage.qml
+index 1c1c9f7..6708235 100644
+--- a/qml/Stage/Stage.qml
++++ b/qml/Stage/Stage.qml
+@@ -1104,7 +1104,17 @@ FocusScope {
+                 Binding {
+                     target: model.window; property: "requestedPosition"
+                     value: Qt.point(screenOffsetX, screenOffsetY)
+-                    when: root.mode != "windowed"
++                    when: root.mode != "windowed" && appDelegate.multiWindowRole == 0
++                    restoreMode: Binding.RestoreBinding
++                }
++                // fp6 split screen / floating window (PhoneMultiWindow.qml): Mir
++                // needs the real position for touch focus and popup placement.
++                readonly property int multiWindowRole: multiWindow.roleFor(model.window.id)
++                readonly property rect multiWindowRect: multiWindow.rectFor(multiWindowRole)
++                Binding {
++                    target: model.window; property: "requestedPosition"
++                    value: Qt.point(appDelegate.multiWindowRect.x + screenOffsetX, appDelegate.multiWindowRect.y + screenOffsetY)
++                    when: root.mode != "windowed" && appDelegate.multiWindowRole != 0
+                     restoreMode: Binding.RestoreBinding
+                 }
+ 
+@@ -1720,6 +1730,49 @@ FocusScope {
+                             sourceItem: windowedRightEdgeMaths.opacityMask < 1 ? decoratedWindow : null
+                         }
+                     },
++                    State {
++                        // fp6: split screen halves and the app behind a floating window
++                        name: "multiWindowTiled"
++                        when: root.state == "staged" && appDelegate.multiWindowRole != 0 && appDelegate.multiWindowRole != 3
++                        PropertyChanges {
++                            target: appDelegate
++                            x: appDelegate.multiWindowRect.x
++                            y: appDelegate.multiWindowRect.y
++                            visuallyMaximized: true
++                            visible: true
++                        }
++                        PropertyChanges {
++                            target: appDelegate
++                            requestedWidth: appDelegate.multiWindowRect.width
++                            requestedHeight: appDelegate.multiWindowRect.height - appDelegate.stagedOskInset
++                            restoreEntryValues: false
++                        }
++                        PropertyChanges { target: decoratedWindow; hasDecoration: false }
++                        PropertyChanges { target: resizeArea; enabled: false }
++                        PropertyChanges { target: appDelegate.window; allowClientResize: false }
++                    },
++                    State {
++                        // fp6: floating window on top of the phone stage
++                        name: "multiWindowFloating"
++                        when: root.state == "staged" && appDelegate.multiWindowRole == 3
++                        PropertyChanges {
++                            target: appDelegate
++                            x: appDelegate.multiWindowRect.x
++                            y: appDelegate.multiWindowRect.y
++                            z: topLevelSurfaceList.count + 1
++                            visuallyMaximized: false
++                            visible: true
++                        }
++                        PropertyChanges {
++                            target: appDelegate
++                            requestedWidth: appDelegate.multiWindowRect.width
++                            requestedHeight: appDelegate.multiWindowRect.height
++                            restoreEntryValues: false
++                        }
++                        PropertyChanges { target: decoratedWindow; hasDecoration: false; shadowOpacity: .6 }
++                        PropertyChanges { target: resizeArea; enabled: false }
++                        PropertyChanges { target: appDelegate.window; allowClientResize: false }
++                    },
+                     State {
+                         name: "staged"; when: root.state == "staged"
+                         PropertyChanges {
+@@ -1952,7 +2005,7 @@ FocusScope {
+                     },
+ 
+                     Transition {
+-                        from: "normal,restored,maximized,maximizedHorizontally,maximizedVertically,maximizedLeft,maximizedRight,maximizedTopLeft,maximizedBottomLeft,maximizedTopRight,maximizedBottomRight,staged,stagedWithSideStage,windowedRightEdge,stagedRightEdge";
++                        from: "normal,restored,maximized,maximizedHorizontally,maximizedVertically,maximizedLeft,maximizedRight,maximizedTopLeft,maximizedBottomLeft,maximizedTopRight,maximizedBottomRight,staged,stagedWithSideStage,windowedRightEdge,stagedRightEdge,multiWindowTiled,multiWindowFloating";
+                         to: "spread"
+                         // DecoratedWindow wants the scaleToPreviewSize set before enabling scaleToPreview
+                         PropertyAction { target: appDelegate; properties: "z,visible" }
+@@ -1961,6 +2014,10 @@ FocusScope {
+                         LomiriNumberAnimation { target: decoratedWindow; properties: "width,height,itemScale,angle,scaleToPreviewProgress"; duration: priv.animationDuration }
+                         LomiriNumberAnimation { target: windowInfoItem; properties: "opacity"; duration: priv.animationDuration }
+                     },
++                    Transition {
++                        from: "staged,multiWindowTiled,multiWindowFloating"; to: "staged,multiWindowTiled,multiWindowFloating"
++                        LomiriNumberAnimation { target: appDelegate; properties: "x,y"; duration: priv.animationDuration }
++                    },
+                     Transition {
+                         from: "normal,staged"; to: "stagedWithSideStage"
+                         LomiriNumberAnimation { target: appDelegate; properties: "x,y,requestedWidth,requestedHeight"; duration: priv.animationDuration }
+@@ -2170,7 +2227,7 @@ FocusScope {
+                 }
+                 StagedFullscreenPolicy {
+                     id: stagedFullscreenPolicy
+-                    active: root.mode == "staged" || root.mode == "stagedWithSideStage"
++                    active: (root.mode == "staged" || root.mode == "stagedWithSideStage") && appDelegate.multiWindowRole != 3
+                     surface: model.window.surface
+                 }
+ 
+@@ -2193,6 +2250,7 @@ FocusScope {
+                         priv.closingIndex = index
+                         appDelegate.close();
+                     }
++                    onLongPressed: multiWindow.openMenu(index)
+                 }
+ 
+                 WindowInfoItem {
+@@ -2302,6 +2360,20 @@ FocusScope {
+                 }
+             }
+         }
++
++        PhoneMultiWindow {
++            id: multiWindow
++            objectName: "phoneMultiWindow"
++            anchors.fill: parent
++            z: topLevelSurfaceList.count + 2
++            active: root.mode === "staged"
++            stage: root
++            stagePriv: priv
++            appRepeater: appRepeater
++            topLevelSurfaceList: root.topLevelSurfaceList
++            availableDesktopArea: root.availableDesktopArea
++            spreadItem: spreadItem
++        }
+     }
+ 
+     FakeMaximizeDelegate {
