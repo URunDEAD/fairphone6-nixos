@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- FP6 app launch / keep apps ready. Written by System Settings > App Launch;
+     read live by fp6-app-ready (user service) and by Lomiri's Stage.qml
+     (which apps are frozen in the background). App ids are desktop-file
+     basenames (lomiri-app-launch legacy ids), e.g. "morph-browser". -->
+<schemalist gettext-domain="lomiri-system-settings">
+  <schema id="com.fairphone6.app-ready" path="/com/fairphone6/app-ready/">
+    <key name="keep-ready" type="as">
+      <default>[]</default>
+      <summary>Apps kept ready in memory</summary>
+      <description>In the background these apps are suspended (no CPU) instead of running, and they are closed last when memory runs low.</description>
+    </key>
+    <key name="prelaunch" type="as">
+      <default>[]</default>
+      <summary>Apps started hidden at login</summary>
+      <description>Started in the background without a window on screen, then kept ready (suspended).</description>
+    </key>
+    <key name="preload" type="as">
+      <default>[]</default>
+      <summary>Apps whose files are preloaded into the page cache</summary>
+    </key>
+    <key name="freeze-background" type="b">
+      <default>false</default>
+      <summary>Suspend every app in the background</summary>
+      <description>Off: only kept-ready apps are suspended; other background apps keep running (music, downloads, terminal jobs). Apps in com.canonical.qtmir lifecycle-exempt-appids are never suspended.</description>
+    </key>
+    <key name="saver-freeze" type="b">
+      <default>false</default>
+      <summary>Battery saver is active: suspend every background app (set by fp6-app-ready)</summary>
+      <description>Mirrors /run/fp6-battery/saver. Lomiri treats it like freeze-background.</description>
+    </key>
+    <key name="preload-budget-mb" type="i">
+      <range min="16" max="2048"/>
+      <default>300</default>
+      <summary>Preload budget per app (MiB of files)</summary>
+    </key>
+    <key name="preload-interval-min" type="i">
+      <range min="0" max="1440"/>
+      <default>120</default>
+      <summary>Minutes between preload refreshes (0 = at login only)</summary>
+    </key>
+    <key name="mlock-mb" type="i">
+      <range min="0" max="512"/>
+      <default>0</default>
+      <summary>MiB of the preloaded files locked in RAM (0 = none)</summary>
+    </key>
+    <key name="zram-enabled" type="b">
+      <default>true</default>
+      <summary>Compressed swap in RAM (zram)</summary>
+    </key>
+    <key name="low-memory-killer" type="b">
+      <default>true</default>
+      <summary>Close background apps when memory runs low</summary>
+      <description>Other background apps first, kept-ready apps last; never the app on screen or the shell.</description>
+    </key>
+    <key name="installed-apps" type="as">
+      <default>[]</default>
+      <summary>Apps the Settings page offers ("id TAB name TAB icon"), kept by fp6-app-ready</summary>
+    </key>
+    <key name="app-list-request" type="i">
+      <default>0</default>
+      <summary>Changed by the Settings page to ask fp6-app-ready to rescan the apps</summary>
+    </key>
+    <key name="status-file" type="s">
+      <default>''</default>
+      <summary>Path of the status JSON the daemon writes (for the Settings page)</summary>
+    </key>
+  </schema>
+</schemalist>

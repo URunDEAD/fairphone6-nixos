@@ -48,6 +48,7 @@ let
       ({ ... }: { imports = [ ./sensor-apps/sensor-apps-fp6.nix ]; hardware.fairphone6.sensorApps.enable = true; })
       ./lomiri-session/lomiri-session-fp6.nix
       ./lomiri-drawer-folders/lomiri-drawer-folders-fp6.nix
+      ./app-ready/app-ready-fp6.nix
       ({ lib, options, ... }: {
         # fp6-lomiri-powerd replaces the manual-only brightness bridge.
         # lomiri-gpu-fp6.nix restates it at mkOverride 10.

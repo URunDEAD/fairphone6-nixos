@@ -1,0 +1,331 @@
+--- a/plugins/WindowManager/TopLevelWindowModel.cpp
++++ b/plugins/WindowManager/TopLevelWindowModel.cpp
+@@ -26,7 +26,13 @@
+ #include <lomiri/shell/application/SurfaceManagerInterface.h>
+ 
+ // Qt
++#include <QDateTime>
+ #include <QDebug>
++#include <QDir>
++#include <QFile>
++#include <QFileInfo>
++#include <QHash>
++#include <QSaveFile>
+ 
+ // local
+ #include "Window.h"
+@@ -58,6 +64,65 @@
+     });
+ }
+ 
++// FP6 app-ready (nixos-fp6/feature-push/app-ready): background launches and
++// a focus file for the fp6-app-ready daemon.
++//  * $XDG_RUNTIME_DIR/fp6-app-ready/background/<appId> (written by the daemon
++//    right before it starts the app, at most 60 s old): the app's windows of
++//    the next 30 s are not activated and go to the bottom of the stack; they
++//    stay fp6Background (off screen) until the user focuses them.
++//  * $XDG_RUNTIME_DIR/fp6-app-ready/focused: app id of the focused window.
++//  * "fp6-app-ready:" journal lines (added / first-frame / focus) for launch
++//    time measurements.
++namespace {
++QString fp6AppReadyDir()
++{
++    const QString runtime = qEnvironmentVariable("XDG_RUNTIME_DIR");
++    return runtime.isEmpty() ? QString() : runtime + QStringLiteral("/fp6-app-ready");
++}
++
++bool fp6OpensInBackground(const QString &appId)
++{
++    static QHash<QString, qint64> backgroundUntil;
++    if (appId.isEmpty() || appId.contains(QLatin1Char('/'))) {
++        return false;
++    }
++    const qint64 now = QDateTime::currentMSecsSinceEpoch();
++    const QString dir = fp6AppReadyDir();
++    if (!dir.isEmpty()) {
++        const QFileInfo marker(dir + QStringLiteral("/background/") + appId);
++        if (marker.exists()) {
++            const qint64 age = now - marker.lastModified().toMSecsSinceEpoch();
++            QFile::remove(marker.filePath());
++            if (age >= 0 && age < 60000) {
++                backgroundUntil.insert(appId, now + 30000);
++            }
++        }
++    }
++    auto it = backgroundUntil.find(appId);
++    if (it == backgroundUntil.end()) {
++        return false;
++    }
++    if (it.value() < now) {
++        backgroundUntil.erase(it);
++        return false;
++    }
++    return true;
++}
++
++void fp6WriteFocused(const QString &appId)
++{
++    const QString dir = fp6AppReadyDir();
++    if (dir.isEmpty() || !QDir().mkpath(dir)) {
++        return;
++    }
++    QSaveFile file(dir + QStringLiteral("/focused"));
++    if (file.open(QIODevice::WriteOnly)) {
++        file.write(appId.toUtf8() + '\n');
++        file.commit();
++    }
++}
++} // namespace
++
+ TopLevelWindowModel::~TopLevelWindowModel()
+ {
+ }
+@@ -144,6 +209,7 @@
+ void TopLevelWindowModel::addApplication(lomiriapi::ApplicationInfoInterface *application)
+ {
+     DEBUG_MSG << "(" << application->appId() << ")";
++    qInfo().noquote() << "fp6-app-ready: added" << application->appId();
+ 
+     if (application->state() != lomiriapi::ApplicationInfoInterface::Stopped && application->surfaceList()->count() == 0) {
+         prependPlaceholder(application);
+@@ -182,6 +248,14 @@
+ 
+     connectSurface(surface);
+     m_allSurfaces.insert(surface);
++    if (surface->isReady()) {
++        qInfo().noquote() << "fp6-app-ready: first-frame" << application->appId();
++    } else {
++        const QString appId = application->appId();
++        connect(surface, &lomiriapi::MirSurfaceInterface::ready, this, [appId]() {
++            qInfo().noquote() << "fp6-app-ready: first-frame" << appId;
++        });
++    }
+ 
+     bool filledPlaceholder = false;
+     for (int i = 0; i < m_windowModel.count() && !filledPlaceholder; ++i) {
+@@ -204,6 +278,7 @@
+ {
+ 
+     Window *window = createWindow(surface);
++    const bool background = application && fp6OpensInBackground(application->appId());
+ 
+     connect(window, &Window::stateChanged, this, [=](Mir::State newState) {
+         if (newState == Mir::HiddenState) {
+@@ -219,6 +294,25 @@
+         }
+     });
+ 
++    if (background) {
++        // Background launch: bottom of the stack, not activated.
++        window->setFp6Background(true);
++        qInfo().noquote() << "fp6-app-ready: background window" << application->appId();
++        if (m_modelState == IdleState) {
++            m_modelState = InsertingState;
++            beginInsertRows(QModelIndex(), m_windowModel.count(), m_windowModel.count());
++            m_windowModel.append(ModelEntry(window, application));
++            endInsertRows();
++            Q_EMIT countChanged();
++            Q_EMIT listChanged();
++            m_modelState = IdleState;
++        } else {
++            m_windowModel.append(ModelEntry(window, application));
++        }
++        DEBUG_MSG << " after " << toString();
++        return;
++    }
++
+     prependWindow(window, application);
+ 
+     // Activate the newly-prepended window.
+@@ -748,6 +842,16 @@
+         m_focusedWindow = window;
+         Q_EMIT focusedWindowChanged(m_focusedWindow);
+ 
++        QString focusedAppId;
++        for (const auto &entry : m_windowModel) {
++            if (window && entry.window == window && entry.application) {
++                focusedAppId = entry.application->appId();
++                break;
++            }
++        }
++        qInfo().noquote() << "fp6-app-ready: focus" << (focusedAppId.isEmpty() ? QStringLiteral("-") : focusedAppId);
++        fp6WriteFocused(focusedAppId);
++
+         if (m_previousWindow && m_previousWindow->focused() && !m_previousWindow->surface()) {
+             // do it ourselves. miral doesn't know about this window
+             m_previousWindow->setFocused(false);
+@@ -818,7 +922,7 @@
+ 
+     for (int i = 0; i < m_windowModel.count(); ++i) {
+         Window *window = m_windowModel[i].window;
+-        if (window->id() != forbiddenId) {
++        if (window->id() != forbiddenId && !window->fp6Background()) {
+             window->activate();
+             break;
+         }
+--- a/plugins/WindowManager/Window.cpp
++++ b/plugins/WindowManager/Window.cpp
+@@ -137,6 +137,7 @@
+ void Window::activate()
+ {
+     DEBUG_MSG << "()";
++    setFp6Background(false);
+     if (m_surface) {
+         m_surface->activate();
+     } else {
+@@ -231,12 +232,26 @@
+ {
+     if (m_surface->focused() != m_focused) {
+         m_focused = m_surface->focused();
++        if (m_focused) {
++            setFp6Background(false);
++        }
+         Q_EMIT focusedChanged(m_focused);
+     }
+ }
+ 
++void Window::setFp6Background(bool value)
++{
++    if (value != m_fp6Background) {
++        m_fp6Background = value;
++        Q_EMIT fp6BackgroundChanged(value);
++    }
++}
++
+ void Window::setFocused(bool value)
+ {
++    if (value) {
++        setFp6Background(false);
++    }
+     if (value != m_focused) {
+         DEBUG_MSG << "(" << value << ")";
+         m_focused = value;
+--- a/plugins/WindowManager/Window.h
++++ b/plugins/WindowManager/Window.h
+@@ -98,6 +98,12 @@
+      */
+     Q_PROPERTY(bool allowClientResize READ allowClientResize WRITE setAllowClientResize NOTIFY allowClientResizeChanged)
+ 
++    /**
++     * @brief FP6 app-ready: the window was opened by a background (hidden) launch
++     * and has not been focused since. Stage keeps it off screen.
++     */
++    Q_PROPERTY(bool fp6Background READ fp6Background NOTIFY fp6BackgroundChanged)
++
+ public:
+     Window(int id, QObject *parent = nullptr);
+     virtual ~Window();
+@@ -116,6 +122,9 @@
+     bool allowClientResize() const;
+     void setAllowClientResize(bool);
+ 
++    bool fp6Background() const { return m_fp6Background; }
++    void setFp6Background(bool value);
++
+     QString toString() const;
+ 
+ public Q_SLOTS:
+@@ -147,6 +156,7 @@
+     void surfaceChanged(lomiri::shell::application::MirSurfaceInterface *surface);
+     void allowClientResizeChanged(bool value);
+     void liveChanged(bool value);
++    void fp6BackgroundChanged(bool value);
+ 
+     /**
+      * @brief Emitted when focus for this window is requested by an external party
+@@ -168,6 +178,7 @@
+     lomiri::shell::application::MirSurfaceInterface *m_surface{nullptr};
+ 
+     bool m_allowClientResize{true};
++    bool m_fp6Background{false};
+ };
+ 
+ QDebug operator<<(QDebug dbg, const Window *window);
+--- a/qml/Stage/Stage.qml
++++ b/qml/Stage/Stage.qml
+@@ -193,6 +193,33 @@
+         schema.id: "com.canonical.qtmir"
+     }
+ 
++    // FP6 app-ready (System Settings > App Launch): apps the user keeps ready
++    // (or starts at login) are suspended (SIGSTOP) in the background instead of
++    // running; with freezeBackground every background app is, except the
++    // com.canonical.qtmir lifecycle-exempt ones. Default: nothing is frozen.
++    GSettings {
++        id: fp6AppReady
++        schema.id: "com.fairphone6.app-ready"
++    }
++
++    function fp6Frozen(appId) {
++        var shortAppId = appId.split('_')[0];
++        // saverFreeze: set by fp6-app-ready while battery saver is active.
++        if (fp6AppReady.freezeBackground === true || fp6AppReady.saverFreeze === true) {
++            return true;
++        }
++        var lists = [fp6AppReady.keepReady, fp6AppReady.prelaunch];
++        for (var l = 0; l < lists.length; l++) {
++            var list = lists[l] || [];
++            for (var i = 0; i < list.length; i++) {
++                if (shortAppId === list[i]) {
++                    return true;
++                }
++            }
++        }
++        return false;
++    }
++
+     function isExemptFromLifecycle(appId) {
+         var shortAppId = appId.split('_')[0];
+         for (var i = 0; i < lifecycleExceptions.lifecycleExemptAppids.length; i++) {
+@@ -423,7 +450,15 @@
+                 priv.sideStageDelegate = null;
+                 priv.sideStageItemId = 0;
+                 priv.sideStageAppId = "";
+-                priv.mainStageDelegate = appRepeater.itemAt(0);
++                var top = appRepeater.itemAt(0);
++                if (top && top.window && top.window.fp6Background) {
++                    // FP6 app-ready: a background-launched window is never shown by itself.
++                    priv.mainStageDelegate = null;
++                    priv.mainStageItemId = 0;
++                    priv.mainStageAppId = "";
++                    return;
++                }
++                priv.mainStageDelegate = top;
+                 priv.mainStageItemId = topLevelSurfaceList.idAt(0);
+                 priv.mainStageAppId = topLevelSurfaceList.applicationAt(0) ? topLevelSurfaceList.applicationAt(0).appId : ""
+                 return;
+@@ -580,7 +615,14 @@
+             // TODO: If the device has a dozen suspended apps because it was running
+             //       in staged mode, when it switches to Windowed mode it will suddenly
+             //       resume all those apps at once. We might want to avoid that.
+-            property var requestedState: ApplicationInfoInterface.RequestedRunning
++            property var requestedState: !(model.application && fp6Frozen(model.application.appId))
++                   || root.mode === "windowed"
++                   || (!root.suspended && model.application && priv.focusedAppDelegate &&
++                       (priv.focusedAppDelegate.appId === model.application.appId ||
++                        priv.mainStageAppId === model.application.appId ||
++                        priv.sideStageAppId === model.application.appId))
++                   ? ApplicationInfoInterface.RequestedRunning
++                   : ApplicationInfoInterface.RequestedSuspended
+             property bool temporaryAwaken: ProcessControl.awakenProcesses.indexOf(model.application.appId) >= 0
+ 
+             property var stateBinding: Binding {
+@@ -595,7 +637,7 @@
+                 property: "exemptFromLifecycle"
+                 restoreMode: Binding.RestoreBinding
+                 value: model.application
+-                            ? (!model.application.isTouchApp ||
++                            ? ((!model.application.isTouchApp && !fp6Frozen(model.application.appId)) ||
+                                isExemptFromLifecycle(model.application.appId) ||
+                                applicationDelegate.temporaryAwaken)
+                             : false
+@@ -1368,6 +1410,9 @@
+                     function onFocusRequested() {
+                         appDelegate.activate();
+                     }
++                    function onFp6BackgroundChanged() {
++                        priv.updateMainAndSideStageIndexes();
++                    }
+                     function onStateChanged(value) {
+                         if (value == Mir.MinimizedState) {
+                             appDelegate.minimize();

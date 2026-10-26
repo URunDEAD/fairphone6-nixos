@@ -1,0 +1,28 @@
+{
+    "icon": "speedometer",
+    "name": "App Launch",
+    "translations": "lomiri-system-settings",
+    "category": "system",
+    "priority": 8,
+    "form-factors": [
+        "phone",
+        "tablet"
+    ],
+    "keywords": [
+        "app",
+        "apps",
+        "launch",
+        "fast",
+        "ready",
+        "keep",
+        "memory",
+        "ram",
+        "zram",
+        "swap",
+        "preload",
+        "background"
+    ],
+    "has-dynamic-keywords": false,
+    "has-dynamic-visibility": false,
+    "page-component": "PageComponent.qml"
+}
