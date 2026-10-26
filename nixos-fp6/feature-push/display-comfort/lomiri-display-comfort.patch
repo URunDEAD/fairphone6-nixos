@@ -1,0 +1,39 @@
+--- a/qml/ShellScreen.qml
++++ b/qml/ShellScreen.qml
+@@ -18,6 +18,8 @@
+ import Lomiri.Components 1.3
+ import WindowManager 1.0
+ import Cursor 1.1
++import GSettings 1.0
++import FP6.DisplayComfort 1.0 as FP6DisplayComfort
+ import "Components"
+ 
+ ScreenWindow {
+@@ -69,6 +71,27 @@
+         }
+     }
+ 
++    // fp6 display-comfort: night light + greyscale over the whole window
++    // (shell, apps, OSK, lock screen). The msm DPU has no usable gamma/CTM on
++    // this panel, so the shell draws it. No node at all while neutral.
++    // Outside OrientedShell, so screenshots (ItemGrabber on the shell) keep
++    // the true colours.
++    GSettings {
++        id: fp6DisplayComfortSettings
++        schema.id: "com.fairphone6.display-comfort"
++    }
++    FP6DisplayComfort.ColorFilter {
++        id: fp6ColorFilter
++        objectName: "fp6ColorFilter"
++        anchors.fill: parent
++        z: 1000000
++        visible: active
++        temperature: fp6DisplayComfortSettings.nightLightCurrent || 6500
++        Behavior on temperature { NumberAnimation { duration: 1500; easing.type: Easing.InOutQuad } }
++        greyscale: fp6DisplayComfortSettings.greyscaleActive ? 1 : 0
++        Behavior on greyscale { NumberAnimation { duration: 1000; easing.type: Easing.InOutQuad } }
++    }
++
+     Component {
+         id: disabledScreenComponent
+         DisabledScreenNotice {

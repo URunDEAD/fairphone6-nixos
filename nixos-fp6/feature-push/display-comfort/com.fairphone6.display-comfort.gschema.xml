@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- FP6 display comfort: night light, greyscale, dark theme schedule, interface
+     and font scale. Read by Lomiri (ShellScreen.qml colour filter), System
+     Settings > Display Comfort and fp6-display-comfort (user service). -->
+<schemalist gettext-domain="lomiri-system-settings">
+  <enum id="com.fairphone6.display-comfort.Schedule">
+    <value nick="always" value="0"/>
+    <value nick="sunset-sunrise" value="1"/>
+    <value nick="custom" value="2"/>
+  </enum>
+  <enum id="com.fairphone6.display-comfort.DarkMode">
+    <value nick="off" value="0"/>
+    <value nick="on" value="1"/>
+    <value nick="follow-night-light" value="2"/>
+    <value nick="sunset-sunrise" value="3"/>
+    <value nick="custom" value="4"/>
+  </enum>
+
+  <schema id="com.fairphone6.display-comfort" path="/com/fairphone6/display-comfort/">
+    <!-- Night light -->
+    <key name="night-light-enabled" type="b">
+      <default>false</default>
+      <summary>Night light on</summary>
+      <description>Warm the screen colours on the schedule below.</description>
+    </key>
+    <key name="night-light-temperature" type="i">
+      <range min="1800" max="6000"/>
+      <default>3400</default>
+      <summary>Night light colour temperature (Kelvin)</summary>
+      <description>Lower is warmer. 6500 K is the neutral white point.</description>
+    </key>
+    <key name="night-light-schedule" enum="com.fairphone6.display-comfort.Schedule">
+      <default>'sunset-sunrise'</default>
+      <summary>When night light is active</summary>
+    </key>
+    <key name="night-light-from" type="s">
+      <default>'22:00'</default>
+      <summary>Custom schedule start (HH:MM, local time)</summary>
+    </key>
+    <key name="night-light-to" type="s">
+      <default>'07:00'</default>
+      <summary>Custom schedule end (HH:MM, local time)</summary>
+    </key>
+    <key name="transition-minutes" type="i">
+      <range min="0" max="120"/>
+      <default>30</default>
+      <summary>Length of the gradual change at the start and end of the schedule</summary>
+    </key>
+    <key name="night-light-current" type="i">
+      <range min="1000" max="6500"/>
+      <default>6500</default>
+      <summary>Current night light temperature (written by fp6-display-comfort)</summary>
+      <description>What the shell's colour filter shows now; 6500 = no filter. State, not a setting.</description>
+    </key>
+
+    <!-- Location for sunset/sunrise -->
+    <key name="use-location" type="b">
+      <default>true</default>
+      <summary>Use the phone's location for sunset and sunrise</summary>
+      <description>Asks GeoClue (only while Location is on) at most every few hours; falls back to the fixed coordinates.</description>
+    </key>
+    <key name="latitude" type="d">
+      <range min="-90" max="90"/>
+      <default>44.43</default>
+      <summary>Fixed latitude for sunset/sunrise (degrees north)</summary>
+    </key>
+    <key name="longitude" type="d">
+      <range min="-180" max="180"/>
+      <default>26.10</default>
+      <summary>Fixed longitude for sunset/sunrise (degrees east)</summary>
+    </key>
+    <key name="located-latitude" type="d">
+      <range min="-90" max="90"/>
+      <default>0</default>
+      <summary>Last latitude from GeoClue (rounded to 0.1 degree; state)</summary>
+    </key>
+    <key name="located-longitude" type="d">
+      <range min="-180" max="180"/>
+      <default>0</default>
+      <summary>Last longitude from GeoClue (rounded to 0.1 degree; state)</summary>
+    </key>
+    <key name="located-time" type="x">
+      <default>0</default>
+      <summary>Unix time of the last GeoClue location (0 = none; state)</summary>
+    </key>
+    <key name="status" type="s">
+      <default>''</default>
+      <summary>Human-readable schedule status (written by fp6-display-comfort)</summary>
+    </key>
+
+    <!-- Greyscale -->
+    <key name="greyscale-active" type="b">
+      <default>false</default>
+      <summary>Show the screen in greyscale</summary>
+      <description>May also be switched by other services (e.g. a bedtime mode).</description>
+    </key>
+
+    <!-- Dark theme -->
+    <key name="dark-theme-mode" enum="com.fairphone6.display-comfort.DarkMode">
+      <default>'off'</default>
+      <summary>Dark theme schedule</summary>
+      <description>off: never switch (the Background &amp; Appearance switch alone); on: always dark; follow-night-light: dark while the night light schedule is active; sunset-sunrise / custom: own schedule.</description>
+    </key>
+    <key name="dark-theme-from" type="s">
+      <default>'21:00'</default>
+      <summary>Dark theme custom start (HH:MM)</summary>
+    </key>
+    <key name="dark-theme-to" type="s">
+      <default>'07:00'</default>
+      <summary>Dark theme custom end (HH:MM)</summary>
+    </key>
+    <key name="dark-theme-shell" type="b">
+      <default>false</default>
+      <summary>Also switch the shell (panel, launcher, indicators) between light and dark</summary>
+    </key>
+    <key name="dark-theme-active" type="b">
+      <default>false</default>
+      <summary>Dark theme currently applied by the schedule (state)</summary>
+    </key>
+
+    <!-- Scale (applied at the next login) -->
+    <key name="interface-scale" type="i">
+      <range min="18" max="32"/>
+      <default>24</default>
+      <summary>Interface scale: pixels per grid unit (24 = default)</summary>
+    </key>
+    <key name="font-scale" type="i">
+      <range min="80" max="150"/>
+      <default>100</default>
+      <summary>Text size in percent (100 = default)</summary>
+    </key>
+    <key name="session-interface-scale" type="i">
+      <range min="18" max="32"/>
+      <default>24</default>
+      <summary>Interface scale of the running session (state)</summary>
+    </key>
+    <key name="session-font-scale" type="i">
+      <range min="80" max="150"/>
+      <default>100</default>
+      <summary>Text size of the running session (state)</summary>
+    </key>
+  </schema>
+</schemalist>

@@ -1,0 +1,34 @@
+{
+    "icon": "weather-clear-night-symbolic",
+    "name": "Display Comfort",
+    "translations": "lomiri-system-settings",
+    "category": "system",
+    "priority": 1,
+    "form-factors": [
+        "phone",
+        "tablet"
+    ],
+    "keywords": [
+        "night light",
+        "night",
+        "blue light",
+        "warm",
+        "colour temperature",
+        "color",
+        "greyscale",
+        "grayscale",
+        "dark",
+        "dark theme",
+        "dark mode",
+        "theme",
+        "font",
+        "text size",
+        "scale",
+        "scaling",
+        "display size",
+        "zoom"
+    ],
+    "has-dynamic-keywords": false,
+    "has-dynamic-visibility": false,
+    "page-component": "PageComponent.qml"
+}

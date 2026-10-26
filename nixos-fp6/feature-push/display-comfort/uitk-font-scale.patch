@@ -1,0 +1,54 @@
+diff -ru a/src/LomiriToolkit/ucfontutils.cpp b/src/LomiriToolkit/ucfontutils.cpp
+--- a/src/LomiriToolkit/ucfontutils.cpp
++++ b/src/LomiriToolkit/ucfontutils.cpp
+@@ -22,6 +22,16 @@
+ 
+ UCFontUtils *UCFontUtils::m_instance = nullptr;
+ 
++float UCFontUtils::userScale()
++{
++    static const float scale = [] {
++        bool ok = false;
++        const float value = qEnvironmentVariable("UITK_FONT_SCALE").toFloat(&ok);
++        return (ok && value >= 0.5f && value <= 2.0f) ? value : 1.0f;
++    }();
++    return scale;
++}
++
+ /*!
+  * \qmltype FontUtils
+  * \instantiates UCFontUtils
+@@ -68,7 +78,7 @@
+  */
+ qreal UCFontUtils::sizeToPixels(const QString &size)
+ {
+-    return modularScale(size) * UCUnits::instance()->dp(fontUnits);
++    return modularScale(size) * UCUnits::instance()->dp(fontUnits) * userScale();
+ }
+ 
+ /*!
+diff -ru a/src/LomiriToolkit/ucfontutils_p.h b/src/LomiriToolkit/ucfontutils_p.h
+--- a/src/LomiriToolkit/ucfontutils_p.h
++++ b/src/LomiriToolkit/ucfontutils_p.h
+@@ -55,6 +55,9 @@
+     explicit UCFontUtils(QObject *parent = 0) : QObject(parent) {}
+     ~UCFontUtils() { m_instance = Q_NULLPTR; }
+ 
++    // FP6: user font scale (UITK_FONT_SCALE, 0.5..2.0, default 1), read once.
++    static float userScale();
++
+     Q_INVOKABLE qreal sizeToPixels(const QString &size);
+     Q_INVOKABLE qreal modularScale(const QString &size);
+ 
+diff -ru a/src/LomiriToolkit/uclabel.cpp b/src/LomiriToolkit/uclabel.cpp
+--- a/src/LomiriToolkit/uclabel.cpp
++++ b/src/LomiriToolkit/uclabel.cpp
+@@ -52,7 +52,7 @@
+     };
+     QFont textFont = q->font();
+     textFont.setPixelSize(
+-        qRound(sizes[textSize] * UCUnits::instance()->dp(UCFontUtils::fontUnits)));
++        qRound(sizes[textSize] * UCUnits::instance()->dp(UCFontUtils::fontUnits) * UCFontUtils::userScale()));
+     q->setFont(textFont);
+ }
+ 
