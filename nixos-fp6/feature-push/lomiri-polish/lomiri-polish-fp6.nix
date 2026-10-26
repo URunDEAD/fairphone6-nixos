@@ -22,10 +22,13 @@
 #    fall back to the first registered backend (stock iio-sensor-proxy).
 #  * cameraCutout: the FP6 front camera hole sits at the top centre of the
 #    portrait panel, and Lomiri 0.5.0 has no display-cutout support. In
-#    portrait the collapsed indicator row is limited to the part of the panel
-#    right of a centred gap (cameraCutoutGap grid units); indicators that do
-#    not fit are hidden from the collapsed row, as on any overflow, and are
-#    still in the pulled-down menus. Landscape keeps the full width.
+#    portrait the collapsed indicator row keeps a centred gap (cameraCutoutGap
+#    grid units) free: indicators fill the part right of it first, and the
+#    ones that do not fit there continue left of the gap (shifted past it)
+#    instead of all being dropped. Only what would reach the app-menu or
+#    recording-dot area at the left, or any left item while the call hint
+#    shows, is hidden; everything stays in the pulled-down menus. Landscape
+#    keeps the full width.
 #  * sessionIndicatorLogout: ayatana-indicator-session already exports
 #    "Log Out…" (indicator.logout) in the menu the phone profile uses, but
 #    Lomiri's IndicatorMenuItemFactory drops indicator.logout (and suspend,
@@ -90,9 +93,49 @@ let
               '    property real expandedPanelHeight: units.gu(7)
               // FP6: keep the collapsed indicator row right of the front camera hole (portrait).
               readonly property real cameraCutoutGap: units.gu(${toString cfg.cameraCutoutGap})
-              readonly property real cameraCutoutRightWidth: width < height ? (width - cameraCutoutGap) / 2 : width' \
+              readonly property real cameraCutoutRightWidth: width < height ? (width - cameraCutoutGap) / 2 : width
+              // FP6: indicators that do not fit right of the hole continue left of it.
+              // cameraCutoutUsed = width taken right of the hole by the items that fit there.
+              property real cameraCutoutUsed: 0
+              property var cameraCutoutItems: []
+              function cameraCutoutUpdate() {
+                  var used = 0;
+                  for (var i = 0; i < cameraCutoutItems.length; i++) {
+                      var it = cameraCutoutItems[i];
+                      if (it.fp6FitsRight && it.width > 0) used = Math.max(used, it.fp6DistRight);
+                  }
+                  cameraCutoutUsed = used;
+              }' \
             --replace-fail '            overFlowWidth: width - appMenuClear' \
-              '            overFlowWidth: Math.min(width - appMenuClear, root.cameraCutoutRightWidth)'
+              '            overFlowWidth: Math.min(width - appMenuClear, root.cameraCutoutRightWidth)' \
+            --replace-fail '                readonly property bool overflow: parent.width - (x - __indicators.rowContentX) > __indicators.overFlowWidth' \
+              '                // FP6: an item that does not fit right of the camera hole is drawn
+                // left of it (shifted past the gap); it is hidden only when it would
+                // reach the app-menu/recording area at the left, or during a call hint.
+                readonly property real fp6DistRight: parent.width - (x - __indicators.rowContentX)
+                readonly property bool fp6FitsRight: fp6DistRight <= __indicators.overFlowWidth
+                readonly property bool fp6LeftOfCutout: !expanded && !fp6FitsRight
+                                                        && root.cameraCutoutRightWidth < __indicators.width
+                readonly property real fp6Shift: fp6LeftOfCutout
+                    ? root.cameraCutoutGap + __indicators.overFlowWidth - root.cameraCutoutUsed : 0
+                readonly property real fp6LeftLimit: __indicators.width - __indicators.appMenuClear
+                    - units.gu(1) - (root.screenRecording ? units.gu(2.5) : 0)
+                readonly property bool overflow: fp6LeftOfCutout
+                    ? (callHint.visible || fp6DistRight + fp6Shift > fp6LeftLimit)
+                    : !fp6FitsRight
+                onFp6DistRightChanged: Qt.callLater(root.cameraCutoutUpdate)
+                onFp6FitsRightChanged: Qt.callLater(root.cameraCutoutUpdate)
+                onWidthChanged: Qt.callLater(root.cameraCutoutUpdate)
+                Component.onCompleted: {
+                    root.cameraCutoutItems.push(indicatorItem);
+                    Qt.callLater(root.cameraCutoutUpdate);
+                }
+                Component.onDestruction: {
+                    var i = root.cameraCutoutItems.indexOf(indicatorItem);
+                    if (i >= 0) root.cameraCutoutItems.splice(i, 1);
+                    Qt.callLater(root.cameraCutoutUpdate);
+                }
+                transform: Translate { x: -indicatorItem.fp6Shift }'
         '' + lib.optionalString cfg.sessionIndicatorLogout ''
           # FP6: keep "Log Out…" of the session indicator on phones too.
           substituteInPlace qml/Panel/Indicators/IndicatorMenuItemFactory.qml \
