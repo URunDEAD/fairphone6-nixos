@@ -217,6 +217,111 @@ check(len(presses) == 5, f"Press for each of 5 quick presses with multi-press 3 
 core.power_key(1, now=210.0); core.power_key(0, now=212.0)
 check(len(presses) == 5, "long press is not a Press")
 
+
+# pocket mode (gestures: com.fairphone6.Gestures) -----------------------------
+core = object.__new__(m.Core)
+core.lock, core.screen_power = threading.RLock(), True
+core.screen_on, core.off_reasons, core.notification_woke = False, {"user"}, False
+core.prox_clients, core.dt2w, core.display_on_requests = set(), False, None
+core.power_pressed_at, core.listeners, core.last_activity = None, [], 0.0
+applied, lp = [], []
+def fake_apply(reason):
+    core.screen_on = not core.off_reasons
+    applied.append((core.screen_on, reason))
+    for listener in core.listeners:
+        listener(1 if core.screen_on else 0, reason)
+core._apply_screen = fake_apply
+core._touch_lp = lambda enabled: lp.append(enabled)
+timers = {}
+def fake_schedule(seconds, callback):
+    key = len(timers) + 100
+    timers[key] = (seconds, callback)
+    return key
+core._schedule = fake_schedule
+real_source_remove = m.GLib.source_remove
+m.GLib.source_remove = lambda key: timers.pop(key, None)
+core.listeners.append(core.pocket_screen_changed)
+pockets = []
+core.pocket_listeners = [pockets.append]
+iio = Path(tempfile.mkdtemp()) / "iio:device0"
+iio.mkdir()
+(iio / "name").write_text("stk36c61\n")
+(iio / "in_proximity_nearlevel").write_text("25\n")
+def prox(raw):
+    (iio / "in_proximity_raw").write_text(f"{raw}\n")
+prox(200)
+core.iio_root = iio.parent
+check(core._proximity_now() is True, "fresh proximity read: near above nearlevel")
+prox(3)
+check(core._proximity_now() is False, "fresh proximity read: far")
+prox(200)
+core.set_pocket(True, now=0.0)
+check(core.pocket and pockets == [True] and lp[-1] is True, "covered: touch LP, PocketChanged")
+core.set_screen_power("on", m.REASON_POWERKEY)
+check(not core.screen_on and not applied, "covered: power key does not wake")
+core.wake_gesture()
+check(not core.screen_on and not applied, "covered: double tap does not wake")
+core.set_screen_power("on", m.REASON_NOTIFICATION)
+check(not core.screen_on, "covered: notification does not wake")
+core.pocket_blocked_at = None
+core.pocket_refuses(m.REASON_POWERKEY, now=10.0)
+check(not core.pocket_refuses(m.REASON_POWERKEY, now=11.5) and not core.pocket and core.pocket_inhibit,
+      "second power press within 3 s overrides")
+core.set_pocket(True)
+check(not core.pocket, "after an override, covered is ignored until uncovered")
+core.set_pocket(False); core.set_pocket(True, now=20.0)
+check(core.pocket and not core.pocket_inhibit, "uncovered then covered: pocket again")
+core.pocket_refuses(m.REASON_POWERKEY, now=30.0)
+check(core.pocket_refuses(m.REASON_POWERKEY, now=34.0) is True, "press 4 s later is refused again")
+prox(0)
+del applied[:]
+core.set_screen_power("on", m.REASON_POWERKEY)
+check(core.screen_on and not core.pocket and applied == [(True, m.REASON_POWERKEY)],
+      "sensor already far at the press: uncovered and woken at once")
+# late release: refused press, then "uncovered" within 0.6 s wakes
+core.off_reasons.add("user"); fake_apply(m.REASON_POWERKEY); prox(200)
+core.set_pocket(True, now=40.0)
+core.pocket_refuses(m.REASON_POWERKEY, now=40.0)
+del applied[:]
+core.set_pocket(False, now=40.4)
+check(core.screen_on and applied[-1] == (True, m.REASON_POWERKEY), "uncovered 0.4 s after a refused press: wakes")
+check(lp[-1] is False, "uncovered with the display on: touch LP off")
+# incoming call (snap decision) still wakes, touch stays LP while covered
+core.off_reasons.add("user"); fake_apply(m.REASON_POWERKEY)
+core.set_pocket(True, now=50.0); del lp[:]
+core.set_screen_power("on", m.REASON_SNAP_DECISION)
+check(core.screen_on and lp and lp[-1] is True, "covered: incoming call wakes, touches stay off")
+check(not timers, "no pocket display-off timer for a call screen")
+core.set_pocket(False)
+check(lp[-1] is False, "uncovered during the call screen: touch back")
+# a lit display that gets covered goes off after 5 s (unless a call)
+core.set_pocket(True)
+key = [k for k, v in timers.items() if v[0] == m.POCKET_DISPLAY_OFF]
+check(len(key) == 1, "covered with the display on: off timer armed")
+timers.pop(key[0])[1]()
+check(not core.screen_on and applied[-1] == (False, m.REASON_INACTIVITY), "covered display goes off")
+core.set_pocket(False)
+core.set_pocket(True); core.off_reasons.discard("user")
+core.prox_clients.add("call")
+check(not core.pocket_refuses(m.REASON_POWERKEY), "in a call the pocket gate is off")
+core.prox_clients.clear(); core.set_pocket(False)
+# raise to wake (Peek)
+core.screen_on, core.off_reasons = False, {"user"}; timers.clear()
+core.set_pocket(True)
+check(core.peek(10) is False and not core.screen_on, "Peek refused while covered")
+core.set_pocket(False)
+check(core.peek(10) is True and core.screen_on, "Peek turns the display on")
+(sec, expire), = [v for v in timers.values()]
+check(sec == 10, "Peek timeout armed")
+expire()
+check(not core.screen_on and applied[-1] == (False, m.REASON_INACTIVITY), "Peek without input: display off again")
+core.peek(10); (sec, expire), = [v for k, v in list(timers.items())[-1:]]
+core.last_activity += 1.0
+expire()
+check(core.screen_on, "Peek then touch input: display stays on")
+check(core.peek(10) is False, "Peek with the display already on does nothing")
+m.GLib.source_remove = real_source_remove
+
 # D-Bus service ------------------------------------------------------------
 tmp = Path(tempfile.mkdtemp())
 bl = tmp / "bl"; bl.mkdir()
@@ -382,5 +487,37 @@ out, _ = daemon.communicate(timeout=10)
 fake.terminate()
 fake.wait(timeout=10)
 check(daemon.returncode == 0, "clean shutdown (sensors)")
+print(out)
+
+# com.fairphone6.Gestures over D-Bus ------------------------------------------
+(bl / "brightness").write_text("2048\n")
+daemon = subprocess.Popen([sys.executable, str(Path(m.__file__)), "--session-bus", "--no-sensors",
+                           "--screen-power", "--backlight-dir", str(bl), "--touch-dir", str(touch),
+                           "--iio-root", str(iio.parent)],
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+for _ in range(100):
+    if bus.name_has_owner(m.REPOWERD):
+        break
+    time.sleep(0.05)
+ges = dbus.Interface(bus.get_object(m.REPOWERD, m.GESTURES_PATH), m.GESTURES_IFACE)
+scr = dbus.Interface(bus.get_object(m.SCREEN, m.SCREEN_PATH), m.SCREEN)
+prox(200)
+scr.setScreenPowerMode("off", 2)
+check(bool(ges.SetPocket(True)) and bool(ges.GetPocket()), "SetPocket over D-Bus")
+check((touch / "lp_mode").read_text().startswith("1"), "covered: touch LP over D-Bus")
+scr.setScreenPowerMode("on", 2)
+settle(200)
+check((bl / "brightness").read_text().strip() == "0", "covered: setScreenPowerMode on refused (display stays off)")
+check(not bool(ges.Peek(10)), "Peek refused while covered")
+settle(700)
+ges.SetPocket(False)
+check(bool(ges.Peek(10)) and int((bl / "brightness").read_text()) > 0, "Peek wakes when uncovered")
+scr.setScreenPowerMode("off", 2)
+client = subprocess.run([sys.executable, "-c", "import dbus; b=dbus.SessionBus(); dbus.Interface(b.get_object(%r, %r), %r).SetPocket(True)" % (m.REPOWERD, m.GESTURES_PATH, m.GESTURES_IFACE)])
+settle(300)
+check(client.returncode == 0 and not bool(ges.GetPocket()), "pocket clears when its client leaves the bus")
+daemon.terminate()
+out, _ = daemon.communicate(timeout=10)
+check(daemon.returncode == 0, "clean shutdown (gestures)")
 print(out)
 sys.exit(1 if failures else 0)

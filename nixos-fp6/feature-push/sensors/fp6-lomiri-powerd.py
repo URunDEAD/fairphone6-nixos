@@ -26,6 +26,11 @@ and caller authorisation, copied here unchanged in behaviour) and adds:
     leaves the bus) and by proximity handling (calls).
   * com.fairphone6.PowerKey.Press: one signal per short power press (the
     privacy-lock SOS counter), independent of the multi-press mode.
+  * com.fairphone6.Gestures (fp6-gestures): pocket mode (SetPocket: while
+    covered, power key / double tap / notification wakes are refused after a
+    fresh proximity read, touch stays in LP, a lit display goes off after
+    5 s; incoming calls still wake; a second power press within 3 s wakes
+    anyway) and raise-to-wake (Peek: display on, off again if no input).
 
 Nothing here suspends or touches the IMU.
 """
@@ -88,6 +93,13 @@ IDLE_DIM_VALUE = 10
 # com.lomiri.Repowerd connection, so the existing bus policy applies.
 CAP_IFACE = "com.fairphone6.BrightnessCap"
 CAP_PATH = "/com/fairphone6/BrightnessCap"
+# Pocket mode and raise-to-wake for the gestures daemon (fp6-gestures).
+GESTURES_IFACE = "com.fairphone6.Gestures"
+GESTURES_PATH = "/com/fairphone6/Gestures"
+POCKET_OVERRIDE_WINDOW = 3.0   # second blocked power press within this wakes anyway
+POCKET_LATE_RELEASE = 0.6      # uncovered this soon after a blocked press: wake
+POCKET_DISPLAY_OFF = 5.0       # a lit display that gets pocketed goes off after this
+PROXIMITY_SENSOR = "stk36c61"
 EVENT = struct.Struct("llHHi")
 
 
@@ -337,6 +349,14 @@ class Core:
     idle_dimmed = False
     last_activity = 0.0
     display_on_requests = None    # cookie -> D-Bus sender (keepDisplayOn)
+    # pocket mode / raise-to-wake (com.fairphone6.Gestures)
+    pocket = False                # fp6-gestures: proximity near and dark for > 1 s
+    pocket_inhibit = False        # overridden by the user until the next "uncovered"
+    pocket_blocked_at = None      # last refused power-key wake (monotonic)
+    pocket_off_timer = None
+    pocket_listeners = ()
+    peek_id = 0
+    iio_root = Path("/sys/bus/iio/devices")
 
     def __init__(self, bus, backlight, touch, curve, screen_power, sensors=True):
         self.bus, self.backlight, self.touch = bus, backlight, touch
@@ -610,6 +630,8 @@ class Core:
         with self.lock:
             if mode not in ("on", "off"):
                 raise Invalid("mode must be 'on' or 'off'")
+            if mode == "on" and self.pocket_refuses(int(reason)):
+                return True
             if int(reason) in NOTIFICATION_REASONS:
                 if mode == "on":
                     if self.screen_on:
@@ -750,6 +772,136 @@ class Core:
                 del requests[key]
             self._idle_rearm()
             self.idle_activity()
+
+    # pocket mode / raise-to-wake (com.fairphone6.Gestures) --------------------
+    # fp6-gestures decides "covered" (proximity near and dark for > 1 s) and
+    # reports it; this side only gates. Every refused wake re-reads the
+    # proximity sensor first, so an uncovered phone wakes at once even if the
+    # "uncovered" report is still on its way. Calls (proximity handling) are
+    # never touched: the gate is off and touch LP is left to the call logic.
+    def _proximity_now(self):
+        """Fresh near/far from the sensor's sysfs (True/False), None if unknown."""
+        try:
+            for entry in sorted(Path(self.iio_root).glob("iio:device*")):
+                if (entry / "name").read_text().strip() != PROXIMITY_SENSOR:
+                    continue
+                raw = int((entry / "in_proximity_raw").read_text())
+                level = int((entry / "in_proximity_nearlevel").read_text())
+                return raw > level if level > 0 else None
+        except (OSError, ValueError):
+            pass
+        return None
+
+    def pocket_refuses(self, reason, now=None):
+        if not self.pocket or self.screen_on or self.prox_clients:
+            return False
+        if reason == REASON_SNAP_DECISION:
+            # Incoming calls and alarms still wake (touch stays in LP while
+            # covered, so nothing is answered or dismissed in the pocket).
+            return False
+        if self._proximity_now() is False:
+            log("pocket: sensor reads far at the wake: uncovered")
+            self.pocket_blocked_at = None
+            self.set_pocket(False)
+            return False
+        if reason == REASON_POWERKEY:
+            now = time.monotonic() if now is None else now
+            if self.pocket_blocked_at is not None and now - self.pocket_blocked_at <= POCKET_OVERRIDE_WINDOW:
+                log("pocket: second power press: display on anyway")
+                self.pocket_blocked_at = None
+                self.set_pocket(False)
+                self.pocket_inhibit = True
+                return False
+            self.pocket_blocked_at = now
+        log("pocket: display stays off, reason", reason)
+        return True
+
+    def set_pocket(self, covered, now=None):
+        now = time.monotonic() if now is None else now
+        with self.lock:
+            covered = bool(covered)
+            if not covered:
+                self.pocket_inhibit = False
+            elif self.pocket_inhibit:
+                return self.pocket
+            if covered == self.pocket:
+                return self.pocket
+            self.pocket = covered
+            log("pocket", "covered" if covered else "uncovered")
+            self._pocket_cancel_off()
+            self._pocket_touch()
+            if covered:
+                if self.screen_on and not self.prox_clients:
+                    self.pocket_off_timer = self._schedule(POCKET_DISPLAY_OFF, self._pocket_display_off)
+            else:
+                blocked, self.pocket_blocked_at = self.pocket_blocked_at, None
+                if blocked is not None and now - blocked <= POCKET_LATE_RELEASE and not self.screen_on:
+                    log("pocket: uncovered right after a refused power press: display on")
+                    self.set_screen_power("on", REASON_POWERKEY)
+            for listener in self.pocket_listeners:
+                listener(self.pocket)
+            return self.pocket
+
+    def _pocket_touch(self):
+        """Touch LP while covered; otherwise what _apply_screen would choose."""
+        if self.prox_clients:
+            return
+        if self.pocket:
+            self._touch_lp(True)
+        else:
+            self._touch_lp(not self.screen_on and (self.dt2w or "proximity" in self.off_reasons))
+
+    def _pocket_cancel_off(self):
+        if self.pocket_off_timer is not None:
+            GLib.source_remove(self.pocket_off_timer)
+            self.pocket_off_timer = None
+
+    def _pocket_display_off(self):
+        with self.lock:
+            self.pocket_off_timer = None
+            if not self.pocket or not self.screen_on or self.prox_clients or self.display_on_requests:
+                return
+            log("pocket: display off")
+            self.notification_woke = False
+            self.off_reasons.add("user")
+            self._apply_screen(REASON_INACTIVITY)
+
+    def pocket_screen_changed(self, status, reason):
+        # DisplayPowerStateChange listener: _apply_screen leaves LP on screen
+        # on (an incoming call in the pocket); keep touches off while covered.
+        if self.pocket:
+            if not status:
+                self._pocket_cancel_off()
+            self._pocket_touch()
+
+    def peek(self, seconds):
+        """Raise to wake: display on (lock screen); off again after `seconds`
+        without input. Counts as activity for the idle timer."""
+        if not self.screen_power:
+            raise Unsupported("Display power is disabled in this backend (--screen-power)")
+        with self.lock:
+            if self.screen_on or self.pocket or self.prox_clients or "proximity" in self.off_reasons:
+                return False
+            seconds = max(3, min(60, int(seconds)))
+            self.notification_woke = False
+            self.off_reasons.discard("user")
+            self._apply_screen(REASON_UNKNOWN)
+            if not self.screen_on:
+                return False
+            self.peek_id += 1
+            peek, at = self.peek_id, self.last_activity
+            self._schedule(seconds, lambda: self._peek_expired(peek, at))
+            log("raise to wake: display on for", seconds, "s unless used")
+            return True
+
+    def _peek_expired(self, peek, at):
+        with self.lock:
+            if (peek != self.peek_id or not self.screen_on or self.last_activity > at + 0.01
+                    or self.display_on_requests or self.prox_clients):
+                return
+            log("raise to wake: no input, display off again")
+            self.off_reasons.add("user")
+            self._apply_screen(REASON_INACTIVITY)
 
     # double tap -------------------------------------------------------------
     def set_dt2w(self, enabled):
@@ -999,6 +1151,8 @@ class Core:
         with self.lock:
             self.notification_woke = False
             log("KEY_WAKEUP (double tap)")
+            if self.pocket_refuses(REASON_UNKNOWN):
+                return
             if "user" in self.off_reasons and "proximity" not in self.off_reasons:
                 self.off_reasons.discard("user")
                 self._apply_screen(REASON_UNKNOWN)
@@ -1225,6 +1379,46 @@ class BrightnessCap(dbus.service.Object):
         pass
 
 
+class Gestures(dbus.service.Object):
+    """Pocket mode and raise-to-wake for fp6-gestures."""
+
+    def __init__(self, bus, core, authorizer):
+        super().__init__(bus, GESTURES_PATH)
+        self.bus, self.core, self.authorizer = bus, core, authorizer
+        self.owner_watch, self.owner = None, None
+        core.pocket_listeners = [lambda covered: self.PocketChanged(covered)]
+        core.listeners.append(core.pocket_screen_changed)
+
+    @dbus.service.method(GESTURES_IFACE, in_signature="b", out_signature="b", sender_keyword="sender")
+    def SetPocket(self, covered, sender=None):
+        self.authorizer.require(sender)
+        if covered and sender and sender != self.owner:
+            # Never left "covered" by a client that went away.
+            if self.owner_watch is not None:
+                self.owner_watch.cancel()
+            def owner(name, sender=sender):
+                if not name and self.owner == sender:
+                    self.owner_watch.cancel()
+                    self.owner_watch, self.owner = None, None
+                    self.core.set_pocket(False)
+            self.owner = sender
+            self.owner_watch = self.bus.watch_name_owner(sender, owner)
+        return self.core.set_pocket(bool(covered))
+
+    @dbus.service.method(GESTURES_IFACE, in_signature="", out_signature="b")
+    def GetPocket(self):
+        return self.core.pocket
+
+    @dbus.service.method(GESTURES_IFACE, in_signature="i", out_signature="b", sender_keyword="sender")
+    def Peek(self, seconds, sender=None):
+        self.authorizer.require(sender)
+        return self.core.peek(seconds)
+
+    @dbus.service.signal(GESTURES_IFACE, signature="b")
+    def PocketChanged(self, covered):
+        pass
+
+
 class Service:
     def __init__(self, bus, core, authorizer):
         self.names = [dbus.service.BusName(name, bus, do_not_queue=True) for name in (REPOWERD, SCREEN)]
@@ -1232,6 +1426,7 @@ class Service:
         self.screen = Screen(bus, core, self.repowerd, authorizer)
         self.powerkey = PowerKey(bus, core, authorizer)
         self.cap = BrightnessCap(bus, core, authorizer)
+        self.gestures = Gestures(bus, core, authorizer)
         self.timer = GLib.timeout_add_seconds(2, self.repowerd.poll)
 
 
@@ -1250,6 +1445,7 @@ def main(argv=None):
                         help=argparse.SUPPRESS)
     parser.add_argument("--touch-dir", type=Path, default=Path("/sys/bus/spi/devices/spi0.0"), help=argparse.SUPPRESS)
     parser.add_argument("--no-sensors", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--iio-root", type=Path, default=Core.iio_root, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.uid <= 0:
         parser.error("The phone user UID must be positive")
@@ -1261,6 +1457,7 @@ def main(argv=None):
         backlight = Backlight(args.backlight_dir)
         bus = dbus.SystemBus()
     core = Core(bus, backlight, Touch(args.touch_dir), args.curve, args.screen_power, sensors=not args.no_sensors)
+    core.iio_root = args.iio_root
     service = Service(bus, core, Authorizer(bus, args.uid, allow_any=args.session_bus))
     if args.double_tap_default and core.touch.supported:
         try:
