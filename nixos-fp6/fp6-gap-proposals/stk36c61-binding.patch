@@ -1,0 +1,38 @@
+From: Jorijn van der Graaf <jorijnvdgraaf@catcrafts.net>
+Subject: dt-bindings: iio: light: stk33xx: document the Sensortek STK36C61
+Source: https://lists.openwall.net/linux-kernel/2026/09/01/114
+Message-ID: <20260901005114.203062-3-jorijnvdgraaf@catcrafts.net>
+
+Documentation-only adaptation of the public v3 2/5 patch to pinned63289f.
+It validates the existing FP6 compatible/fallback; it does not fix probe-EIO,
+change a driver, activate a sensor or alter the verified645 kernel.
+
+--- a/Documentation/devicetree/bindings/iio/light/stk33xx.yaml
++++ b/Documentation/devicetree/bindings/iio/light/stk33xx.yaml
+@@ -4,14 +4,14 @@
+ $id: http://devicetree.org/schemas/iio/light/stk33xx.yaml#
+ $schema: http://devicetree.org/meta-schemas/core.yaml#
+ 
+-title: |
+-  Sensortek STK33xx I2C Ambient Light and Proximity sensor
++title: Sensortek STK33xx/STK36C61 I2C Ambient Light and Proximity sensor
+ 
+ maintainers:
+   - Jonathan Cameron <jic23@kernel.org>
+ 
+-description: |
+-  Ambient light and proximity sensor over an i2c interface.
++description:
++  Ambient light and proximity sensor over an i2c interface. The STK36C61
++  additionally provides RGBC colour channels.
+ 
+ allOf:
+   - $ref: ../common.yaml#
+@@ -26,6 +26,7 @@
+       - items:
+           - enum:
+               - sensortek,stk3013
++              - sensortek,stk36c61
+           - const: sensortek,stk3310
+ 
+   reg:

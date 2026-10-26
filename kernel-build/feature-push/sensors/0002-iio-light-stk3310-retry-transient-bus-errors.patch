@@ -1,0 +1,110 @@
+From 5eaf11201bcbb409b6c95de3cd1be8eccd68f699 Mon Sep 17 00:00:00 2001
+From: Paul Schuldesz <paulschuldesz@gmail.com>
+Date: Sat, 24 Oct 2026 12:46:11 +0300
+Subject: [PATCH 2/3] iio: light: stk3310: retry transient bus errors during
+ init and raw reads
+
+On the Fairphone 6 the STK36C61 sits on a bit-banged i2c-gpio bus that
+shows an occasional data-phase NAK ("i2c i2c-7: sendbytes: NAK
+bailout", ~28 per 12h of polling on 7.2.0-fp6-nixos4). Earlier boots
+lost the whole device when one such NAK hit the INTCTRL1 RMW in
+stk3310_init(); on nixos4 the same probe succeeded, and the remaining
+failures are isolated raw reads that iio-sensor-proxy logs as EIO.
+
+Retry transient errors (EIO/ENXIO/EREMOTEIO/ETIMEDOUT/EAGAIN) up to
+three times with a 2 ms back-off. stk3310_init() is idempotent (ID
+read, state write, INT RMW), so re-running it is safe. Persistent
+errors are still reported.
+
+Untested on hardware; staged for the FP6 feature-push kernel.
+---
+ drivers/iio/light/stk3310.c | 38 ++++++++++++++++++++++++++++++++++---
+ 1 file changed, 35 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/iio/light/stk3310.c b/drivers/iio/light/stk3310.c
+index 1a00079..f0dd80e 100644
+--- a/drivers/iio/light/stk3310.c
++++ b/drivers/iio/light/stk3310.c
+@@ -9,6 +9,7 @@
+ 
+ #include <linux/array_size.h>
+ #include <linux/bits.h>
++#include <linux/delay.h>
+ #include <linux/dev_printk.h>
+ #include <linux/err.h>
+ #include <linux/i2c.h>
+@@ -66,6 +67,22 @@
+ 
+ #define STK3310_DRIVER_NAME			"stk3310"
+ 
++/*
++ * Some boards (e.g. Fairphone 6) wire this sensor to a bit-banged
++ * i2c-gpio bus on which an occasional data-phase NAK is observed
++ * ("sendbytes: NAK bailout"). A single transient NAK during probe made
++ * the whole device unavailable until reboot. Retry transient bus
++ * errors a few times; persistent errors are still returned.
++ */
++#define STK3310_BUS_RETRIES			3
++#define STK3310_BUS_RETRY_DELAY_US		2000
++
++static bool stk3310_is_transient_bus_error(int ret)
++{
++	return ret == -EIO || ret == -ENXIO || ret == -EREMOTEIO ||
++	       ret == -ETIMEDOUT || ret == -EAGAIN;
++}
++
+ #define STK3310_SCALE_AVAILABLE			"6.4 1.6 0.4 0.1"
+ 
+ #define STK3310_IT_AVAILABLE \
+@@ -435,6 +452,7 @@ static int stk3310_read_raw(struct iio_dev *indio_dev,
+ {
+ 	__be16 buf;
+ 	int ret;
++	int attempt;
+ 	unsigned int index;
+ 	struct stk3310_data *data = iio_priv(indio_dev);
+ 	struct i2c_client *client = data->client;
+@@ -446,8 +464,14 @@ static int stk3310_read_raw(struct iio_dev *indio_dev,
+ 	switch (mask) {
+ 	case IIO_CHAN_INFO_RAW:
+ 		mutex_lock(&data->lock);
+-		ret = regmap_bulk_read(data->regmap, chan->address, &buf,
+-				       sizeof(buf));
++		for (attempt = 0; ; attempt++) {
++			ret = regmap_bulk_read(data->regmap, chan->address,
++					       &buf, sizeof(buf));
++			if (ret >= 0 || attempt >= STK3310_BUS_RETRIES ||
++			    !stk3310_is_transient_bus_error(ret))
++				break;
++			fsleep(STK3310_BUS_RETRY_DELAY_US);
++		}
+ 		if (ret < 0) {
+ 			dev_err(&client->dev, "register read failed\n");
+ 			mutex_unlock(&data->lock);
+@@ -702,6 +726,7 @@ static int stk3310_probe(struct i2c_client *client)
+ {
+ 	const struct stk3310_chip_info *chip_info;
+ 	int ret;
++	int attempt;
+ 	struct iio_dev *indio_dev;
+ 	struct stk3310_data *data;
+ 
+@@ -756,7 +781,14 @@ static int stk3310_probe(struct i2c_client *client)
+ 		indio_dev->channels = channels;
+ 	}
+ 
+-	ret = stk3310_init(indio_dev);
++	for (attempt = 0; ; attempt++) {
++		ret = stk3310_init(indio_dev);
++		if (ret >= 0 || attempt >= STK3310_BUS_RETRIES ||
++		    !stk3310_is_transient_bus_error(ret))
++			break;
++		dev_warn(&client->dev, "init failed (%d), retrying\n", ret);
++		fsleep(STK3310_BUS_RETRY_DELAY_US);
++	}
+ 	if (ret < 0)
+ 		return ret;
+ 
+-- 
+2.54.0
+

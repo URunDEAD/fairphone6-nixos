@@ -1,0 +1,26 @@
+OPTIONAL, UNBUILT, NOT REQUIRED for the lomiri-camera-app stack.
+
+Userspace already supplies the front mount angle (camera.conf
+mount-angle / hardware.fp6LomiriCamera.secondary.mountAngle), so this patch
+only matters for other libcamera users (Snapshot, PipeWire clients) that read
+the libcamera Rotation property. The fp6-s5kkd1 driver already calls
+v4l2_fwnode_device_parse() + v4l2_ctrl_new_fwnode_properties(), so adding the
+DT property is enough to expose V4L2_CID_CAMERA_SENSOR_ROTATION.
+
+Apply ONLY after tools/feature-push/camera-test.sh + the GUI checklist confirm
+that 270 shows the front image upright (front-orientation-review/README.txt:
+vendor roll 270 is not proved to equal the V4L2 rotation convention). The
+preserved-symbol DTB 93bfe406... must then be regenerated through
+selfie-fp6-boot-dtb.nix and re-audited; no kernel rebuild is needed.
+
+--- a/nixos-fp6/selfie-fp6/fp6-s5kkd1.dtsi
++++ b/nixos-fp6/selfie-fp6/fp6-s5kkd1.dtsi
+@@ -15,7 +15,7 @@
+   pinctrl-names = "default";
+   pinctrl-0 = <&kd1_mclk3_default &kd1_reset_default>;
+   orientation = <0>;
+-  /* Rotation deliberately omitted until vendor HVflip/mount transform review. */
++  rotation = <270>; /* physically confirmed via camera-test.sh (fill in date) */
+   port {
+    kd1_ep: endpoint {
+     remote-endpoint = <&kd1_csiphy3_ep>;

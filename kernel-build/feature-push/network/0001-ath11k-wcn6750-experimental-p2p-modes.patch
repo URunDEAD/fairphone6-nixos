@@ -1,0 +1,38 @@
+EXPERIMENTAL / UNTESTED - DO NOT MERGE INTO A DEFAULT KERNEL
+FP6 network feature push, 2026-10-24.
+
+wifi: ath11k: advertise P2P interface modes for WCN6750 (FP6 Wi-Fi Display probe)
+
+Purpose: the only prerequisite for Miracast (Wi-Fi Display over Wi-Fi Direct)
+is a P2P-capable wiphy. Pinned ath11k advertises P2P_DEVICE/CLIENT/GO for
+QCA6390, WCN6855, QCA2066 and QCA6698AQ, but only STATION|AP for WCN6750
+(FP6 reports qcom,wcn6755-wifi with a wcn6750 fallback). The P2P code paths in
+mac.c (vdev subtypes, GO beacon P2P IE, combination limits) are chip-generic
+and keyed off this mask. With this change ath11k_mac_setup_iface_combinations()
+adds P2P_CLIENT/GO to the AP limit and a P2P_DEVICE limit (max 1); hw_params
+num_vdevs=3 still bounds STA + P2P-device + GO.
+
+Unknown, therefore experimental: whether WLAN.MSL.3.0.1-00328.3 firmware on
+WPSS implements the P2P vdev subtypes, NoA and remain-on-channel for this
+chip; upstream never enabled it. Validate only on a RAM-booted test kernel
+(fastboot boot, never flash), and check `iw phy` shows P2P modes,
+`iw dev wlan0 interface add p2p-dev0 type __p2pdev` succeeds, STA traffic on
+wlan0 is unaffected, and there are no ath11k firmware crashes/recovery in
+dmesg. If firmware asserts, drop this patch: Miracast is then not feasible on
+the mainline transport. Building/testing is left to the kernel agent; this
+feature push built no kernel.
+
+--- a/drivers/net/wireless/ath/ath11k/core.c
++++ b/drivers/net/wireless/ath/ath11k/core.c
+@@ -614,7 +614,10 @@
+ 		},
+ 
+ 		.interface_modes = BIT(NL80211_IFTYPE_STATION) |
+-					BIT(NL80211_IFTYPE_AP),
++					BIT(NL80211_IFTYPE_AP) |
++					BIT(NL80211_IFTYPE_P2P_DEVICE) |
++					BIT(NL80211_IFTYPE_P2P_CLIENT) |
++					BIT(NL80211_IFTYPE_P2P_GO),
+ 		.supports_monitor = false,
+ 		.supports_shadow_regs = true,
+ 		.idle_ps = true,

@@ -1,0 +1,78 @@
+From: FP6 feature-push (misc agent)
+Date: Sat, 24 Oct 2026 12:00:00 +0300
+Subject: [PATCH] power: supply: qcom_battmgr: report charge_* in uAh on SM8350-family
+
+On SM8350/SM8550-family pmic_glink firmware (FP6, qcom,milos-pmic-glink ->
+QCOM_BATTMGR_SM8550) battmgr->unit is never initialised because only the
+SC8280XP info response sets it. It stays QCOM_BATTMGR_UNIT_mWh (0), so the
+advertised charge_full and charge_full_design return -ENODATA and there is no
+charge_now/energy_now at all. UPower then reports energy 0 Wh and cannot
+estimate time-to-empty/full.
+
+Set the unit to mAh for the SM8350-family (the firmware reports these
+properties in uAh, matching charge_counter) and expose charge_now from the
+battery charge counter.
+
+Evidence (FP6, kernel 7.2.0-fp6-nixos4, 2026-10-24, read-only):
+  charge_counter=4043618 at capacity 91  (design 4415 mAh -> 91.6 %)
+  charge_full / charge_full_design: "No data available"
+  upower: energy 0 Wh, energy-full 0 Wh
+
+Not built or booted. Build only as part of a normal reviewed kernel trial.
+---
+--- a/drivers/power/supply/qcom_battmgr.c	2026-10-24 12:48:07.556065702 +0300
++++ b/drivers/power/supply/qcom_battmgr.c	2026-10-24 12:48:07.584354999 +0300
+@@ -438,6 +438,7 @@
+ 	[POWER_SUPPLY_PROP_TEMP] = BATT_TEMP,
+ 	[POWER_SUPPLY_PROP_TECHNOLOGY] = BATT_TECHNOLOGY,
+ 	[POWER_SUPPLY_PROP_CHARGE_COUNTER] =  BATT_CHG_COUNTER,
++	[POWER_SUPPLY_PROP_CHARGE_NOW] = BATT_CHG_COUNTER,
+ 	[POWER_SUPPLY_PROP_CYCLE_COUNT] = BATT_CYCLE_COUNT,
+ 	[POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN] =  BATT_CHG_FULL_DESIGN,
+ 	[POWER_SUPPLY_PROP_CHARGE_FULL] = BATT_CHG_FULL,
+@@ -582,7 +583,11 @@
+ 	case POWER_SUPPLY_PROP_CHARGE_NOW:
+ 		if (unit != QCOM_BATTMGR_UNIT_mAh)
+ 			return -ENODATA;
+-		val->intval = battmgr->status.capacity;
++		if (battmgr->variant == QCOM_BATTMGR_SM8350 ||
++		    battmgr->variant == QCOM_BATTMGR_SM8550)
++			val->intval = battmgr->info.charge_count;
++		else
++			val->intval = battmgr->status.capacity;
+ 		break;
+ 	case POWER_SUPPLY_PROP_CHARGE_COUNTER:
+ 		val->intval = battmgr->info.charge_count;
+@@ -875,6 +880,7 @@
+ 	POWER_SUPPLY_PROP_TEMP,
+ 	POWER_SUPPLY_PROP_TECHNOLOGY,
+ 	POWER_SUPPLY_PROP_CHARGE_COUNTER,
++	POWER_SUPPLY_PROP_CHARGE_NOW,
+ 	POWER_SUPPLY_PROP_CYCLE_COUNT,
+ 	POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN,
+ 	POWER_SUPPLY_PROP_CHARGE_FULL,
+@@ -907,6 +913,7 @@
+ 	POWER_SUPPLY_PROP_TEMP,
+ 	POWER_SUPPLY_PROP_TECHNOLOGY,
+ 	POWER_SUPPLY_PROP_CHARGE_COUNTER,
++	POWER_SUPPLY_PROP_CHARGE_NOW,
+ 	POWER_SUPPLY_PROP_CYCLE_COUNT,
+ 	POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN,
+ 	POWER_SUPPLY_PROP_CHARGE_FULL,
+@@ -1658,6 +1665,16 @@
+ 	else
+ 		battmgr->variant = QCOM_BATTMGR_SM8350;
+ 
++	/*
++	 * The SM8350-family property interface reports CHG_FULL, CHG_FULL_DESIGN
++	 * and CHG_COUNTER in uAh. battmgr->unit is otherwise only filled in by
++	 * the SC8280XP-style info response, so it stayed at mWh (0) and every
++	 * listed charge_* property returned -ENODATA (observed on FP6/milos).
++	 */
++	if (battmgr->variant == QCOM_BATTMGR_SM8350 ||
++	    battmgr->variant == QCOM_BATTMGR_SM8550)
++		battmgr->unit = QCOM_BATTMGR_UNIT_mAh;
++
+ 	ret = qcom_battmgr_charge_control_thresholds_init(battmgr);
+ 	if (ret < 0)
+ 		return dev_err_probe(dev, ret,

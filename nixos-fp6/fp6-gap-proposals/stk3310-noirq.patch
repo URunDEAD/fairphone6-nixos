@@ -1,0 +1,26 @@
+--- a/drivers/iio/light/stk3310.c
++++ b/drivers/iio/light/stk3310.c
+@@ -584,14 +584,15 @@
+ 		return ret;
+ 	}
+ 
+-	/* Enable PS interrupts */
+-	ret = regmap_field_write(data->reg_int_ps, STK3310_PSINT_EN);
+-	if (ret < 0) {
+-		dev_err(&client->dev, "failed to enable interrupts!\n");
+-		return ret;
+-	}
+-
+-	data->ps_int_enabled = true;
++	/* Polling-only devices have no interrupt to enable. */
++	if (client->irq > 0) {
++		ret = regmap_field_write(data->reg_int_ps, STK3310_PSINT_EN);
++		if (ret < 0) {
++			dev_err(&client->dev, "failed to enable interrupts!\n");
++			return ret;
++		}
++		data->ps_int_enabled = true;
++	}
+ 	data->ps_thdh = STK3310_PS_MAX_VAL;
+ 
+ 	return 0;

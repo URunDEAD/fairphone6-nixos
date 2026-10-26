@@ -1,0 +1,45 @@
+From: Paul Schuldesz <paulschuldesz@gmail.com>
+Subject: [PATCH] scsi: ufs: qcom: Power down the link during system suspend on Milos
+
+Milos (SM7635) has the same UFS GDSC split as SM8550/SM8650
+(ufs_phy_gdsc @0x77004 for the host, ufs_mem_phy_gdsc @0x9e000 for the
+QMP PHY). genpd powers both off in suspend_noirq, so the PHY state is
+lost and resuming with the link in Hibern8 (default spm_lvl 3) fails:
+
+  ufshcd-qcom 1d84000.ufshc: pwr ctrl cmd 0x18 ... failed, host upmcrs:0x5
+  ufshcd-qcom 1d84000.ufshc: __ufshcd_wl_resume: hibern8 exit failed 5
+
+followed by a full host + device reset. Mirror commit "scsi: ufs: qcom:
+Power down the controller/device during system suspend for SM8550/SM8650
+SoCs" and default spm_lvl to UFS_PM_LVL_5 for "qcom,milos-ufshc". The
+milos DT already lists that compatible first, so no DT change is needed.
+
+---
+--- a/drivers/ufs/host/ufs-qcom.c
++++ b/drivers/ufs/host/ufs-qcom.c
+@@ -3000,12 +3000,25 @@
+ 	.no_phy_retention = true,
+ };
+ 
++/*
++ * Milos (SM7635) uses the same split UFS_PHY_GDSC / UFS_MEM_PHY_GDSC layout as
++ * SM8550/SM8650 and likewise loses the PHY state when those GDSCs are powered
++ * off by genpd during system suspend, so the default spm_lvl 3 (link in
++ * Hibern8) fails with "hibern8 exit failed 5" on resume. Power the link down
++ * (UFS_PM_LVL_5) like SM8550/SM8650. LSDBS is reported correctly here, so
++ * the SM8550 BROKEN_LSDBS_CAP quirk is not inherited.
++ */
++static const struct ufs_qcom_drvdata ufs_qcom_milos_drvdata = {
++	.no_phy_retention = true,
++};
++
+ static const struct ufs_qcom_drvdata ufs_qcom_sa8255p_drvdata = {
+ 	.vops = &ufs_hba_qcom_sa8255p_vops
+ };
+ 
+ static const struct of_device_id ufs_qcom_of_match[] __maybe_unused = {
+ 	{ .compatible = "qcom,ufshc" },
++	{ .compatible = "qcom,milos-ufshc", .data = &ufs_qcom_milos_drvdata },
+ 	{ .compatible = "qcom,sm8550-ufshc", .data = &ufs_qcom_sm8550_drvdata },
+ 	{ .compatible = "qcom,sm8650-ufshc", .data = &ufs_qcom_sm8550_drvdata },
+ 	{ .compatible = "qcom,sa8255p-ufshc", .data = &ufs_qcom_sa8255p_drvdata },

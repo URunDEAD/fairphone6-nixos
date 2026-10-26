@@ -1,0 +1,31 @@
+{
+  "source": "official Fairphone camera-devicetree at41489bebf06c9ffc211a2071c937d086e7568032/volcano-camera-sensor-idp.dtsi:411-509",
+  "sensor": "Samsung S5KKD1",
+  "status": "no mainline driver, binding or sensor node in pinned63289f; not an enable-only fix",
+  "cci": {
+    "controller": 1,
+    "master": 1,
+    "address": "0x3d from upstream FP6 board comments; official generic camera DT leaves runtime address selection to vendor userspace"
+  },
+  "csiphyIndex": 3,
+  "resetGpio": 43,
+  "mclkGpio": 86,
+  "mclkIndex": 3,
+  "mclkHz": 24000000,
+  "supplies": {
+    "vio": "PM8008L6/1.8V",
+    "vdig": "PM8008L2/1.05-1.15V",
+    "vana": "PM8008L3/2.8V",
+    "vaf": "vreg_afvdd_2p8_ff/2.8V"
+  },
+  "vendorRollDegrees": 270,
+  "vcm": "AwinicAW86016@0x0c from upstream FP6 board comments, no corresponding pinned binding/driver established",
+  "missing": [
+    "sensor initialization/mode tables and driver",
+    "binding",
+    "actual CAMSS endpoint lane wiring and selected link frequency",
+    "front VCM support",
+    "libcamera gain/delay/tuning metadata"
+  ],
+  "hardwareValidated": false
+}

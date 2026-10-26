@@ -1,0 +1,38 @@
+From: FP6 feature-push (misc agent)
+Date: Sat, 24 Oct 2026 12:00:00 +0300
+Subject: [PATCH RFC] arm64: dts: qcom: milos-fp6: EXPERIMENTAL allow-set-time on PMIC RTC
+
+NOT RECOMMENDED BY DEFAULT. FP6 rtc0 (rtc-pm8xxx, qcom,pmk8350-rtc @0x6100)
+reads 1970-01-02 because Linux may not set it (set_time -> -ENODEV without
+allow-set-time, nvmem offset or UEFI rtc-info). Android uses time_daemon with
+an offset kept in userspace; the staged fp6-rtc-offset service mirrors that.
+
+This RFC enables direct RTC writes for an explicit, bounded RAM-boot test
+only (hwclock --systohc once, then compare after a power cycle). Whether the
+PMIC accepts HLOS writes on this platform is unverified. The userspace offset
+service stays inert whenever rtc0 already reads a plausible (>= 2025) time,
+so the two do not double-apply.
+
+Not built or booted.
+---
+--- a/arch/arm64/boot/dts/qcom/milos-fairphone-fp6.dts	2026-10-24 12:48:34.031057301 +0300
++++ b/arch/arm64/boot/dts/qcom/milos-fairphone-fp6.dts	2026-10-24 12:48:34.082243165 +0300
+@@ -1209,6 +1209,18 @@
+ 	};
+ };
+ 
++&pmk8550_rtc {
++	/*
++	 * EXPERIMENTAL: let Linux write the PMIC RTC directly. Mainline's
++	 * preferred phone-safe alternative is an nvmem "offset" cell in a PMIC
++	 * SDAM (see sc8280xp-crd/sa8540p-ride), but no SDAM byte is known to be
++	 * unused by FP6 firmware (pmk8550_sdam_2 already holds reboot-reason).
++	 * The userspace offset service in nixos-fp6/feature-push/misc is the
++	 * recommended fix; use this only for a bounded RAM-boot write test.
++	 */
++	allow-set-time;
++};
++
+ &pmr735b_gpios {
+ 	s1j_enable_default: s1j-enable-default-state {
+ 		pins = "gpio1";

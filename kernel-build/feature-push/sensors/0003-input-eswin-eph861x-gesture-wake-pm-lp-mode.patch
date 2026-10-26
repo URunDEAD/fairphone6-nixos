@@ -1,0 +1,367 @@
+From 957d67827f6189bdc80d578bb33218231c84b99e Mon Sep 17 00:00:00 2001
+From: Paul Schuldesz <paulschuldesz@gmail.com>
+Date: Sat, 24 Oct 2026 12:47:45 +0300
+Subject: [PATCH 3/3] Input: eswin_eph861x: gesture (double-tap) wake via
+ generic PM and lp_mode
+
+The pinned FP6 driver exports gesture_wakeup and turns DOUBLE_TAP
+reports into KEY_WAKEUP, but its LP entry/exit code is compiled out
+and generic PM (suspend-mode 2) only masks the CHG IRQ. Selecting a
+gesture therefore never reaches the controller's gesture mode and the
+IRQ is never armed for wake.
+
+Add a minimal generic-PM port of the vendor gesture LP path
+(touch-drivers odm/rc/target/16/fp6 37908c61):
+
+- eph_gesture_lp_enter(): reports off, gesture BIT0 on, IRQ kept
+  enabled; eph_gesture_lp_exit(): controller reset as in the current
+  vendor driver (FPSW-646), cached gesture selection is re-sent on the
+  next entry.
+- eph_suspend(): with a gesture selected, device_may_wakeup() and an
+  open input device, enter LP and enable_irq_wake() instead of
+  eph_stop(); any failure falls back to the old stop path.
+- The threaded handler parks the level IRQ while pm_sleeping (the SPI
+  parent may not be resumed yet when the IRQ core replays it) and
+  reports a wakeup event; eph_resume() drains the pending report
+  (KEY_WAKEUP) and re-enables it.
+- New lp_mode sysfs attribute (0644) so a display-power daemon can put
+  the controller in gesture mode while the panel is blanked but the
+  system stays awake (Lomiri without repowerd never suspends).
+- input close leaves LP first.
+
+Behaviour without a selected gesture is unchanged. Compile-checked
+only; needs physical suspend/resume and blank/unblank validation.
+---
+ .../touchscreen/eswin_touch/eswin_eph861x.c   | 227 +++++++++++++++++-
+ .../eswin_touch/eswin_eph861x_types.h         |  14 ++
+ 2 files changed, 239 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/input/touchscreen/eswin_touch/eswin_eph861x.c b/drivers/input/touchscreen/eswin_touch/eswin_eph861x.c
+index 4790518..2b6d006 100644
+--- a/drivers/input/touchscreen/eswin_touch/eswin_eph861x.c
++++ b/drivers/input/touchscreen/eswin_touch/eswin_eph861x.c
+@@ -40,6 +40,7 @@
+ #include <linux/dma-mapping.h>
+ #include <linux/dmapool.h>
+ #include <linux/pinctrl/consumer.h>
++#include <linux/pm_wakeup.h>
+ 
+ //#include <linux/soc/qcom/panel_event_notifier.h>
+ #include "eswin_eph861x_project_config.h"
+@@ -188,6 +189,20 @@ static irqreturn_t eph_interrupt(int irq, void *dev_id)
+     if (dev == NULL)
+         return IRQ_HANDLED;
+ 
++    /*
++     * A level-low wake IRQ is replayed by the IRQ core at the end of
++     * the noirq resume phase, before the SPI controller's own resume
++     * callback has run. Do not touch the bus then: park the IRQ and
++     * let eph_resume() drain the pending gesture report. Reporting a
++     * wakeup event also aborts a suspend that is still in progress.
++     */
++    if (READ_ONCE(ephdata->pm_sleeping)) {
++        disable_irq_nosync(irq);
++        WRITE_ONCE(ephdata->irq_parked, true);
++        pm_wakeup_event(dev, 0);
++        return IRQ_HANDLED;
++    }
++
+     pm_stay_awake(dev);
+ 
+     eph_read_and_process_messages(ephdata);
+@@ -989,6 +1004,88 @@ static int eph_gesture_mode_set(struct eph_data *ephdata, u8 gesture_mode)
+     return ret_val;
+ }
+ 
++/*
++ * Enable/disable regular touch reports. Same TLV as the vendor
++ * eph_enable_report_event() that is compiled out below.
++ */
++static int eph_report_event_set(struct eph_data *ephdata, bool enable)
++{
++    int ret;
++    u8 cfg[] = { 0x8, 0x5, 0x0, 0xc, 0x0, 0x1, 0x0, 0x2 };
++    u16 length = sizeof(cfg) / sizeof(cfg[0]);
++
++    cfg[7] = enable ? 0x3 : 0x2;
++
++    mutex_lock(&ephdata->comms_mutex);
++    ret = eph_write_control_config(ephdata, length, &cfg[0]);
++    mutex_unlock(&ephdata->comms_mutex);
++
++    return ret;
++}
++
++/*
++ * Enter controller gesture low-power mode: regular touch reports off,
++ * gesture recognition (BIT0) on, IRQ left enabled so that a
++ * GESTURE_DOUBLE_TAP report produces KEY_WAKEUP. Mirrors the vendor
++ * eph_dev_enter_lp_mode() gesture branch (touch-drivers 37908c61),
++ * but without arming the IRQ as a system wakeup; eph_suspend() does
++ * that separately. Caller holds lp_lock.
++ */
++static int eph_gesture_lp_enter(struct eph_data *ephdata)
++{
++    struct device *dev = &ephdata->commsdevice->dev;
++    int ret;
++
++    lockdep_assert_held(&ephdata->lp_lock);
++
++    if (ephdata->lp)
++        return 0;
++    if (!ephdata->gesture_wakeup_enable || ephdata->in_bootloader ||
++        ephdata->updating_device_settings || ephdata->suspended)
++        return -EBUSY;
++
++    ret = eph_report_event_set(ephdata, false);
++    if (ret)
++        dev_warn(dev, "gesture lp: disabling reports failed (%d)\n", ret);
++
++    ret = eph_gesture_mode_set(ephdata, ephdata->gesture_mode | BIT(0));
++    if (ret) {
++        dev_err(dev, "gesture lp: enabling recognition failed (%d)\n", ret);
++        (void)eph_report_event_set(ephdata, true);
++        return ret;
++    }
++
++    eph_clear_all_host_touch_slots(ephdata);
++    ephdata->lp = true;
++    dev_info(dev, "gesture lp entered, mode %x\n", ephdata->gesture_mode);
++
++    return 0;
++}
++
++/*
++ * Leave gesture low-power mode. The current vendor driver replaced the
++ * "clear BIT0 + re-enable reports" sequence by a controller reset
++ * (FPSW-646), which also restores the default report configuration;
++ * follow that. The selected gesture bits stay cached in gesture_mode
++ * and are re-sent on the next entry. Caller holds lp_lock.
++ */
++static void eph_gesture_lp_exit(struct eph_data *ephdata)
++{
++    struct device *dev = &ephdata->commsdevice->dev;
++
++    lockdep_assert_held(&ephdata->lp_lock);
++
++    if (!ephdata->lp)
++        return;
++
++    eph_reset_device(ephdata);
++    ephdata->gesture_mode &= ~BIT(0);
++    msleep(200);
++    eph_clear_all_host_touch_slots(ephdata);
++    ephdata->lp = false;
++    dev_info(dev, "gesture lp left\n");
++}
++
+ static ssize_t eph_devattr_update_fw_store(struct device *dev,
+                                            struct device_attribute *attr,
+                                            const char *buf,
+@@ -1376,6 +1473,58 @@ static DEVICE_ATTR(read_device_message, S_IRUGO, eph_devattr_comms_read, NULL);
+ static DEVICE_ATTR(read_device_report, S_IRUGO, eph_devattr_device_report_read, NULL);
+ static DEVICE_ATTR(reset_device, S_IRUGO, eph_devattr_reset_device, NULL);
+ static DEVICE_ATTR(gesture_wakeup, (S_IWUSR|S_IRUGO), eph_devattr_gesture_wakeup_read, eph_devattr_gesture_wakeup_store);
++static ssize_t eph_devattr_lp_mode_show(struct device *dev,
++                                        struct device_attribute *attr,
++                                        char *buf)
++{
++    struct eph_data *ephdata = (struct eph_data *)dev_get_drvdata(dev);
++
++    if (!ephdata)
++        return -EIO;
++
++    return sysfs_emit(buf, "%d\n", ephdata->lp ? 1 : 0);
++}
++
++/*
++ * Userspace (display power policy) writes 1 when the panel is blanked
++ * with the system still running and 0 when it is unblanked. Requires a
++ * gesture selected through gesture_wakeup and an open input device.
++ */
++static ssize_t eph_devattr_lp_mode_store(struct device *dev,
++                                         struct device_attribute *attr,
++                                         const char *buf, size_t count)
++{
++    struct eph_data *ephdata = (struct eph_data *)dev_get_drvdata(dev);
++    bool enable;
++    int ret = 0;
++
++    if (!ephdata || !ephdata->inputdev)
++        return -EIO;
++
++    ret = kstrtobool(buf, &enable);
++    if (ret)
++        return ret;
++
++    mutex_lock(&ephdata->inputdev->mutex);
++    mutex_lock(&ephdata->lp_lock);
++    if (enable) {
++        if (!ephdata->inputdev->users)
++            ret = -ENODEV;
++        else
++            ret = eph_gesture_lp_enter(ephdata);
++        if (!ret)
++            ephdata->lp_user = true;
++    } else {
++        ephdata->lp_user = false;
++        eph_gesture_lp_exit(ephdata);
++    }
++    mutex_unlock(&ephdata->lp_lock);
++    mutex_unlock(&ephdata->inputdev->mutex);
++
++    return ret ? ret : count;
++}
++
++static DEVICE_ATTR(lp_mode, 0644, eph_devattr_lp_mode_show, eph_devattr_lp_mode_store);
+ static DEVICE_ATTR(finger_print_enable, S_IWUSR, NULL, eph_devattr_finger_print_enable);
+ 
+ static struct attribute *eph_fw_attrs[] =
+@@ -1410,6 +1559,8 @@ static struct attribute *eph_attrs[] =
+     &dev_attr_reset_device.attr,
+ 
+ 	&dev_attr_gesture_wakeup.attr,
++    /* gesture low-power mode while the panel is blanked */
++    &dev_attr_lp_mode.attr,
+     /* FOD enable switch */
+     &dev_attr_finger_print_enable.attr,
+ 
+@@ -1550,6 +1701,12 @@ static void eph_input_close(struct input_dev *inputdev)
+ 
+     dev_dbg(&ephdata->commsdevice->dev, "%s >\n", __func__);
+ 
++    /* input core holds inputdev->mutex here */
++    mutex_lock(&ephdata->lp_lock);
++    ephdata->lp_user = false;
++    eph_gesture_lp_exit(ephdata);
++    mutex_unlock(&ephdata->lp_lock);
++
+     ret_val = eph_stop(ephdata);
+ 
+     if (ret_val)
+@@ -2078,6 +2235,7 @@ static int eph_probe(struct comms_device *commsdevice, const struct comms_device
+     init_completion(&ephdata->reset_completion);
+ 
+     mutex_init(&ephdata->comms_mutex);
++    mutex_init(&ephdata->lp_lock);
+     mutex_init(&ephdata->sysfs_report_buffer_lock);
+ 
+     device_init_wakeup(&commsdevice->dev, true);
+@@ -2380,15 +2538,43 @@ static int __maybe_unused eph_suspend(struct device *dev)
+     cancel_work_sync(&ephdata->force_baseline_work);
+ 
+     mutex_lock(&ephdata->inputdev->mutex);
++    mutex_lock(&ephdata->lp_lock);
+ 
+     if (ephdata->inputdev->users)
+     {
+-        (void)eph_stop(ephdata);
++        /*
++         * Gesture wake: keep the controller powered in gesture LP mode
++         * and arm CHG as a system wakeup IRQ instead of masking it.
++         * Any failure falls back to the ordinary stop path.
++         */
++        if (ephdata->gesture_wakeup_enable && device_may_wakeup(dev) &&
++            !eph_gesture_lp_enter(ephdata))
++        {
++            if (!enable_irq_wake(ephdata->chg_irq))
++                ephdata->irq_wake = true;
++            else if (!ephdata->lp_user)
++                eph_gesture_lp_exit(ephdata);
++        }
++
++        if (!ephdata->irq_wake)
++        {
++            if (ephdata->lp)
++            {
++                ephdata->lp_user = false;
++                eph_gesture_lp_exit(ephdata);
++            }
++            (void)eph_stop(ephdata);
++        }
+     }
+ 
++    /* No SPI traffic from the IRQ thread until eph_resume(). */
++    WRITE_ONCE(ephdata->pm_sleeping, true);
++
++    mutex_unlock(&ephdata->lp_lock);
+     mutex_unlock(&ephdata->inputdev->mutex);
+ 
+-    eph_pinctrl_configure(ephdata, false);
++    if (!ephdata->irq_wake)
++        eph_pinctrl_configure(ephdata, false);
+ 
+     return 0;
+ }
+@@ -2405,6 +2591,43 @@ static int __maybe_unused eph_resume(struct device *dev)
+         return 0;
+     }
+ 
++    mutex_lock(&ephdata->inputdev->mutex);
++    mutex_lock(&ephdata->lp_lock);
++    WRITE_ONCE(ephdata->pm_sleeping, false);
++
++    if (ephdata->irq_wake)
++    {
++        disable_irq_wake(ephdata->chg_irq);
++        ephdata->irq_wake = false;
++
++        /* Drain the report that woke us (KEY_WAKEUP for a double tap). */
++        if (READ_ONCE(ephdata->irq_parked))
++        {
++            WRITE_ONCE(ephdata->irq_parked, false);
++            (void)eph_read_and_process_messages(ephdata);
++            enable_irq(ephdata->chg_irq);
++        }
++
++        /* Stay in LP if userspace still has the panel blanked. */
++        if (!ephdata->lp_user)
++            eph_gesture_lp_exit(ephdata);
++
++        mutex_unlock(&ephdata->lp_lock);
++        mutex_unlock(&ephdata->inputdev->mutex);
++        return 0;
++    }
++
++    if (READ_ONCE(ephdata->irq_parked))
++    {
++        /* Parked during an aborted suspend: IRQ was not masked by eph_stop */
++        WRITE_ONCE(ephdata->irq_parked, false);
++        (void)eph_read_and_process_messages(ephdata);
++        enable_irq(ephdata->chg_irq);
++    }
++
++    mutex_unlock(&ephdata->lp_lock);
++    mutex_unlock(&ephdata->inputdev->mutex);
++
+     if (ephdata->suspended == false)
+         return 0;
+ 
+diff --git a/drivers/input/touchscreen/eswin_touch/eswin_eph861x_types.h b/drivers/input/touchscreen/eswin_touch/eswin_eph861x_types.h
+index f7409ac..546e47f 100644
+--- a/drivers/input/touchscreen/eswin_touch/eswin_eph861x_types.h
++++ b/drivers/input/touchscreen/eswin_touch/eswin_eph861x_types.h
+@@ -235,6 +235,20 @@ struct eph_data
+     u8 lp;
+     bool irq_wake;
+ 
++    /*
++     * FP6 generic-PM gesture wake (see eph_gesture_lp_enter()).
++     * lp_lock serialises LP entry/exit between system PM, input close
++     * and the lp_mode sysfs attribute; lock order is inputdev->mutex
++     * before lp_lock.
++     */
++    struct mutex lp_lock;
++    /* LP was requested by userspace through lp_mode (screen blanked) */
++    bool lp_user;
++    /* set between eph_suspend() and eph_resume(): no SPI traffic */
++    bool pm_sleeping;
++    /* CHG IRQ disabled by the handler while pm_sleeping */
++    bool irq_parked;
++
+     struct backlight_device *bl;
+     unsigned int last_brightness;
+ 
+-- 
+2.54.0
+
