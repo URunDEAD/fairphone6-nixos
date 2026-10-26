@@ -61,6 +61,9 @@ DEFAULT_CURVE = ((0, 12), (5, 30), (20, 55), (80, 90), (300, 135), (1000, 180), 
 TOUCH_NAME = "ESWIN EPH86XX Touchscreen"
 POWER_KEY_NAME = "pmic_pwrkey"
 EV_KEY, KEY_WAKEUP, KEY_POWER = 0x01, 143, 116
+# Power + Volume-Down is Lomiri's screenshot chord (screen-capture module):
+# a power press that overlaps a Volume-Down press leaves the display alone.
+KEY_VOLUMEDOWN = 114
 # Shorter presses toggle the display (repowerd behaviour); longer ones are left
 # to Lomiri's own long-press power dialog (PhysicalKeysMapper, 2 s).
 POWER_KEY_SHORT_PRESS = 1.0
@@ -296,6 +299,9 @@ class Authorizer:
 class Core:
     """Display state machine shared by both D-Bus objects."""
 
+    volume_down_held = False      # Volume-Down currently pressed
+    power_chord = False           # this power press overlaps Volume-Down
+
     def __init__(self, bus, backlight, touch, curve, screen_power, sensors=True):
         self.bus, self.backlight, self.touch = bus, backlight, touch
         self.curve, self.screen_power, self.use_sensors = curve, screen_power, sensors
@@ -326,6 +332,7 @@ class Core:
         self.power_pressed_at = None
         if self.screen_power:
             self._start_power_key()
+            self._start_volume_down()
             self._start_activity()
         if self.use_sensors:
             bus.add_signal_receiver(self._sensor_changed, signal_name="PropertiesChanged",
@@ -647,14 +654,59 @@ class Core:
         self.power_watch = GLib.io_add_watch(fd, GLib.IO_IN | GLib.IO_ERR | GLib.IO_HUP, readable)
         log("monitoring", node, "for KEY_POWER")
 
+    def _start_volume_down(self, input_root=Path("/sys/class/input")):
+        # Read-only and ungrabbed, like the power key: only chord detection.
+        for entry in sorted(input_root.glob("event*")):
+            try:
+                caps = (entry / "device" / "capabilities" / "key").read_text().split()
+                bits = int("".join(f"{int(w, 16):016x}" for w in caps), 16)
+            except (OSError, ValueError):
+                continue
+            if bits >> KEY_VOLUMEDOWN & 1:
+                fd = os.open(Path("/dev/input") / entry.name, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+                break
+        else:
+            log("Volume-Down evdev node not found; Power+Volume-Down may toggle the display")
+            return
+
+        def readable(source, condition):
+            try:
+                data = os.read(fd, EVENT.size * 64)
+            except BlockingIOError:
+                return GLib.SOURCE_CONTINUE
+            except OSError:
+                os.close(fd)
+                return GLib.SOURCE_REMOVE
+            for off in range(0, len(data) - EVENT.size + 1, EVENT.size):
+                _, _, etype, code, value = EVENT.unpack_from(data, off)
+                if etype == EV_KEY and code == KEY_VOLUMEDOWN:
+                    self.volume_down(value)
+            return GLib.SOURCE_CONTINUE
+
+        GLib.io_add_watch(fd, GLib.IO_IN | GLib.IO_ERR | GLib.IO_HUP, readable)
+
+    def volume_down(self, value):
+        if value == 1:
+            self.volume_down_held = True
+            if self.power_pressed_at is not None:
+                self.power_chord = True
+        elif value == 0:
+            self.volume_down_held = False
+
     def power_key(self, value, now=None):
         now = time.monotonic() if now is None else now
         if value == 1:
             self.power_pressed_at = now
+            self.power_chord = self.volume_down_held
             return
         if value != 0 or self.power_pressed_at is None:
             return
         held, self.power_pressed_at = now - self.power_pressed_at, None
+        if self.power_chord:
+            self.power_chord = False
+            if self.screen_on:
+                log("KEY_POWER with Volume-Down (screenshot chord): display unchanged")
+                return
         if held >= POWER_KEY_SHORT_PRESS:
             return
         with self.lock:

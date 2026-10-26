@@ -61,6 +61,16 @@ core.power_key(1, now=30.0); core.power_key(2, now=31.0); core.power_key(0, now=
 check(len(calls) == 2, "long press is left to Lomiri's power dialog")
 core.power_key(0, now=40.0)
 check(len(calls) == 2, "release without press is ignored")
+# Power + Volume-Down (screenshot chord) leaves the display alone, either order
+core.volume_down(1); core.power_key(1, now=50.0); core.power_key(0, now=50.2); core.volume_down(0)
+check(len(calls) == 2, "volume-down then power: no display toggle")
+core.power_key(1, now=60.0); core.volume_down(1); core.volume_down(0); core.power_key(0, now=60.3)
+check(len(calls) == 2, "power then volume-down: no display toggle")
+core.power_key(1, now=70.0); core.power_key(0, now=70.2)
+check(calls[-1] == ("off", m.REASON_POWERKEY), "plain short press after a chord still toggles")
+n = len(calls)
+core.volume_down(1); core.power_key(1, now=90.0); core.power_key(0, now=90.2); core.volume_down(0)
+check(len(calls) == n + 1 and calls[-1] == ("on", m.REASON_POWERKEY), "chord with the display off still wakes it")
 
 # notifications: the closing "off" only blanks a display the notification woke
 core = object.__new__(m.Core)
