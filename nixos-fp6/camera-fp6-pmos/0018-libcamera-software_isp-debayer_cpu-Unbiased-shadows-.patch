@@ -1,0 +1,202 @@
+From c57e58b84a12650a9e384ffda8d1be60a89c8de7 Mon Sep 17 00:00:00 2001
+From: Paul Schuldesz <paulschuldesz@gmail.com>
+Date: Mon, 26 Oct 2026 16:36:29 +0200
+Subject: [PATCH 18/21] libcamera: software_isp: debayer_cpu: Unbiased shadows,
+ 10-bit CCM gamma LUT
+
+Dark areas of the FP6 main camera came out green: the CPU debayer reads
+the 8 MSBs of 10-bit packed data (truncating, -3/8 code on average),
+then truncates again in the 2- and 4-sample interpolation averages
+(-1/4 and -3/8 code), and the lookup tables take each code at its lower
+edge. The black-level-subtracted signal is thus biased low by most of a
+code, and the white balance gains (R ~2.2, B ~1.6, G 1) turn that into a
+strong red and blue deficit near black (G/R ~2 at 15-30/255 measured).
+
+* Round the interpolation averages for 8-bit samples and take each
+  code at the mean of the input values it stands for in the lookup
+  tables (+3/8 of a code for 10-bit data, +7/16 for 12-bit, 0 for 8-bit).
+* With a CCM the linear intermediate was quantised to 8 bits before the
+  gamma lookup, posterising the shadows; index the gamma LUT with 10
+  bits instead (the CCM columns are int16, no extra work per pixel).
+* Use the sRGB curve (2.4 power with a linear toe) for the default
+  1/2.2 gamma: the pure power law has an unbounded slope at black that
+  amplifies noise and any residual black level error. Other gamma
+  values keep the power law. Round the gamma table.
+---
+ src/libcamera/software_isp/debayer_cpu.cpp | 70 +++++++++++++++++-----
+ src/libcamera/software_isp/debayer_cpu.h   |  5 +-
+ 2 files changed, 58 insertions(+), 17 deletions(-)
+
+diff --git a/src/libcamera/software_isp/debayer_cpu.cpp b/src/libcamera/software_isp/debayer_cpu.cpp
+index 49382b4c..4fcdb3c0 100644
+--- a/src/libcamera/software_isp/debayer_cpu.cpp
++++ b/src/libcamera/software_isp/debayer_cpu.cpp
+@@ -148,6 +148,18 @@ DebayerCpu::~DebayerCpu() = default;
+ 		*dst++ = 255;                           \
+ 	x++;
+ 
++/*
++ * Interpolation averages round to nearest when the samples are already
++ * 8-bit (div == 1, e.g. the MSBs of packed 10/12-bit data): the lookup
++ * tables take every code at the mean of the input values it stands for,
++ * and a truncating average would bias it downwards by a further 1/4 (two
++ * samples) or 3/8 (four samples) of a code. That bias, multiplied
++ * by the white balance gains, tinted dark areas green. Wider samples are
++ * divided down with truncation, which matches the same convention.
++ */
++#define AVG2(a, b, div) (((a) + (b) + ((div) == 1 ? 1 : 0)) / (2 * (div)))
++#define AVG4(a, b, c, d, div) (((a) + (b) + (c) + (d) + ((div) == 1 ? 2 : 0)) / (4 * (div)))
++
+ /*
+  * RGR
+  * GBG
+@@ -156,8 +168,8 @@ DebayerCpu::~DebayerCpu() = default;
+ #define BGGR_BGR888(p, n, div)                                                 \
+ 	STORE_PIXEL(                                                           \
+ 		curr[x] / (div),                                               \
+-		(prev[x] + curr[x - p] + curr[x + n] + next[x]) / (4 * (div)), \
+-		(prev[x - p] + prev[x + n] + next[x - p] + next[x + n]) / (4 * (div)))
++		AVG4(prev[x], curr[x - p], curr[x + n], next[x], div),         \
++		AVG4(prev[x - p], prev[x + n], next[x - p], next[x + n], div))
+ 
+ /*
+  * GBG
+@@ -166,9 +178,9 @@ DebayerCpu::~DebayerCpu() = default;
+  */
+ #define GRBG_BGR888(p, n, div)                     \
+ 	STORE_PIXEL(                               \
+-		(prev[x] + next[x]) / (2 * (div)), \
++		AVG2(prev[x], next[x], div),       \
+ 		curr[x] / (div),                   \
+-		(curr[x - p] + curr[x + n]) / (2 * (div)))
++		AVG2(curr[x - p], curr[x + n], div))
+ 
+ /*
+  * GRG
+@@ -177,19 +189,19 @@ DebayerCpu::~DebayerCpu() = default;
+  */
+ #define GBRG_BGR888(p, n, div)                             \
+ 	STORE_PIXEL(                                       \
+-		(curr[x - p] + curr[x + n]) / (2 * (div)), \
++		AVG2(curr[x - p], curr[x + n], div),       \
+ 		curr[x] / (div),                           \
+-		(prev[x] + next[x]) / (2 * (div)))
++		AVG2(prev[x], next[x], div))
+ 
+ /*
+  * BGB
+  * GRG
+  * BGB
+  */
+-#define RGGB_BGR888(p, n, div)                                                         \
+-	STORE_PIXEL(                                                                   \
+-		(prev[x - p] + prev[x + n] + next[x - p] + next[x + n]) / (4 * (div)), \
+-		(prev[x] + curr[x - p] + curr[x + n] + next[x]) / (4 * (div)),         \
++#define RGGB_BGR888(p, n, div)                                                 \
++	STORE_PIXEL(                                                           \
++		AVG4(prev[x - p], prev[x + n], next[x - p], next[x + n], div), \
++		AVG4(prev[x], curr[x - p], curr[x + n], next[x], div),         \
+ 		curr[x] / (div))
+ 
+ template<bool addAlphaByte, bool ccmEnabled>
+@@ -646,6 +658,15 @@ int DebayerCpu::configure(const StreamConfiguration &inputCfg,
+ 	if (getInputConfig(inputCfg.pixelFormat, inputConfig_) != 0)
+ 		return -EINVAL;
+ 
++	/*
++	 * The lookup tables are indexed by 8-bit codes; deeper data is
++	 * truncated to its 8 MSBs, so code i stands for the input values
++	 * [i, i + 1) x 2^(depth - 8), whose mean lies at i + 1/2 - 2^-(depth - 7).
++	 * Native 8-bit codes are taken as they are.
++	 */
++	const unsigned int depth = BayerFormat::fromPixelFormat(inputCfg.pixelFormat).bitDepth;
++	codeCentre_ = depth > 8 ? 0.5f - 0.5f / static_cast<float>(1u << (depth - 8)) : 0.0f;
++
+ 	if (stats_->configure(inputCfg, threads_.size()) != 0)
+ 		return -EINVAL;
+ 
+@@ -991,7 +1012,19 @@ void DebayerCpu::updateGammaTable(const DebayerParams &params)
+ 			normalized = 0.5 * std::pow(normalized / 0.5, contrastExp);
+ 		else
+ 			normalized = 1.0 - 0.5 * std::pow((1.0 - normalized) / 0.5, contrastExp);
+-		value = UINT8_MAX * std::pow(normalized, gamma);
++		/*
++		 * The default 1/2.2 encoding uses the sRGB curve (a 2.4 power
++		 * with a linear toe, overall ~2.2): a pure power law has an
++		 * unbounded slope at black, amplifying sensor noise and any
++		 * residual black level error in the shadows many times.
++		 */
++		if (std::abs(gamma - 1.0f / 2.2f) < 1e-4f)
++			value = UINT8_MAX * (normalized <= 0.0031308f
++						     ? 12.92f * normalized
++						     : 1.055f * std::pow(normalized, 1.0f / 2.4f) - 0.055f);
++		else
++			value = UINT8_MAX * std::pow(normalized, gamma);
++		value = std::round(value);
+ 	}
+ }
+ 
+@@ -1004,7 +1037,11 @@ void DebayerCpu::updateLookupTables(const DebayerParams &params)
+ 	if (gammaUpdateNeeded)
+ 		updateGammaTable(params);
+ 
+-	/* Processing order: black level -> gains -> gamma */
++	/*
++	 * Processing order: black level -> gains -> gamma. Input codes are
++	 * truncated (e.g. the 8 MSBs of 10-bit data), so each code is taken at
++	 * the mean of the input values it stands for (codeCentre_).
++	 */
+ 	auto matrixChanged = [](const Matrix<float, 3, 3> &m1, const Matrix<float, 3, 3> &m2) -> bool {
+ 		return !std::equal(m1.data().begin(), m1.data().end(), m2.data().begin());
+ 	};
+@@ -1025,8 +1062,8 @@ void DebayerCpu::updateLookupTables(const DebayerParams &params)
+ 			const unsigned int greenIndex = 1;
+ 			const unsigned int blueIndex = swapRedBlueGains_ ? 0 : 2;
+ 			for (unsigned int i = 0; i < kRGBLookupSize; i++) {
+-				const RGB<float> rgb = (gains * (RGB<float>(i) - blackIndex) * kRGBLookupSize / div)
+-							       .clamp(0.0, kRGBLookupSize - 1);
++				const RGB<float> rgb = (gains * (RGB<float>(i + codeCentre_) - blackIndex) * kGammaLookupSize / div)
++							       .clamp(0.0, kGammaLookupSize - 1);
+ 				red[i].r = std::round(rgb.r() * params.combinedMatrix[redIndex][0]);
+ 				red[i].g = std::round(rgb.r() * params.combinedMatrix[greenIndex][0]);
+ 				red[i].b = std::round(rgb.r() * params.combinedMatrix[blueIndex][0]);
+@@ -1036,8 +1073,9 @@ void DebayerCpu::updateLookupTables(const DebayerParams &params)
+ 				blue[i].r = std::round(rgb.b() * params.combinedMatrix[redIndex][2]);
+ 				blue[i].g = std::round(rgb.b() * params.combinedMatrix[greenIndex][2]);
+ 				blue[i].b = std::round(rgb.b() * params.combinedMatrix[blueIndex][2]);
+-				gammaLut_[i] = gammaTable_[i * gammaTableSize / kRGBLookupSize];
+ 			}
++			for (unsigned int i = 0; i < kGammaLookupSize; i++)
++				gammaLut_[i] = gammaTable_[i * gammaTableSize / kGammaLookupSize];
+ 		}
+ 	} else {
+ 		if (gammaUpdateNeeded || params.gains != params_.gains) {
+@@ -1046,7 +1084,7 @@ void DebayerCpu::updateLookupTables(const DebayerParams &params)
+ 			auto &blue = swapRedBlueGains_ ? red_ : blue_;
+ 			for (unsigned int i = 0; i < kRGBLookupSize; i++) {
+ 				const RGB<float> lutGains =
+-					(gains * (RGB<float>(i) - blackIndex) * gammaTableSize / div)
++					(gains * (RGB<float>(i + codeCentre_) - blackIndex) * gammaTableSize / div)
+ 						.clamp(0.0, gammaTableSize - 1);
+ 				red[i] = gammaTable_[lutGains.r()];
+ 				green[i] = gammaTable_[lutGains.g()];
+diff --git a/src/libcamera/software_isp/debayer_cpu.h b/src/libcamera/software_isp/debayer_cpu.h
+index 5281c65c..5453f02f 100644
+--- a/src/libcamera/software_isp/debayer_cpu.h
++++ b/src/libcamera/software_isp/debayer_cpu.h
+@@ -145,8 +145,11 @@ private:
+ 	CcmLookupTable greenCcm_;
+ 	CcmLookupTable blueCcm_;
+ 	std::array<double, kGammaLookupSize> gammaTable_;
+-	LookupTable gammaLut_;
++	/* Indexed by the CCM output, kept at 10 bits so dark tones do not band */
++	std::array<uint8_t, kGammaLookupSize> gammaLut_;
+ 	bool ccmEnabled_;
++	/* Offset of the mean input value a truncated 8-bit code stands for */
++	float codeCentre_ = 0.0f;
+ 	DebayerParams params_;
+ 
+ 	debayerFn debayer0_;
+-- 
+2.54.0
+
