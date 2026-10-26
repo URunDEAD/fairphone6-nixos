@@ -58,6 +58,13 @@ Every user-facing feature gets a setting/toggle in System Settings. Status:
   incoming-call screen over the lock screen, ringtone/DND rules, in-call
   audio routing, proximity handling and call history as cellular calls
   (Lomiri telephony-service / Telepathy as the common layer)
+- ⏳ Research: unified system share sheet — one consistent "Share" panel for
+  all apps (iOS ShareSheet style), built on Lomiri's content-hub (already a
+  system-wide share/peer picker for Ubuntu Touch apps) and extended to GTK,
+  Qt6 and Firefox apps (via an xdg-desktop-portal backend) and to Waydroid
+  apps (Android share intents ↔ content-hub), with share targets/extensions,
+  recent contacts ("direct share") and actions like copy, save to files,
+  print, Nearby share, KDE Connect
 - ⏳ Smart Wi-Fi ↔ mobile switching, data saver
 - ⏳ Bluetooth codecs and quick pairing review
 - ⏳ NFC tag reader/writer app (no payments)
