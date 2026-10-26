@@ -19,9 +19,10 @@
 #    the app names: fp6-privacy-indicator (user) + fp6-privacy-system
 #    camera-monitor (root, camss node holders incl. Waydroid).
 #  * Wi-Fi MAC: random for scans, stable per network for connections;
-#    networks saved before are pinned to their current address once
-#    (fp6-wifi-mac-migrate, before NetworkManager). Per-network choice in
-#    Settings > Security & Privacy > Private Wi-Fi address.
+#    networks saved before get a fixed explicit MAC once (fp6-wifi-mac-migrate
+#    before NetworkManager, or fp6-privacyd at login): ath11k has no factory
+#    MAC and makes up a new one each boot, so "preserve" would not keep the
+#    router's view. Per-network choice in Settings > Private Wi-Fi address.
 #
 #  * Clipboard: not available on Lomiri's Mir 2.15 (no ext-data-control);
 #    fp6-privacy-clipboard is ready for a Mir that has it (option clipboard).

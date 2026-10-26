@@ -2,7 +2,7 @@
  * Security & Privacy > Private Wi-Fi address (FP6 privacy-lock).
  * Scans always use random addresses (NetworkManager). Connections: a stable
  * random address per network by default; per saved network: stable, a new
- * one for each connection, or the device address. Backend: fp6-privacyd
+ * one for each connection, or a fixed address (ath11k has no factory MAC). Backend: fp6-privacyd
  * (nmcli), list in wifi-networks, choices in wifi-mac-modes.
  * SPDX-License-Identifier: GPL-3.0-only
  */
@@ -20,7 +20,7 @@ ItemPage {
 
     property var settings
     readonly property var modes: ["default", "stable", "random", "device"]
-    readonly property var modeNames: [i18n.tr("Private, stable for this network"), i18n.tr("Private, stable for this network"), i18n.tr("Private, new for each connection"), i18n.tr("Device address")]
+    readonly property var modeNames: [i18n.tr("Private, stable for this network"), i18n.tr("Private, stable for this network"), i18n.tr("Private, new for each connection"), i18n.tr("Fixed address")]
 
     readonly property var networks: {
         var out = [];
@@ -57,7 +57,7 @@ ItemPage {
                 }
             }
             ListItems.Caption {
-                text: i18n.tr("Searching for networks always uses random addresses. A private address keeps networks from following this phone between places; some networks (MAC filters, fixed DHCP addresses) need the device address. Changes apply the next time the phone connects to that network.")
+                text: i18n.tr("Searching for networks always uses random addresses. A private address keeps networks from following this phone between places; some networks (MAC filters, fixed DHCP addresses) need a fixed address. This phone's Wi-Fi chip has no factory address and makes up a new one at every start, so \"Fixed address\" keeps one address for that network on every boot. Changes apply the next time the phone connects to that network.")
             }
 
             SettingsItemTitle {
@@ -77,7 +77,7 @@ ItemPage {
             }
             ListItems.Caption {
                 visible: root.networks.length > 0
-                text: i18n.tr("Networks saved before private addresses were turned on keep the device address until you change them here.")
+                text: i18n.tr("Networks saved before private addresses were turned on keep a fixed address (the one they had then) until you change them here.")
             }
         }
     }

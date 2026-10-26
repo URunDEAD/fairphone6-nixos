@@ -89,7 +89,10 @@ ItemPage {
                 anchors { left: parent.left; right: parent.right; margins: units.gu(2) }
                 inputMethodHints: Qt.ImhDialableCharactersOnly
                 text: root.settings ? root.settings.sosNumber : "112"
-                onEditingFinished: if (/^[0-9+*#]{2,20}$/.test(text)) root.settings.sosNumber = text
+                // UITK TextField has no editingFinished: save on Enter or when focus leaves.
+                function save() { if (/^[0-9+*#]{2,20}$/.test(text)) root.settings.sosNumber = text; }
+                onAccepted: save()
+                onActiveFocusChanged: if (!activeFocus) save()
             }
             ListItems.Caption { text: i18n.tr("112 works in the EU and on most GSM networks worldwide.") }
 

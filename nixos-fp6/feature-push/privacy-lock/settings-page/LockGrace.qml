@@ -23,19 +23,27 @@ ItemPage {
         return i18n.tr("After %1 minute", "After %1 minutes", v / 60).arg(v / 60);
     }
 
-    Column {
-        anchors { left: parent.left; right: parent.right; top: parent.top }
-        ListItems.ItemSelector {
-            id: selector
-            objectName: "fp6LockGraceSelector"
-            expanded: true
-            model: root.values.map(root.label)
-            // ItemSelector resets selectedIndex when its model is set: bind afterwards.
-            Component.onCompleted: selectedIndex = Qt.binding(function () { return Math.max(0, root.values.indexOf(root.settings ? (root.settings.lockGraceSeconds || 0) : 0)); })
-            onDelegateClicked: root.settings.lockGraceSeconds = root.values[index]
-        }
-        ListItems.Caption {
-            text: i18n.tr("Turning the display back on within this time skips the lock screen. The power button still locks at once unless you turn that off. When the phone is idle, the display turns off after the time set in \"Lock when idle\".")
+    flickable: flick
+
+    Flickable {
+        id: flick
+        anchors.fill: parent
+        contentHeight: column.height
+        Column {
+            id: column
+            anchors { left: parent.left; right: parent.right }
+            ListItems.ItemSelector {
+                id: selector
+                objectName: "fp6LockGraceSelector"
+                expanded: true
+                model: root.values.map(root.label)
+                // ItemSelector resets selectedIndex when its model is set: bind afterwards.
+                Component.onCompleted: selectedIndex = Qt.binding(function () { return Math.max(0, root.values.indexOf(root.settings ? (root.settings.lockGraceSeconds || 0) : 0)); })
+                onDelegateClicked: root.settings.lockGraceSeconds = root.values[index]
+            }
+            ListItems.Caption {
+                text: i18n.tr("Turning the display back on within this time skips the lock screen. The power button still locks at once unless you turn that off. When the phone is idle, the display turns off after the time set in \"Lock when idle\".")
+            }
         }
     }
 }

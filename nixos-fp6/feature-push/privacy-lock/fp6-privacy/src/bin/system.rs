@@ -95,6 +95,16 @@ fn wifi_mac_migrate(dir: &Path, stamp: &Path) -> std::io::Result<()> {
         return Ok(());
     }
     let mut pinned = 0;
+    // This boot's interface address (NetworkManager has not started yet, so
+    // nothing has changed it); without one, "preserve" and fp6-privacyd fixes
+    // the address at login.
+    let fixed = fs::read_dir("/sys/class/net").ok().and_then(|d| {
+        d.flatten()
+            .find(|e| e.path().join("wireless").exists())
+            .and_then(|e| fs::read_to_string(e.path().join("address")).ok())
+            .map(|a| a.trim().to_owned())
+            .filter(|a| mac::is_mac(a))
+    });
     if let Ok(entries) = fs::read_dir(dir) {
         for e in entries.flatten() {
             let path = e.path();
@@ -102,10 +112,10 @@ fn wifi_mac_migrate(dir: &Path, stamp: &Path) -> std::io::Result<()> {
                 continue;
             }
             let Ok(text) = fs::read_to_string(&path) else { continue };
-            if let Some(new) = mac::migrate_keyfile(&text) {
+            if let Some(new) = mac::migrate_keyfile(&text, fixed.as_deref()) {
                 write_atomic(&path, new.as_bytes(), 0o600)?;
                 pinned += 1;
-                log(format!("{}: kept its MAC address (cloned-mac-address=preserve)", path.display()));
+                log(format!("{}: fixed MAC address", path.display()));
             }
         }
     }

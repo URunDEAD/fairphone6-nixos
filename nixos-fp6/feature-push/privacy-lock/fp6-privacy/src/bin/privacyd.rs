@@ -527,6 +527,25 @@ fn wifi_networks() -> Vec<Network> {
     out
 }
 
+/// This boot's address of the Wi-Fi interface (ethtool's permanent address,
+/// which on the FP6 is the firmware's made-up MAC of this boot).
+fn device_mac() -> String {
+    let iface = std::fs::read_dir("/sys/class/net")
+        .ok()
+        .and_then(|d| d.flatten().find(|e| e.path().join("wireless").exists()))
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .unwrap_or_else(|| "wlan0".into());
+    Command::new("ethtool")
+        .args(["-P", &iface])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|t| t.rsplit(' ').next().map(|m| m.trim().to_owned()))
+        .filter(|m| mac::is_mac(m))
+        .or_else(|| std::fs::read_to_string(format!("/sys/class/net/{iface}/address")).ok().map(|m| m.trim().to_owned()))
+        .unwrap_or_default()
+}
+
 fn apply_mac_policy(s: &gio::Settings) {
     let master = s.boolean("wifi-mac-randomization");
     let stored: Vec<String> = s.strv("wifi-mac-modes").iter().map(|g| g.to_string()).collect();
@@ -546,7 +565,19 @@ fn apply_mac_policy(s: &gio::Settings) {
             if master { current.to_owned() } else { "device".to_owned() }
         });
         let want = if master { chosen.as_str() } else { "device" };
-        if want != current && want != "custom" {
+        if want == "device" {
+            // Fixed address: an explicit MAC, kept once set (ath11k makes up
+            // a new "device" MAC on every boot, see mac.rs).
+            match mac::fixed_value(&n.nm, &device_mac()) {
+                Some(fixed) if fixed != n.nm.trim().to_ascii_lowercase() => {
+                    if nmcli(&["connection", "modify", &n.uuid, "802-11-wireless.cloned-mac-address", &fixed]).is_some() {
+                        log(format!("Wi-Fi \"{}\": fixed MAC address (next connection)", n.name));
+                    }
+                }
+                Some(_) => {}
+                None => log("no Wi-Fi device address yet; fixed address deferred"),
+            }
+        } else if want != current && want != "custom" {
             if let Some(v) = mac::nm_value(want) {
                 if nmcli(&["connection", "modify", &n.uuid, "802-11-wireless.cloned-mac-address", v]).is_some() {
                     log(format!("Wi-Fi \"{}\": MAC {} (next connection)", n.name, want));

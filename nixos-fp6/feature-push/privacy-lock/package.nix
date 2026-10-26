@@ -1,6 +1,6 @@
 # fp6-privacy (Rust): fp6-privacy-indicator, fp6-privacyd, fp6-privacy-system,
 # plus the com.fairphone6.privacy schema (schema.nix) for the user services.
-{ lib, rustPlatform, pkg-config, glib, dconf, makeWrapper, pipewire, networkmanager
+{ lib, rustPlatform, pkg-config, glib, dconf, makeWrapper, pipewire, networkmanager, ethtool
 , lomiri, fp6-privacy-schema }:
 rustPlatform.buildRustPackage {
   pname = "fp6-privacy";
@@ -22,7 +22,7 @@ rustPlatform.buildRustPackage {
       wrapProgram $out/bin/$b \
         --set GSETTINGS_SCHEMA_DIR ${fp6-privacy-schema}/share/gsettings-schemas/${fp6-privacy-schema.name}/glib-2.0/schemas \
         --prefix GIO_EXTRA_MODULES : ${lib.getLib dconf}/lib/gio/modules \
-        --prefix PATH : ${lib.makeBinPath [ pipewire networkmanager lomiri.lomiri-url-dispatcher lomiri.lomiri-app-launch ]}
+        --prefix PATH : ${lib.makeBinPath [ pipewire networkmanager ethtool lomiri.lomiri-url-dispatcher lomiri.lomiri-app-launch ]}
     done
   '';
   meta = {

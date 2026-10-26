@@ -67,7 +67,7 @@
     </key>
     <key name="wifi-mac-modes" type="as">
       <default>[]</default>
-      <summary>Per saved network: "uuid TAB mode", mode = default, stable, random or device</summary>
+      <summary>Per saved network: "uuid TAB mode", mode = default, stable, random or device (= a fixed explicit MAC)</summary>
     </key>
     <key name="wifi-networks" type="as">
       <default>[]</default>

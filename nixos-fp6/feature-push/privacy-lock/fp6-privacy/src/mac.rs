@@ -4,9 +4,12 @@
 //! NetworkManager defaults (privacy-lock module): scans use a random MAC
 //! (wifi.scan-rand-mac-address=yes), connections a stable per-network
 //! random MAC (wifi.cloned-mac-address=stable). Networks saved before the
-//! module was enabled are pinned to "preserve" once, before NetworkManager
-//! starts, so they keep the address the router knows (DHCP lease, MAC
-//! filter); Settings can switch each of them.
+//! module was enabled keep a **fixed** address: the FP6's ath11k has no
+//! factory MAC (no local-mac-address in the DT), its firmware makes up
+//! 00:03:7f:12:XX:XX anew on every boot, so "preserve"/"permanent" would
+//! show the router a new device after each reboot. A fixed network gets an
+//! explicit cloned-mac-address (the address it had when it was pinned), the
+//! same on every boot; Settings calls that mode "device" ("Fixed address").
 
 /// Settings value -> NetworkManager 802-11-wireless.cloned-mac-address.
 /// "" = no per-connection value (the global stable default applies).
@@ -15,9 +18,27 @@ pub fn nm_value(mode: &str) -> Option<&'static str> {
         "default" => Some(""),
         "stable" => Some("stable"),
         "random" => Some("random"),
-        "device" => Some("preserve"),
+        // "device" needs the network's own fixed MAC: see fixed_value().
         _ => None,
     }
+}
+
+/// "aa:bb:cc:dd:ee:ff" (any case), unicast, not all zero.
+pub fn is_mac(s: &str) -> bool {
+    let parts: Vec<&str> = s.trim().split(':').collect();
+    parts.len() == 6
+        && parts.iter().all(|p| p.len() == 2 && p.chars().all(|c| c.is_ascii_hexdigit()))
+        && u8::from_str_radix(parts[0], 16).is_ok_and(|b| b & 1 == 0)
+        && parts.iter().any(|p| *p != "00")
+}
+
+/// The explicit cloned MAC for a fixed ("device") network: keep the one it
+/// already has, else take `current` (this boot's interface address).
+pub fn fixed_value(nm: &str, current: &str) -> Option<String> {
+    if is_mac(nm) {
+        return Some(nm.trim().to_ascii_lowercase());
+    }
+    is_mac(current).then(|| current.trim().to_ascii_lowercase())
 }
 
 /// NetworkManager value -> Settings value.
@@ -26,14 +47,20 @@ pub fn mode_of(nm: &str) -> &'static str {
         "" => "default",
         "stable" => "stable",
         "random" => "random",
+        // A fixed address, or a pin from before fixed addresses (converted
+        // to an explicit MAC by fp6-privacyd).
         "preserve" | "permanent" => "device",
+        v if is_mac(v) => "device",
         _ => "custom",
     }
 }
 
 /// One-time migration of a saved keyfile: Wi-Fi client profiles without a
-/// cloned-mac-address get "preserve". Returns the new text if it changed.
-pub fn migrate_keyfile(text: &str) -> Option<String> {
+/// cloned-mac-address get `fixed` (this boot's interface MAC, so the address
+/// stays the same on later boots), or "preserve" when it is not known yet
+/// (fp6-privacyd then fixes it at login). Returns the new text if changed.
+pub fn migrate_keyfile(text: &str, fixed: Option<&str>) -> Option<String> {
+    let value = fixed.filter(|m| is_mac(m)).map(|m| m.trim().to_ascii_lowercase()).unwrap_or_else(|| "preserve".into());
     let mut section = String::new();
     let mut is_wifi = false;
     let mut is_ap = false;
@@ -69,7 +96,7 @@ pub fn migrate_keyfile(text: &str) -> Option<String> {
             out.push_str(line);
             out.push('\n');
             if !inserted && (current == "wifi" || current == "802-11-wireless") {
-                out.push_str("cloned-mac-address=preserve\n");
+                out.push_str(&format!("cloned-mac-address={value}\n"));
                 inserted = true;
             }
             continue;
@@ -81,7 +108,7 @@ pub fn migrate_keyfile(text: &str) -> Option<String> {
         if !out.ends_with("\n\n") {
             out.push('\n');
         }
-        out.push_str("[wifi]\ncloned-mac-address=preserve\n");
+        out.push_str(&format!("[wifi]\ncloned-mac-address={value}\n"));
     }
     Some(out)
 }
@@ -94,30 +121,46 @@ mod tests {
 
     #[test]
     fn pins_saved_client_networks() {
-        let new = migrate_keyfile(HOME).unwrap();
-        assert!(new.contains("[wifi]\ncloned-mac-address=preserve\nmode=infrastructure"));
+        let new = migrate_keyfile(HOME, Some("00:03:7F:12:AB:AB")).unwrap();
+        assert!(new.contains("[wifi]\ncloned-mac-address=00:03:7f:12:ab:ab\nmode=infrastructure"));
         assert!(new.contains("psk=TESTPSK"), "secrets kept");
-        assert_eq!(migrate_keyfile(&new), None, "idempotent");
+        assert_eq!(migrate_keyfile(&new, Some("00:03:7f:12:cd:cd")), None, "idempotent");
+        let unknown = migrate_keyfile(HOME, None).unwrap();
+        assert!(unknown.contains("cloned-mac-address=preserve"), "MAC not known yet");
+        assert!(migrate_keyfile(HOME, Some("bogus")).unwrap().contains("=preserve"));
     }
 
     #[test]
     fn leaves_others_alone() {
         let ap = HOME.replace("mode=infrastructure", "mode=ap");
-        assert_eq!(migrate_keyfile(&ap), None, "hotspot");
+        assert_eq!(migrate_keyfile(&ap, None), None, "hotspot");
         let eth = "[connection]\nid=x\ntype=ethernet\n";
-        assert_eq!(migrate_keyfile(eth), None);
+        assert_eq!(migrate_keyfile(eth, None), None);
         let set = HOME.replace("mode=infrastructure", "mode=infrastructure\ncloned-mac-address=random");
-        assert_eq!(migrate_keyfile(&set), None, "explicit choice kept");
+        assert_eq!(migrate_keyfile(&set, None), None, "explicit choice kept");
         let nogroup = "[connection]\nid=y\ntype=wifi\n";
-        assert!(migrate_keyfile(nogroup).unwrap().ends_with("[wifi]\ncloned-mac-address=preserve\n"));
+        assert!(migrate_keyfile(nogroup, None).unwrap().ends_with("[wifi]\ncloned-mac-address=preserve\n"));
     }
 
     #[test]
     fn modes() {
-        for m in ["default", "stable", "random", "device"] {
+        for m in ["default", "stable", "random"] {
             assert_eq!(mode_of(nm_value(m).unwrap()), m);
         }
+        assert_eq!(nm_value("device"), None, "needs fixed_value");
         assert_eq!(nm_value("bogus"), None);
         assert_eq!(mode_of("permanent"), "device");
+        assert_eq!(mode_of("00:03:7f:12:ab:ab"), "device");
+    }
+
+    #[test]
+    fn fixed_addresses() {
+        assert!(is_mac("00:03:7f:12:ab:ab") && is_mac("02:AA:bb:cc:dd:ee"));
+        assert!(!is_mac("01:00:5e:00:00:01"), "multicast");
+        assert!(!is_mac("00:00:00:00:00:00") && !is_mac("preserve") && !is_mac("00:03:7f:12:ab"));
+        // keeps an existing fixed MAC, never replaces it with this boot's
+        assert_eq!(fixed_value("00:03:7f:12:ab:ab", "00:03:7f:12:cd:cd").as_deref(), Some("00:03:7f:12:ab:ab"));
+        assert_eq!(fixed_value("preserve", "00:03:7F:12:CD:CD").as_deref(), Some("00:03:7f:12:cd:cd"));
+        assert_eq!(fixed_value("", "garbage"), None);
     }
 }
