@@ -62,9 +62,10 @@
     <key name="bedtime-end" type="s">
       <default>"07:00"</default>
     </key>
-    <key name="bedtime-days" type="ai">
-      <default>[1,2,3,4,5,6,7]</default>
-      <summary>Days bedtime starts (1 = Monday .. 7 = Sunday)</summary>
+    <!-- A string, not "ai": gsettings-qt (Lomiri, System Settings) aborts on integer arrays. -->
+    <key name="bedtime-days" type="s">
+      <default>"1,2,3,4,5,6,7"</default>
+      <summary>Days bedtime starts, comma-separated (1 = Monday .. 7 = Sunday)</summary>
     </key>
     <key name="bedtime-manual" type="s">
       <choices><choice value="none"/><choice value="on"/><choice value="off"/></choices>

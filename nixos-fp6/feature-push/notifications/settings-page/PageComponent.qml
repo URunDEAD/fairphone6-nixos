@@ -112,9 +112,9 @@ ItemPage {
                 onClicked: pageStack.addPageToNextColumn(root, Qt.resolvedUrl("HistoryPage.qml"), { dm: dm })
             }
 
+            Item { width: 1; height: units.gu(2); visible: !dm.statusOk }
             Label {
                 anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
-                topPadding: units.gu(2)
                 visible: !dm.statusOk
                 wrapMode: Text.WordWrap
                 fontSize: "small"

@@ -28,9 +28,9 @@ ItemPage {
             anchors { left: parent.left; right: parent.right }
             spacing: units.gu(1)
 
+            Item { width: 1; height: units.gu(0.5) }
             Label {
                 anchors { left: parent.left; right: parent.right; margins: units.gu(2) }
-                topPadding: units.gu(1)
                 wrapMode: Text.WordWrap
                 fontSize: "small"
                 text: i18n.tr("Winds the phone down for the night: Do Not Disturb, a grey screen and a darker wallpaper. Alarms still ring. \"Bedtime mode\" in the status-bar menu starts or ends it by hand.")
@@ -58,9 +58,9 @@ ItemPage {
             }
             DaysRow {
                 anchors { left: parent.left; right: parent.right; margins: units.gu(2) }
-                days: gs.bedtimeDays || []
+                days: (gs.bedtimeDays || "").split(",").filter(function(d) { return d !== "" }).map(Number)
                 names: page.dm.dayNames
-                onToggled: gs.bedtimeDays = days
+                onToggled: gs.bedtimeDays = days.join(",")
             }
             SettingsListItems.SingleValueProgression {
                 objectName: "bedtimeStart"

@@ -54,7 +54,7 @@ let
       ./app-ready/app-ready-fp6.nix
       ./screen-capture/screen-capture-fp6.nix
       ({ ... }: { imports = [ ./display-comfort/display-comfort-fp6.nix ]; hardware.fairphone6.displayComfort.enable = true; })
-      ({ ... }: { imports = [ ./notifications/notifications-fp6.nix ]; hardware.fairphone6.notifications.enable = false; })
+      ({ ... }: { imports = [ ./notifications/notifications-fp6.nix ]; hardware.fairphone6.notifications.enable = true; })
       ({ ... }: { imports = [ ./privacy-lock/privacy-lock-fp6.nix ]; hardware.fairphone6.privacyLock.enable = true; })
       ({ ... }: { imports = [ ./usb-drive/usb-drive-fp6.nix ]; hardware.fairphone6.usbDrive.enable = true; })
       ({ lib, options, ... }: {

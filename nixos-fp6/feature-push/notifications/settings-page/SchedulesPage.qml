@@ -27,11 +27,11 @@ ItemPage {
         Column {
             id: content
             anchors { left: parent.left; right: parent.right }
+            spacing: units.gu(1)
+            Item { width: 1; height: units.gu(0.5) }
 
             Label {
                 anchors { left: parent.left; right: parent.right; margins: units.gu(2) }
-                topPadding: units.gu(1)
-                bottomPadding: units.gu(1)
                 wrapMode: Text.WordWrap
                 fontSize: "small"
                 text: i18n.tr("Do Not Disturb turns on at the start of a schedule and off at its end. A window that ends before it starts runs overnight.")

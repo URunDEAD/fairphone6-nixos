@@ -64,12 +64,10 @@ fn manual(s: &str) -> Manual {
 
 fn read_config(s: &gio::Settings) -> (Config, HistoryConfig) {
     let days: Vec<u8> = s
-        .value("bedtime-days")
-        .get::<Vec<i32>>()
-        .unwrap_or_default()
-        .into_iter()
+        .string("bedtime-days")
+        .split(',')
+        .filter_map(|d| d.trim().parse::<u8>().ok())
         .filter(|d| (1..=7).contains(d))
-        .map(|d| d as u8)
         .collect();
     let cfg = Config {
         manual: manual(&s.string("dnd-manual")),
