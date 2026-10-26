@@ -13,19 +13,23 @@ stdenv.mkDerivation {
 
   buildPhase = ''
     runHook preBuild
-    flags="$(pkg-config --cflags gstreamer-1.0 gstreamer-photography-1.0 gstreamer-video-1.0)"
-    libs="$(pkg-config --libs gstreamer-1.0 gstreamer-photography-1.0 gstreamer-video-1.0) -lgstbasecamerabinsrc-1.0"
+    flags="$(pkg-config --cflags gstreamer-1.0 gstreamer-photography-1.0 gstreamer-video-1.0 gstreamer-tag-1.0)"
+    libs="$(pkg-config --libs gstreamer-1.0 gstreamer-photography-1.0 gstreamer-video-1.0 gstreamer-tag-1.0) -lgstbasecamerabinsrc-1.0 -lm"
     $CC -shared -fPIC -O2 -Wall \
       -DFP6CAM_CAMERABIN_PLUGIN='"${gst_all_1.gst-plugins-bad}/lib/gstreamer-1.0/libgstcamerabin.so"'  -Werror=implicit-function-declaration \
       -Werror=incompatible-pointer-types $flags -o libgstfp6camera.so fp6camera.c $libs
     $CC -O2 -Wall $flags $(pkg-config --cflags gstreamer-pbutils-1.0) -o fp6camera-selftest \
       fp6camera-selftest.c $libs $(pkg-config --libs gstreamer-pbutils-1.0)
+    # manual controls / long exposure from the command line (live camera)
+    $CC -O2 -Wall -DFP6_TUNING_DIR=\"$out/share/libcamera/ipa\" $(pkg-config --cflags gstreamer-1.0) -o fp6-long-exposure \
+      fp6camera-manualtest.c $(pkg-config --libs gstreamer-1.0)
     runHook postBuild
   '';
   installPhase = ''
     runHook preInstall
     install -Dm755 libgstfp6camera.so $out/lib/gstreamer-1.0/libgstfp6camera.so
     install -Dm755 fp6camera-selftest $out/libexec/fp6camera-selftest
+    install -Dm755 fp6-long-exposure $out/bin/fp6-long-exposure
     # softISP tuning for the sensors the libcamera package has none for;
     # used through LIBCAMERA_IPA_CONFIG_PATH=$out/share/libcamera/ipa
     install -Dm644 -t $out/share/libcamera/ipa/simple tuning/ov13b10.yaml tuning/fp6-s5kkd1.yaml
@@ -51,6 +55,12 @@ stdenv.mkDerivation {
     ${lib.getBin gst_all_1.gstreamer}/bin/gst-inspect-1.0 fp6camerabinsrc | grep -q sensor-mount-angle
     ${lib.getBin gst_all_1.gstreamer}/bin/gst-inspect-1.0 fp6libcamerasrc | grep -q device
     ${lib.getBin gst_all_1.gstreamer}/bin/gst-inspect-1.0 fp6libcamerasrc | grep -q zoom
+    # manual controls section
+    for p in exposure-us iso ev wb-kelvin focus ae-lock ultrawide histogram \
+        max-exposure-us stack-state stack-start trigger-autofocus; do
+      ${lib.getBin gst_all_1.gstreamer}/bin/gst-inspect-1.0 fp6libcamerasrc | grep -q "$p" \
+        || { echo "fp6libcamerasrc lacks $p" >&2; exit 1; }
+    done
     timeout 60 $out/libexec/fp6camera-selftest
     test -s $TMPDIR/img.jpg
     runHook postInstallCheck

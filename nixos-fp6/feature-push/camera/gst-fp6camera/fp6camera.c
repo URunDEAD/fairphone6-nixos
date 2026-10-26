@@ -312,7 +312,23 @@ struct _Fp6LibcameraSrc
   guint64 wd_gen;               /* bumped on every (re)start / stop */
   gboolean got_frame;
   gint restarts;
+  struct _Fp6Manual *manual;    /* MANUAL CONTROLS section (fp6camera-manual.c) */
 };
+
+/* MANUAL CONTROLS section hooks (defined in fp6camera-manual.c) */
+typedef struct _Fp6Manual Fp6Manual;
+static Fp6Manual *fp6m_new (Fp6LibcameraSrc * self);
+static void fp6m_free (Fp6LibcameraSrc * self);
+static void fp6m_class_init (GObjectClass * oc);
+static const Fp6CamEntry *fp6m_select_entry (Fp6LibcameraSrc * self, gint idx,
+    const Fp6CamEntry * e);
+static void fp6m_attach (Fp6LibcameraSrc * self, GstElement * cam,
+    GstElement * crop, gint idx);
+static void fp6m_detach (Fp6LibcameraSrc * self);
+static gboolean fp6m_set_property (Fp6LibcameraSrc * self, guint id,
+    const GValue * value);
+static gboolean fp6m_get_property (Fp6LibcameraSrc * self, guint id,
+    GValue * value);
 
 enum
 {
@@ -358,6 +374,7 @@ lsrc_clear (Fp6LibcameraSrc * self)
 {
   GList *children = g_list_copy (GST_BIN_CHILDREN (self));
 
+  fp6m_detach (self);           /* MANUAL CONTROLS */
   gst_ghost_pad_set_target (GST_GHOST_PAD (self->ghost), NULL);
   g_mutex_lock (&self->wd_lock);
   self->cam = NULL;
@@ -546,6 +563,11 @@ lsrc_build (Fp6LibcameraSrc * self)
   if (self->built)
     return TRUE;
 
+  /* MANUAL CONTROLS: lens selection (primary -> ultrawide) */
+  e = fp6m_select_entry (self, idx, e);
+  if (idx >= 0)
+    camera_name = e->camera_name;
+
   cam = gst_element_factory_make ("libcamerasrc", "fp6-libcamerasrc");
   infilter = gst_element_factory_make ("capsfilter", "fp6-stream-caps");
   crop = gst_element_factory_make ("videocrop", "fp6-zoom-crop");
@@ -657,6 +679,7 @@ lsrc_build (Fp6LibcameraSrc * self)
   pad = gst_element_get_static_pad (last, "src");
   gst_ghost_pad_set_target (GST_GHOST_PAD (self->ghost), pad);
   gst_object_unref (pad);
+  fp6m_attach (self, cam, crop, idx);   /* MANUAL CONTROLS */
   self->built = TRUE;
   return TRUE;
 }
@@ -693,6 +716,8 @@ lsrc_set_property (GObject * object, guint id, const GValue * value,
 {
   Fp6LibcameraSrc *self = FP6_LIBCAMERA_SRC (object);
 
+  if (fp6m_set_property (self, id, value))      /* MANUAL CONTROLS */
+    return;
   switch (id) {
     case LSRC_PROP_DEVICE:
       if (GST_STATE (self) != GST_STATE_NULL) {
@@ -718,6 +743,8 @@ lsrc_get_property (GObject * object, guint id, GValue * value,
 {
   Fp6LibcameraSrc *self = FP6_LIBCAMERA_SRC (object);
 
+  if (fp6m_get_property (self, id, value))      /* MANUAL CONTROLS */
+    return;
   switch (id) {
     case LSRC_PROP_DEVICE:
       g_value_set_string (value, self->device ? self->device : "primary");
@@ -736,6 +763,7 @@ static void
 lsrc_finalize (GObject * object)
 {
   Fp6LibcameraSrc *self = FP6_LIBCAMERA_SRC (object);
+  fp6m_free (self);             /* MANUAL CONTROLS */
   g_free (self->device);
   g_mutex_clear (&self->wd_lock);
   g_cond_clear (&self->wd_cond);
@@ -761,6 +789,7 @@ fp6_libcamera_src_class_init (Fp6LibcameraSrcClass * klass)
       g_param_spec_float ("zoom", "Zoom",
           "Digital zoom (centre crop, applied between buffers)", 1.0f,
           G_MAXFLOAT, 1.0f, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+  fp6m_class_init (oc);         /* MANUAL CONTROLS */
 
   gst_element_class_add_static_pad_template (ec, &lsrc_template);
   gst_element_class_set_static_metadata (ec, "FP6 libcamera source",
@@ -778,7 +807,13 @@ fp6_libcamera_src_init (Fp6LibcameraSrc * self)
   self->zoom = self->zoom_applied = 1.0f;
   g_mutex_init (&self->wd_lock);
   g_cond_init (&self->wd_cond);
+  self->manual = fp6m_new (self);       /* MANUAL CONTROLS */
 }
+
+/* ------------------------------------------------------------------------ */
+/* MANUAL CONTROLS (FP6 Phase 1 pro mode): separate file, same unit         */
+/* ------------------------------------------------------------------------ */
+#include "fp6camera-manual.c"
 
 /* ------------------------------------------------------------------------ */
 /* fp6camerabinsrc: runtime subclass of wrappercamerabinsrc                 */
