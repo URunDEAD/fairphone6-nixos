@@ -35,6 +35,7 @@ let
         status=$?
         trap - EXIT INT TERM
         if [[ "$mtp_changed" == 1 ]]; then
+          flock -w 30 9 || status=1
           printf '\n' > "$gadget/UDC" || status=1
           if [[ -n "$mtp_pid" ]]; then
             kill "$mtp_pid" 2>/dev/null || true
@@ -71,6 +72,10 @@ let
         [[ -d "/home/user/$directory" && ! -L "/home/user/$directory" ]] || fail 'media directory missing or symlinked'
       done
 
+      # Shared gadget lock (also taken by adb/fp6-adb-gadget and the usb-drive
+      # helper): held only while the gadget is being changed, not while serving.
+      exec 9>/run/fp6-adb-gadget.lock
+      flock -w 30 9 || fail 'USB gadget is busy'
       mtp_changed=1
       printf '\n' > "$gadget/UDC"
       mkdir "$function_dir" "$endpoints"
@@ -90,6 +95,7 @@ let
       [[ "$ready" == 1 ]] || fail 'FunctionFS descriptors did not become ready'
       printf '%s\n' "$controller" > "$gadget/UDC"
       echo 'FP6 MTP: MTP endpoints bound next to the existing functions'
+      flock -u 9
       wait "$mtp_pid"
     '';
   };
