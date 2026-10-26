@@ -52,7 +52,8 @@ let
     flip=${c.flip}
     swap-rb=${lib.boolToString c.swapRB}
   '';
-  confText = camSection "primary" cfg.primary + camSection "secondary" cfg.secondary + ''
+  confText = camSection "primary" cfg.primary + camSection "secondary" cfg.secondary
+    + camSection "ultrawide" cfg.ultrawide + ''
     [flash]
     led-brightness-path=/sys/class/leds/white:flash/brightness
     brightness=${toString cfg.flash.brightness}
@@ -112,6 +113,19 @@ in {
         # at the source by the GBRG fp6-s5kkd1 driver (selfie-gbrg-fp6.nix,
         # sets frontBayerFixed); the relabel stays only for older drivers.
         swapRB = !cfg.frontBayerFixed;
+      };
+    };
+    ultrawide = lib.mkOption {
+      type = lib.types.submodule camOpts;
+      description = "Back ultrawide camera (the app's 0.6x lens button; replaces 'primary' while selected).";
+      default = {
+        cameraName = "/base/soc@0/cci@ac15000/i2c-bus@1/camera@36";   # OV13B10 ultrawide
+        width = 2048; height = 1536;
+        sizes = [ "2048x1536" "1440x1080" "960x720" "640x480" ];
+        mountAngle = 270;
+        # Mounted 180 degrees from the main sensor (frame checked
+        # 2026-10-26); Qt keeps the primary's orientation, so turn the stream.
+        flip = "rotate-180";
       };
     };
     flash = {

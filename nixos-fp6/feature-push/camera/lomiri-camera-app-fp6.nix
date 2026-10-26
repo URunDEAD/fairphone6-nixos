@@ -5,7 +5,7 @@
 # Recording: camerabin encodebin, MP4 H.264 (+AAC via fdkaacenc).
 # hardwareEncode=false hides the Iris V4L2 m2m encoder (v4l2h264enc) so
 # encodebin picks x264enc; set true only after camera-test.sh step "venc" passes.
-{ lib, lomiri, libsForQt5, gst_all_1, callPackage
+{ lib, lomiri, libsForQt5, gst_all_1, callPackage, glib, pkg-config
 , libcamera                      # MUST be the phone's hardware.fp6Camera.package
 , hardwareEncode ? false
 , configFile ? "/etc/fp6-camera/camera.conf"
@@ -35,8 +35,16 @@ in
     # front-viewfinder: front frames are not HAL-mirrored here; rotate by the
     # sensor orientation and mirror only the preview.
     ./lomiri-camera-app-front-viewfinder.patch
+    # pro-mode: Pro panel (manual shutter incl. long exposure/bulb stacking,
+    # ISO, EV, WB, manual focus, AE/AWB/AF lock), histogram, zebra, focus
+    # peaking, level, tap-to-focus at the tapped point, burst on hold,
+    # volume-key shutter, 0.6x ultrawide. QML -> CameraApp.Fp6ProControls ->
+    # fp6libcamerasrc (gst-fp6camera fp6camera-manual.c) -> libcamera
+    # (camera-fp6-pmos/0090-fp6-manual-controls.patch).
+    ./lomiri-camera-app-pro-mode.patch
   ];
-  buildInputs = old.buildInputs ++ [ gstFp6Camera libcamera gst_all_1.gst-libav ];
+  nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ pkg-config ];
+  buildInputs = old.buildInputs ++ [ gstFp6Camera libcamera gst_all_1.gst-libav glib ];
   # Upstream QML/flake8 tests under xvfb are unrelated to the device path.
   doCheck = false;
   preFixup = (old.preFixup or "") + ''

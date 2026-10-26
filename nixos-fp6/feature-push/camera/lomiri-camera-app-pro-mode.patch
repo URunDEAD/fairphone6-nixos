@@ -1,0 +1,1898 @@
+diff --git a/CameraApp/CMakeLists.txt b/CameraApp/CMakeLists.txt
+index 09d8e35..b10f93b 100644
+--- a/CameraApp/CMakeLists.txt
++++ b/CameraApp/CMakeLists.txt
+@@ -10,6 +10,7 @@ set(plugin_SRCS
+     storagemonitor.cpp
+     storagelocations.cpp
+     adddatestamp.cpp
++    fp6procontrols.cpp
+     )
+ 
+ set(plugin_HDRS
+@@ -21,9 +22,15 @@ set(plugin_HDRS
+     storagemonitor.h
+     storagelocations.h
+     adddatestamp.h
++    fp6procontrols.h
+     )
+ 
++# FP6 Pro mode: GObject access to the fp6libcamerasrc element
++find_package(PkgConfig REQUIRED)
++pkg_check_modules(FP6_GOBJECT REQUIRED gobject-2.0)
++
+ add_library(camera-qml SHARED ${plugin_SRCS} ${plugin_HDRS})
++target_include_directories(camera-qml PRIVATE ${FP6_GOBJECT_INCLUDE_DIRS})
+ 
+ #make sure that the qmldir file is in the QML2_IMPORT_PATH when running from QtC
+ file(COPY qmldir DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
+@@ -33,6 +40,7 @@ target_link_libraries(camera-qml
+     ${Qt5Quick_LIBRARIES}
+     ${Qt5Multimedia_LIBRARIES}
+     exiv2
++    ${FP6_GOBJECT_LIBRARIES}
+     )
+ 
+ install(TARGETS camera-qml DESTINATION ${PLUGIN_DIR})
+diff --git a/CameraApp/components.cpp b/CameraApp/components.cpp
+index e7637d5..6bebbc4 100644
+--- a/CameraApp/components.cpp
++++ b/CameraApp/components.cpp
+@@ -26,6 +26,7 @@
+ #include "storagemonitor.h"
+ #include "storagelocations.h"
+ #include "postprocessoperations.h"
++#include "fp6procontrols.h"
+ 
+ static QObject* StorageLocations_singleton_factory(QQmlEngine* engine, QJSEngine* scriptEngine)
+ {
+@@ -45,9 +46,12 @@ void Components::registerTypes(const char *uri)
+     qmlRegisterType<StorageMonitor>(uri, 0, 1, "StorageMonitor");
+     qmlRegisterType<PostProcessOperations>(uri, 0, 1, "PostProcessOperations");
+     qmlRegisterSingletonType<StorageLocations>(uri, 0, 1, "StorageLocations", StorageLocations_singleton_factory);
++    qmlRegisterType<Fp6ProControls>(uri, 0, 1, "Fp6ProControls");
+ }
+ 
+ void Components::initializeEngine(QQmlEngine *engine, const char *uri)
+ {
+     QQmlExtensionPlugin::initializeEngine(engine, uri);
++    // FP6 Pro mode: zebra / focus peaking overlay
++    engine->addImageProvider(QStringLiteral("fp6pro"), new Fp6OverlayProvider);
+ }
+diff --git a/CameraApp/fp6procontrols.cpp b/CameraApp/fp6procontrols.cpp
+new file mode 100644
+index 0000000..15d872b
+--- /dev/null
++++ b/CameraApp/fp6procontrols.cpp
+@@ -0,0 +1,371 @@
++/*
++ * FP6 "Pro" camera controls, see fp6procontrols.h.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; version 3.
++ */
++#include "fp6procontrols.h"
++
++#include <QDateTime>
++#include <QDebug>
++#include <QDir>
++#include <QRegularExpression>
++#include <QtMath>
++
++#include <glib-object.h>
++
++#include <cmath>
++
++static QMutex s_overlayLock;
++static QImage s_overlay;
++
++/* GLib boolean / GBytes etc. only; no GStreamer headers needed */
++
++Fp6ProControls::Fp6ProControls(QObject *parent)
++    : QObject(parent)
++{
++    m_timer.setInterval(250);
++    connect(&m_timer, &QTimer::timeout, this, &Fp6ProControls::poll);
++}
++
++Fp6ProControls::~Fp6ProControls()
++{
++}
++
++void *Fp6ProControls::element() const
++{
++    GType t = g_type_from_name("Fp6LibcameraSrc");
++    if (!t)
++        return nullptr;
++    GWeakRef *ref = static_cast<GWeakRef *>(
++        g_type_get_qdata(t, g_quark_from_static_string("fp6-manual-active")));
++    return ref ? g_weak_ref_get(ref) : nullptr;
++}
++
++void Fp6ProControls::setPolling(bool on)
++{
++    if (on == m_polling)
++        return;
++    m_polling = on;
++    if (on) {
++        poll();
++        m_timer.start();
++    } else {
++        m_timer.stop();
++    }
++    Q_EMIT pollingChanged();
++}
++
++void Fp6ProControls::changed()
++{
++    Q_EMIT settingsChanged();
++    GObject *obj = static_cast<GObject *>(element());
++    if (obj) {
++        sync(obj);
++        g_object_unref(obj);
++    }
++}
++
++#define SETTER(name, member, type)              \
++    void Fp6ProControls::name(type v)           \
++    {                                           \
++        if (member == v)                        \
++            return;                             \
++        member = v;                             \
++        changed();                              \
++    }
++
++SETTER(setExposureUs, m_exposureUs, double)
++SETTER(setIso, m_iso, int)
++SETTER(setEv, m_ev, double)
++SETTER(setWbKelvin, m_wbKelvin, int)
++SETTER(setAeLock, m_aeLock, bool)
++SETTER(setAwbLock, m_awbLock, bool)
++SETTER(setAfLock, m_afLock, bool)
++SETTER(setFocus, m_focus, double)
++SETTER(setUltrawide, m_ultrawide, bool)
++SETTER(setAnalysis, m_analysis, int)
++SETTER(setZebraLevel, m_zebraLevel, int)
++#undef SETTER
++
++/* Push every setting that differs from the element's. */
++void Fp6ProControls::sync(void *p)
++{
++    GObject *obj = static_cast<GObject *>(p);
++    gint64 exp = 0;
++    gint iso = 0, kelvin = 0, zebra = 0;
++    gfloat ev = 0, focus = -1;
++    gboolean ae = FALSE, awb = FALSE, af = FALSE, uw = FALSE;
++    guint an = 0;
++
++    g_object_get(obj, "exposure-us", &exp, "iso", &iso, "ev", &ev,
++                 "wb-kelvin", &kelvin, "ae-lock", &ae, "awb-lock", &awb,
++                 "af-lock", &af, "focus", &focus, "ultrawide", &uw,
++                 "analysis", &an, "zebra-level", &zebra, NULL);
++
++    const gint64 wantExp = qMax<gint64>(0, qint64(m_exposureUs));
++    if (exp != wantExp)
++        g_object_set(obj, "exposure-us", wantExp, NULL);
++    if (iso != m_iso)
++        g_object_set(obj, "iso", m_iso, NULL);
++    if (std::fabs(ev - m_ev) > 0.001)
++        g_object_set(obj, "ev", gfloat(m_ev), NULL);
++    if (kelvin != m_wbKelvin)
++        g_object_set(obj, "wb-kelvin", m_wbKelvin, NULL);
++    if (bool(ae) != m_aeLock)
++        g_object_set(obj, "ae-lock", gboolean(m_aeLock), NULL);
++    if (bool(awb) != m_awbLock)
++        g_object_set(obj, "awb-lock", gboolean(m_awbLock), NULL);
++    if (bool(af) != m_afLock)
++        g_object_set(obj, "af-lock", gboolean(m_afLock), NULL);
++    const gfloat wantFocus = m_focus < 0 ? -1.0f : gfloat(qBound(0.0, m_focus, 1.0));
++    if (std::fabs(focus - wantFocus) > 0.0005)
++        g_object_set(obj, "focus", wantFocus, NULL);
++    if (bool(uw) != m_ultrawide)
++        g_object_set(obj, "ultrawide", gboolean(m_ultrawide), NULL);
++    if (an != guint(m_analysis))
++        g_object_set(obj, "analysis", guint(m_analysis), NULL);
++    if (zebra != m_zebraLevel)
++        g_object_set(obj, "zebra-level", m_zebraLevel, NULL);
++}
++
++void Fp6ProControls::poll()
++{
++    GObject *obj = static_cast<GObject *>(element());
++    const bool avail = obj != nullptr;
++
++    if (avail != m_available) {
++        m_available = avail;
++        Q_EMIT availableChanged();
++    }
++    if (!obj)
++        return;
++
++    sync(obj);
++
++    gint64 curExp = 0, frame = 0, maxExp = 0, stackFrameUs = 0;
++    gint curIso = 0, kelvin = 0, afState = -1, st = 0, frames = 0, target = 0, dark = 0;
++    gfloat curFocus = -1;
++    gboolean hasFocus = FALSE;
++    guint serial = 0;
++    gchar *lens = nullptr, *result = nullptr, *error = nullptr;
++
++    g_object_get(obj, "current-exposure-us", &curExp, "current-iso", &curIso,
++                 "current-kelvin", &kelvin, "current-focus", &curFocus,
++                 "frame-duration-us", &frame, "max-exposure-us", &maxExp,
++                 "af-state", &afState, "has-focus", &hasFocus,
++                 "active-lens", &lens, "analysis-serial", &serial,
++                 "stack-state", &st, "stack-frames", &frames,
++                 "stack-target-frames", &target, "stack-frame-us", &stackFrameUs,
++                 "stack-dark-frames", &dark, "stack-result", &result,
++                 "stack-error", &error, NULL);
++
++    m_curExposureUs = curExp;
++    m_curIso = curIso;
++    m_curKelvin = kelvin;
++    m_curFocus = curFocus;
++    m_frameDurationUs = frame;
++    m_maxExposureUs = maxExp;
++    m_afState = afState;
++    m_hasFocus = hasFocus;
++    m_activeLens = QString::fromUtf8(lens ? lens : "");
++    Q_EMIT readoutChanged();
++
++    if (serial != m_analysisSerial) {
++        m_analysisSerial = serial;
++        GBytes *hist = nullptr, *mask = nullptr;
++        gint mw = 0, mh = 0;
++        g_object_get(obj, "histogram", &hist, "overlay", &mask,
++                     "overlay-width", &mw, "overlay-height", &mh, NULL);
++        if (hist) {
++            gsize n = 0;
++            const guint32 *b = static_cast<const guint32 *>(g_bytes_get_data(hist, &n));
++            n /= sizeof(guint32);
++            QVariantList out;
++            if (n == 256) {
++                for (int c = 0; c < 4; c++) {
++                    guint32 mx = 1;
++                    /* ignore the clipped end bins for the scale */
++                    for (int i = 1; i < 63; i++)
++                        mx = qMax(mx, b[c * 64 + i]);
++                    for (int i = 0; i < 64; i++)
++                        out << qMin(1.0, double(b[c * 64 + i]) / mx);
++                }
++            }
++            m_histogram = out;
++            g_bytes_unref(hist);
++            Q_EMIT histogramChanged();
++        }
++        if (mask && mw > 0 && mh > 0) {
++            gsize n = 0;
++            const guint8 *d = static_cast<const guint8 *>(g_bytes_get_data(mask, &n));
++            if (n >= gsize(mw * mh)) {
++                QImage img(mw, mh, QImage::Format_ARGB32_Premultiplied);
++                for (int y = 0; y < mh; y++) {
++                    QRgb *line = reinterpret_cast<QRgb *>(img.scanLine(y));
++                    for (int x = 0; x < mw; x++) {
++                        const guint8 v = d[y * mw + x];
++                        QRgb c = qRgba(0, 0, 0, 0);
++                        if (v & 2)
++                            c = qPremultiply(qRgba(40, 255, 40, 230));
++                        else if ((v & 1) && ((x + y) / 2) % 2 == 0)
++                            c = qPremultiply(qRgba(255, 40, 200, 190));
++                        line[x] = c;
++                    }
++                }
++                QMutexLocker lock(&s_overlayLock);
++                s_overlay = img;
++            }
++            m_overlaySerial++;
++            Q_EMIT overlayChanged();
++        }
++        if (mask)
++            g_bytes_unref(mask);
++    }
++
++    const int oldState = m_stackState;
++    const bool stackChange = st != m_stackState || frames != m_stackFrames
++        || dark != m_stackDark || target != m_stackTarget;
++    m_stackState = st;
++    m_stackFrames = frames;
++    m_stackTarget = target;
++    m_stackFrameUs = stackFrameUs;
++    m_stackDark = dark;
++    if (st == StackLight && oldState != StackLight)
++        m_stackStartMs = QDateTime::currentMSecsSinceEpoch();
++    if (stackChange || st == StackLight)
++        Q_EMIT stackChanged();
++    if (st != oldState) {
++        if (st == StackDone && result)
++            Q_EMIT stackFinished(QString::fromUtf8(result));
++        else if (st == StackError)
++            Q_EMIT stackFailed(QString::fromUtf8(error ? error : "failed"));
++    }
++    g_free(lens);
++    g_free(result);
++    g_free(error);
++    g_object_unref(obj);
++}
++
++double Fp6ProControls::stackElapsedMs() const
++{
++    if (m_stackState < StackLight || m_stackState > StackDark || !m_stackStartMs)
++        return 0;
++    return QDateTime::currentMSecsSinceEpoch() - m_stackStartMs;
++}
++
++void Fp6ProControls::triggerAutofocus(double x, double y)
++{
++    GObject *obj = static_cast<GObject *>(element());
++    if (!obj)
++        return;
++    g_signal_emit_by_name(obj, "trigger-autofocus", x, y);
++    g_object_unref(obj);
++}
++
++bool Fp6ProControls::startStack(const QString &directory, double totalUs, int mode,
++                                bool darkFrame, int orientation, int quality)
++{
++    GObject *obj = static_cast<GObject *>(element());
++    if (!obj)
++        return false;
++    QDir().mkpath(directory);
++    const QString path = QDir(directory).filePath(
++        QStringLiteral("image%1_LE.jpg")
++            .arg(QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_hhmmsszzz"))));
++    gboolean ok = FALSE;
++    g_signal_emit_by_name(obj, "stack-start", path.toUtf8().constData(),
++                          gint64(qMax(0.0, totalUs)), gint(mode), gboolean(darkFrame),
++                          gint(orientation), gint(quality), &ok);
++    g_object_unref(obj);
++    if (ok) {
++        m_stackStartMs = 0;
++        poll();
++    }
++    return ok;
++}
++
++#define ACTION(fn, sig)                                         \
++    void Fp6ProControls::fn()                                   \
++    {                                                           \
++        GObject *obj = static_cast<GObject *>(element());       \
++        if (!obj)                                               \
++            return;                                             \
++        g_signal_emit_by_name(obj, sig);                        \
++        g_object_unref(obj);                                    \
++        poll();                                                 \
++    }
++ACTION(stopStack, "stack-stop")
++ACTION(continueStack, "stack-continue")
++ACTION(cancelStack, "stack-cancel")
++#undef ACTION
++
++double Fp6ProControls::parseShutter(const QString &text) const
++{
++    QString t = text.trimmed().toLower().remove(QLatin1Char(' '));
++    if (t.isEmpty())
++        return 0;
++    static const QRegularExpression frac(QStringLiteral("^(\\d+(?:\\.\\d+)?)/(\\d+(?:\\.\\d+)?)s?$"));
++    auto m = frac.match(t);
++    if (m.hasMatch()) {
++        const double d = m.captured(2).toDouble();
++        return d > 0 ? 1e6 * m.captured(1).toDouble() / d : 0;
++    }
++    /* 1h30m10s, 5m, 2.5s, 90, 0.004 */
++    static const QRegularExpression parts(QStringLiteral("(\\d+(?:\\.\\d+)?)(h|m|s|ms)?"));
++    double us = 0;
++    int pos = 0;
++    auto it = parts.globalMatch(t);
++    while (it.hasNext()) {
++        auto p = it.next();
++        if (p.capturedStart() != pos)
++            return 0;
++        pos = p.capturedEnd();
++        const double v = p.captured(1).toDouble();
++        const QString u = p.captured(2);
++        us += v * (u == QLatin1String("h") ? 3.6e9 : u == QLatin1String("m") ? 6e7
++                   : u == QLatin1String("ms") ? 1e3 : 1e6);
++    }
++    return pos == t.size() ? us : 0;
++}
++
++QString Fp6ProControls::formatShutter(double us) const
++{
++    if (us <= 0)
++        return QStringLiteral("Auto");
++    if (us >= 0.3e6 && us < 0.95e6)
++        return QStringLiteral("%1\"").arg(QString::number(us / 1e6, 'f', 1));
++    if (us < 0.95e6) {
++        const double d = 1e6 / us;
++        return QStringLiteral("1/%1").arg(d >= 10 ? QString::number(qRound(d))
++                                                  : QString::number(d, 'g', 2));
++    }
++    const double s = us / 1e6;
++    if (s < 60)
++        return QStringLiteral("%1\"").arg(QString::number(s, 'g', s < 10 ? 2 : 3));
++    const qint64 total = qRound64(s);
++    const qint64 h = total / 3600, mi = (total % 3600) / 60, se = total % 60;
++    if (h)
++        return QStringLiteral("%1h%2m").arg(h).arg(mi, 2, 10, QLatin1Char('0'));
++    return se ? QStringLiteral("%1m%2s").arg(mi).arg(se, 2, 10, QLatin1Char('0'))
++              : QStringLiteral("%1m").arg(mi);
++}
++
++QImage Fp6ProControls::overlayImage()
++{
++    QMutexLocker lock(&s_overlayLock);
++    return s_overlay;
++}
++
++QImage Fp6OverlayProvider::requestImage(const QString &, QSize *size, const QSize &)
++{
++    QImage img = Fp6ProControls::overlayImage();
++    if (img.isNull()) {
++        img = QImage(1, 1, QImage::Format_ARGB32_Premultiplied);
++        img.fill(Qt::transparent);
++    }
++    if (size)
++        *size = img.size();
++    return img;
++}
+diff --git a/CameraApp/fp6procontrols.h b/CameraApp/fp6procontrols.h
+new file mode 100644
+index 0000000..434a709
+--- /dev/null
++++ b/CameraApp/fp6procontrols.h
+@@ -0,0 +1,187 @@
++/*
++ * FP6 "Pro" camera controls: bridge from QML to the fp6libcamerasrc
++ * GStreamer element (gst-fp6camera, manual controls section).
++ *
++ * The element registers a GWeakRef to its most recently built instance as
++ * qdata "fp6-manual-active" on its GType; this class finds it there, so no
++ * library has to be linked besides GObject (same process, same GLib).
++ * Settings are re-synchronised to the element every poll, so a new camera
++ * instance (camera switch, restart) picks them up by itself.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; version 3.
++ */
++#ifndef FP6PROCONTROLS_H
++#define FP6PROCONTROLS_H
++
++#include <QImage>
++#include <QMutex>
++#include <QObject>
++#include <QQuickImageProvider>
++#include <QTimer>
++#include <QVariantList>
++
++class Fp6ProControls : public QObject
++{
++    Q_OBJECT
++    Q_PROPERTY(bool available READ available NOTIFY availableChanged)
++    Q_PROPERTY(bool polling READ polling WRITE setPolling NOTIFY pollingChanged)
++
++    /* requested settings (0 / -1 = automatic) */
++    Q_PROPERTY(double exposureUs READ exposureUs WRITE setExposureUs NOTIFY settingsChanged)
++    Q_PROPERTY(int iso READ iso WRITE setIso NOTIFY settingsChanged)
++    Q_PROPERTY(double ev READ ev WRITE setEv NOTIFY settingsChanged)
++    Q_PROPERTY(int wbKelvin READ wbKelvin WRITE setWbKelvin NOTIFY settingsChanged)
++    Q_PROPERTY(bool aeLock READ aeLock WRITE setAeLock NOTIFY settingsChanged)
++    Q_PROPERTY(bool awbLock READ awbLock WRITE setAwbLock NOTIFY settingsChanged)
++    Q_PROPERTY(bool afLock READ afLock WRITE setAfLock NOTIFY settingsChanged)
++    Q_PROPERTY(double focus READ focus WRITE setFocus NOTIFY settingsChanged)
++    Q_PROPERTY(bool ultrawide READ ultrawide WRITE setUltrawide NOTIFY settingsChanged)
++    Q_PROPERTY(int analysis READ analysis WRITE setAnalysis NOTIFY settingsChanged)
++    Q_PROPERTY(int zebraLevel READ zebraLevel WRITE setZebraLevel NOTIFY settingsChanged)
++
++    /* what the camera really uses (metadata) */
++    Q_PROPERTY(double currentExposureUs READ currentExposureUs NOTIFY readoutChanged)
++    Q_PROPERTY(int currentIso READ currentIso NOTIFY readoutChanged)
++    Q_PROPERTY(int currentKelvin READ currentKelvin NOTIFY readoutChanged)
++    Q_PROPERTY(double currentFocus READ currentFocus NOTIFY readoutChanged)
++    Q_PROPERTY(double frameDurationUs READ frameDurationUs NOTIFY readoutChanged)
++    Q_PROPERTY(double maxExposureUs READ maxExposureUs NOTIFY readoutChanged)
++    Q_PROPERTY(int afState READ afState NOTIFY readoutChanged)
++    Q_PROPERTY(bool hasFocus READ hasFocus NOTIFY readoutChanged)
++    Q_PROPERTY(QString activeLens READ activeLens NOTIFY readoutChanged)
++    Q_PROPERTY(QVariantList histogram READ histogram NOTIFY histogramChanged)
++    Q_PROPERTY(int overlaySerial READ overlaySerial NOTIFY overlayChanged)
++
++    /* long exposure (stack) */
++    Q_PROPERTY(int stackState READ stackState NOTIFY stackChanged)
++    Q_PROPERTY(int stackFrames READ stackFrames NOTIFY stackChanged)
++    Q_PROPERTY(int stackTargetFrames READ stackTargetFrames NOTIFY stackChanged)
++    Q_PROPERTY(double stackFrameUs READ stackFrameUs NOTIFY stackChanged)
++    Q_PROPERTY(int stackDarkFrames READ stackDarkFrames NOTIFY stackChanged)
++    Q_PROPERTY(double stackElapsedMs READ stackElapsedMs NOTIFY stackChanged)
++
++public:
++    enum StackState { StackIdle = 0, StackSettle, StackLight, StackWaitDark,
++                      StackDark, StackSaving, StackDone, StackError };
++    Q_ENUM(StackState)
++
++    explicit Fp6ProControls(QObject *parent = nullptr);
++    ~Fp6ProControls();
++
++    bool available() const { return m_available; }
++    bool polling() const { return m_polling; }
++    void setPolling(bool on);
++
++    double exposureUs() const { return m_exposureUs; }
++    void setExposureUs(double v);
++    int iso() const { return m_iso; }
++    void setIso(int v);
++    double ev() const { return m_ev; }
++    void setEv(double v);
++    int wbKelvin() const { return m_wbKelvin; }
++    void setWbKelvin(int v);
++    bool aeLock() const { return m_aeLock; }
++    void setAeLock(bool v);
++    bool awbLock() const { return m_awbLock; }
++    void setAwbLock(bool v);
++    bool afLock() const { return m_afLock; }
++    void setAfLock(bool v);
++    double focus() const { return m_focus; }
++    void setFocus(double v);
++    bool ultrawide() const { return m_ultrawide; }
++    void setUltrawide(bool v);
++    int analysis() const { return m_analysis; }
++    void setAnalysis(int v);
++    int zebraLevel() const { return m_zebraLevel; }
++    void setZebraLevel(int v);
++
++    double currentExposureUs() const { return m_curExposureUs; }
++    int currentIso() const { return m_curIso; }
++    int currentKelvin() const { return m_curKelvin; }
++    double currentFocus() const { return m_curFocus; }
++    double frameDurationUs() const { return m_frameDurationUs; }
++    double maxExposureUs() const { return m_maxExposureUs; }
++    int afState() const { return m_afState; }
++    bool hasFocus() const { return m_hasFocus; }
++    QString activeLens() const { return m_activeLens; }
++    QVariantList histogram() const { return m_histogram; }
++    int overlaySerial() const { return m_overlaySerial; }
++
++    int stackState() const { return m_stackState; }
++    int stackFrames() const { return m_stackFrames; }
++    int stackTargetFrames() const { return m_stackTarget; }
++    double stackFrameUs() const { return m_stackFrameUs; }
++    int stackDarkFrames() const { return m_stackDark; }
++    double stackElapsedMs() const;
++
++    Q_INVOKABLE void triggerAutofocus(double x = -1, double y = -1);
++    Q_INVOKABLE bool startStack(const QString &directory, double totalUs, int mode,
++                                bool darkFrame, int orientation, int quality = 95);
++    Q_INVOKABLE void stopStack();
++    Q_INVOKABLE void continueStack();
++    Q_INVOKABLE void cancelStack();
++    /* "1/250", "0.5", "2.5s", "90", "5m", "1h", "1h30m" -> us (0 = invalid) */
++    Q_INVOKABLE double parseShutter(const QString &text) const;
++    Q_INVOKABLE QString formatShutter(double us) const;
++
++    /* overlay image for the "fp6pro" image provider */
++    static QImage overlayImage();
++
++Q_SIGNALS:
++    void availableChanged();
++    void pollingChanged();
++    void settingsChanged();
++    void readoutChanged();
++    void histogramChanged();
++    void overlayChanged();
++    void stackChanged();
++    void stackFinished(const QString &path);
++    void stackFailed(const QString &error);
++
++private Q_SLOTS:
++    void poll();
++
++private:
++    void *element() const;           /* GObject*, new reference, or nullptr */
++    void sync(void *obj);
++    void changed();
++
++    QTimer m_timer;
++    bool m_available = false;
++    bool m_polling = false;
++
++    double m_exposureUs = 0;
++    int m_iso = 0;
++    double m_ev = 0;
++    int m_wbKelvin = 0;
++    bool m_aeLock = false, m_awbLock = false, m_afLock = false;
++    double m_focus = -1;
++    bool m_ultrawide = false;
++    int m_analysis = 0;
++    int m_zebraLevel = 245;
++
++    double m_curExposureUs = 0;
++    int m_curIso = 0, m_curKelvin = 0;
++    double m_curFocus = -1, m_frameDurationUs = 0, m_maxExposureUs = 0;
++    int m_afState = -1;
++    bool m_hasFocus = false;
++    QString m_activeLens;
++    QVariantList m_histogram;
++    int m_overlaySerial = 0;
++    unsigned m_analysisSerial = 0;
++
++    int m_stackState = 0, m_stackFrames = 0, m_stackTarget = 0, m_stackDark = 0;
++    double m_stackFrameUs = 0;
++    qint64 m_stackStartMs = 0;
++};
++
++class Fp6OverlayProvider : public QQuickImageProvider
++{
++public:
++    Fp6OverlayProvider() : QQuickImageProvider(QQuickImageProvider::Image) {}
++    QImage requestImage(const QString &id, QSize *size, const QSize &requestedSize) override;
++};
++
++#endif
+diff --git a/qml/Viewfinder/ViewFinderOverlay.qml b/qml/Viewfinder/ViewFinderOverlay.qml
+index eab7ed3..b765ed6 100644
+--- a/qml/Viewfinder/ViewFinderOverlay.qml
++++ b/qml/Viewfinder/ViewFinderOverlay.qml
+@@ -76,6 +76,20 @@ Item {
+         property real dateStampOpacity: 1.0;
+         property int dateStampAlign :  Qt.AlignBottom | Qt.AlignRight;
+ 
++        // FP6 Pro mode (manual controls); the values only apply while proMode
++        property bool proMode: false
++        property real proExposureUs: 0      // 0 = auto, -1 = bulb
++        property int proIso: 0              // 0 = auto
++        property real proEv: 0
++        property int proWbKelvin: 0         // 0 = auto
++        property real proFocus: -1          // < 0 = autofocus
++        property int proStackMode: 0        // 0 = sum, 1 = mean
++        property bool proDarkFrame: false
++        property bool proHistogram: true
++        property bool proZebra: false
++        property bool proPeaking: false
++        property bool proLevel: false
++
+         Component.onCompleted: {
+             if (!photoResolutions) photoResolutions = {}
+ 
+@@ -108,6 +122,68 @@ Item {
+         when: camera.captureMode == Camera.CaptureStillImage
+     }
+ 
++    // ---- FP6 Pro mode -------------------------------------------------
++    readonly property bool proActive: settings.proMode && camera.captureMode == Camera.CaptureStillImage
++                                      && !main.contentExportMode
++    readonly property bool proStacking: camera.pro.stackState >= 1 && camera.pro.stackState <= 5
++    readonly property bool proLongExposure: proActive && proPanel.longExposure
++    readonly property bool proOverlayVisible: proActive && (settings.proZebra || settings.proPeaking)
++
++    Binding { target: camera.pro; property: "exposureUs"
++        value: proActive && settings.proExposureUs > 0 ? settings.proExposureUs : 0 }
++    Binding { target: camera.pro; property: "iso"; value: proActive ? settings.proIso : 0 }
++    Binding { target: camera.pro; property: "ev"; value: proActive ? settings.proEv : 0 }
++    Binding { target: camera.pro; property: "wbKelvin"; value: proActive ? settings.proWbKelvin : 0 }
++    Binding { target: camera.pro; property: "focus"; value: proActive ? settings.proFocus : -1 }
++    Binding { target: camera.pro; property: "aeLock"; value: proActive && proPanel.aeLock }
++    Binding { target: camera.pro; property: "awbLock"; value: proActive && proPanel.awbLock }
++    Binding { target: camera.pro; property: "afLock"; value: proActive && proPanel.afLock }
++    Binding { target: camera.pro; property: "analysis"
++        value: !proActive ? 0 : ((settings.proHistogram ? 1 : 0) | (settings.proZebra ? 2 : 0)
++                                 | (settings.proPeaking ? 4 : 0)) }
++
++    Connections {
++        target: camera.pro
++        onStackFinished: {
++            console.log("Long exposure saved as " + path);
++            viewFinderView.photoTaken(path);
++            if (photoRollHint.necessary && !main.transfer) photoRollHint.enable();
++        }
++        onStackFailed: {
++            console.log("Long exposure failed: " + error);
++            PopupUtils.open(captureFailedDialogComponent);
++        }
++    }
++
++    function photoDirectory() {
++        if (StorageLocations.removableStoragePresent && settings.preferRemovableStorage)
++            return StorageLocations.removableStoragePicturesLocation;
++        return StorageLocations.picturesLocation;
++    }
++
++    function encodingQualityPercent() {
++        switch (settings.encodingQuality) {
++        case 4: return 97;
++        case 3: return 92;
++        case 1: return 75;
++        }
++        return 87;
++    }
++
++    /* Ultrawide (0.6x) <-> main lens: the element switches sensor when the
++       camera pipeline is rebuilt, so go through Unloaded. */
++    function switchLens(ultrawide) {
++        if (camera.pro.ultrawide === ultrawide) return;
++        camera.pro.ultrawide = ultrawide;
++        camera.cameraState = Camera.UnloadedState;
++        lensRestart.restart();
++    }
++    Timer {
++        id: lensRestart
++        interval: 150
++        onTriggered: camera.cameraState = Camera.ActiveState
++    }
++
+     Binding {
+         target: camera.flash
+         property: "mode"
+@@ -256,6 +332,11 @@ Item {
+     }
+ 
+     function triggerShoot() {
++        if (proStacking) {
++            if (camera.pro.stackState == 3) camera.pro.continueStack();
++            else if (camera.pro.stackState != 5) camera.pro.stopStack();
++            return;
++        }
+         if (shootButton.enabled) {
+             if (camera.captureMode == Camera.CaptureVideo && camera.videoRecorder.recorderState == CameraRecorder.RecordingState) {
+                 camera.videoRecorder.stop();
+@@ -534,6 +615,7 @@ Item {
+             onOpenedChanged: optionsOverlayLoader.item.closeValueSelector()
+             enabled: camera.videoRecorder.recorderState == CameraRecorder.StoppedState
+                      && !camera.photoCaptureInProgress && !camera.timedCaptureInProgress
++                     && !viewFinderOverlay.proStacking
+             opacity: enabled ? 1.0 : 0.3
+             property bool ready: optionsOverlayLoader.status == Loader.Ready
+ 
+@@ -1027,6 +1109,17 @@ Item {
+                     camera.videoRecorder.setMetadata("Date", new Date());
+                     camera.videoRecorder.record();
+                 }
++            } else if (viewFinderOverlay.proLongExposure) {
++                // FP6: stacked long exposure / bulb (fp6libcamerasrc)
++                if (!camera.pro.startStack(viewFinderOverlay.photoDirectory(),
++                                           settings.proExposureUs < 0 ? 0 : settings.proExposureUs,
++                                           settings.proStackMode, settings.proDarkFrame,
++                                           // GStreamer image-orientation as Qt's camerabin
++                                           // writes it for the same value (EXIF checked)
++                                           (360 - orientation) % 360,
++                                           viewFinderOverlay.encodingQualityPercent())) {
++                    PopupUtils.open(captureFailedDialogComponent);
++                }
+             } else {
+                 if (!main.contentExportMode) {
+                     shootFeedback.start();
+@@ -1142,6 +1235,7 @@ Item {
+             onClicked: controls.changeRecordMode()
+             enabled: camera.videoRecorder.recorderState == CameraRecorder.StoppedState && !main.contentExportMode
+                      && !camera.photoCaptureInProgress && !camera.timedCaptureInProgress
++                     && !viewFinderOverlay.proStacking
+         }
+ 
+         ShootButton {
+@@ -1158,14 +1252,24 @@ Item {
+                 (camera.captureMode == Camera.CaptureVideo
+                     && camera.videoRecorder.recorderStatus == CameraRecorder.RecordingStatus) ||
+                 (viewFinderOverlay.readyForCapture && !storageMonitor.diskSpaceCriticallyLow
+-                     && !camera.timedCaptureInProgress)
++                     && !camera.timedCaptureInProgress) ||
++                (viewFinderOverlay.proStacking && camera.pro.stackState != 5)
+             )
+             state: (camera.captureMode == Camera.CaptureVideo) ?
+                    ((camera.videoRecorder.recorderState == CameraRecorder.StoppedState) ? "record_off" : "record_on") :
+                    "camera"
+             onClicked: {
+-                viewFinderOverlay.triggerShoot();
++                if (burst.count == 0)
++                    viewFinderOverlay.triggerShoot();
++            }
++            // FP6: burst while the shutter is held (stills, no timer/long exposure)
++            onPressAndHold: {
++                if (camera.captureMode == Camera.CaptureStillImage && settings.selfTimerDelay == 0
++                        && !viewFinderOverlay.proLongExposure && !viewFinderOverlay.proStacking
++                        && !main.contentExportMode)
++                    burst.start();
+             }
++            onReleased: burst.stop()
+             rotation: main.staticRotationAngle
+             Behavior on rotation {
+                 RotationAnimator {
+@@ -1176,6 +1280,31 @@ Item {
+             }
+         }
+ 
++        Timer {
++            id: burst
++            property int count: 0
++            interval: 60
++            repeat: true
++            function start() { count = 0; running = true; }
++            function stop() { running = false; countReset.restart(); }
++            onTriggered: {
++                if (camera.imageCapture.ready && !camera.photoCaptureInProgress
++                        && !storageMonitor.diskSpaceCriticallyLow) {
++                    count++;
++                    controls.shoot();
++                }
++            }
++        }
++        Timer { id: countReset; interval: 1500; onTriggered: burst.count = 0 }
++        Label {
++            anchors { horizontalCenter: shootButton.horizontalCenter; bottom: shootButton.top
++                      bottomMargin: units.gu(1) }
++            visible: burst.count > 0
++            text: burst.count
++            color: "white"; style: Text.Outline; styleColor: "black"
++            textSize: Label.Large
++        }
++
+         CircleButton {
+             id: swapButton
+             objectName: "swapButton"
+@@ -1191,6 +1320,7 @@ Item {
+             customRotation: main.staticRotationAngle
+             enabled: !camera.switchInProgress && camera.videoRecorder.recorderState == CameraRecorder.StoppedState
+                      && !camera.photoCaptureInProgress && !camera.timedCaptureInProgress
++                     && !viewFinderOverlay.proStacking
+             iconName: "camera-flip"
+             onClicked: controls.switchCamera()
+         }
+@@ -1246,6 +1376,102 @@ Item {
+             }
+         }
+ 
++        // ---- FP6: lens selector (0.6x ultrawide / 1x main), back camera
++        Row {
++            id: lensSelector
++            anchors {
++                horizontalCenter: parent.horizontalCenter
++                bottom: recordModeButton.top
++                bottomMargin: (zoomControl.visible ? zoomControl.height + units.gu(2) : units.gu(1.5))
++                              + (proPanel.visible ? proPanel.height + units.gu(1) : 0)
++            }
++            spacing: units.gu(1)
++            visible: camera.position !== Camera.FrontFace && !main.contentExportMode
++                     && camera.videoRecorder.recorderState == CameraRecorder.StoppedState
++                     && !viewFinderOverlay.proStacking
++            enabled: !viewFinderOverlay.proStacking && !camera.switchInProgress
++            rotation: main.staticRotationAngle
++            Fp6ProChip { value: "0.6×"; selected: camera.pro.ultrawide
++                onClicked: viewFinderOverlay.switchLens(true) }
++            Fp6ProChip { value: "1×"; selected: !camera.pro.ultrawide
++                onClicked: viewFinderOverlay.switchLens(false) }
++        }
++
++        // ---- FP6 Pro mode toggle (top right) and panel
++        Fp6ProChip {
++            id: proToggle
++            anchors { top: parent.top; topMargin: units.gu(2); right: parent.right; rightMargin: units.gu(2) }
++            visible: camera.captureMode == Camera.CaptureStillImage && !main.contentExportMode
++            enabled: !viewFinderOverlay.proStacking
++            value: "PRO"
++            selected: settings.proMode
++            highlighted: settings.proMode
++            rotation: main.staticRotationAngle
++            onClicked: { settings.proMode = !settings.proMode; proPanel.current = ""; }
++        }
++
++        Fp6ProPanel {
++            id: proPanel
++            anchors {
++                left: parent.left; right: parent.right
++                leftMargin: units.gu(1); rightMargin: units.gu(1)
++                bottom: recordModeButton.top
++                bottomMargin: zoomControl.visible ? zoomControl.height + units.gu(2) : units.gu(1.5)
++            }
++            settings: viewFinderOverlay.settings
++            pro: camera.pro
++            visible: viewFinderOverlay.proActive && !viewFinderOverlay.proStacking
++        }
++
++        // readout of what the camera really uses
++        Rectangle {
++            anchors { fill: proReadout; margins: -units.gu(0.75) }
++            radius: units.gu(0.75)
++            color: Qt.rgba(0, 0, 0, 0.45)
++            visible: proReadout.visible
++        }
++        Row {
++            id: proReadout
++            anchors { top: parent.top; topMargin: units.gu(2.5); left: parent.left; leftMargin: units.gu(2) }
++            spacing: units.gu(1.5)
++            visible: viewFinderOverlay.proActive && camera.pro.available
++            Repeater {
++                model: [
++                    camera.pro.formatShutter(camera.pro.currentExposureUs),
++                    "ISO " + camera.pro.currentIso,
++                    "EV " + proPanel.evLabel(settings.proEv),
++                    camera.pro.currentKelvin > 0 ? camera.pro.currentKelvin + "K" : "",
++                    !camera.pro.hasFocus ? "" : settings.proFocus >= 0 ? "MF " + Math.round(settings.proFocus * 100)
++                        : (["AF", "AF…", "AF●", "AF✕"][camera.pro.afState] || "AF"),
++                    camera.pro.frameDurationUs > 0 ? (1e6 / camera.pro.frameDurationUs).toFixed(camera.pro.frameDurationUs > 1e5 ? 1 : 0) + "fps" : ""
++                ]
++                Label {
++                    text: modelData
++                    visible: text !== ""
++                    color: "white"; style: Text.Raised; styleColor: "black"
++                    textSize: Label.Small
++                    font.weight: Font.DemiBold
++                }
++            }
++        }
++
++        Fp6Histogram {
++            anchors { top: proReadout.bottom; topMargin: units.gu(1); left: parent.left; leftMargin: units.gu(2) }
++            visible: viewFinderOverlay.proActive && settings.proHistogram
++            values: camera.pro.histogram
++        }
++
++        Fp6LevelIndicator {
++            anchors.fill: parent
++            visible: viewFinderOverlay.proActive && settings.proLevel
++        }
++
++        Fp6LongExposureFeedback {
++            anchors.fill: parent
++            pro: camera.pro
++            totalUs: settings.proExposureUs > 0 ? settings.proExposureUs : 0
++        }
++
+         ZoomControl {
+             id: zoomControl
+ 
+diff --git a/qml/Viewfinder/ViewFinderView.qml b/qml/Viewfinder/ViewFinderView.qml
+index 32a57af..6404053 100644
+--- a/qml/Viewfinder/ViewFinderView.qml
++++ b/qml/Viewfinder/ViewFinderView.qml
+@@ -74,6 +74,8 @@ FocusScope {
+                 focus.focusPointMode = Camera.FocusPointCustom;
+ 
+                 searchAndLock();
++                // FP6: real tap-to-focus (libcamera AfWindows + AfTrigger)
++                camera.pro.triggerAutofocus(normalizedPoint.x, normalizedPoint.y);
+             }
+         }
+ 
+@@ -99,6 +101,12 @@ FocusScope {
+             camera: camera
+         }
+ 
++        // FP6 Pro mode: manual controls of the fp6libcamerasrc element
++        property Fp6ProControls pro: Fp6ProControls {
++            id: fp6Pro
++            polling: camera.cameraState === Camera.ActiveState && viewFinderView.inView
++        }
++
+         /* Use only digital zoom for now as it's what phone cameras mostly use.
+                TODO: if optical zoom is available, maximumZoom should be the combined
+                range of optical and digital zoom and currentZoom should adjust the two
+@@ -294,6 +302,39 @@ FocusScope {
+                 axis.x: 0; axis.y: 1; axis.z: 0
+                 angle: (application.desktopMode || camera.position === Camera.FrontFace) ? 180 : 0
+             }
++
++            // FP6 Pro mode: zebra / focus peaking mask (stream orientation),
++            // rotated like the video; the mirror comes with the transform above.
++            Item {
++                id: fp6Overlay
++                x: viewFinder.contentRect.x
++                y: viewFinder.contentRect.y
++                width: viewFinder.contentRect.width
++                height: viewFinder.contentRect.height
++                visible: viewFinderOverlay.status == Loader.Ready && viewFinderOverlay.item
++                         && viewFinderOverlay.item.proOverlayVisible
++                clip: true
++
++                // clockwise angle that brings the stream's top-left corner where
++                // VideoOutput shows it
++                readonly property int angle: {
++                    var c = viewFinder.contentRect;
++                    var p = viewFinder.mapNormalizedPointToItem(Qt.point(0, 0));
++                    var left = p.x < c.x + c.width / 2, top = p.y < c.y + c.height / 2;
++                    return left && top ? 0 : (!left && top ? 90 : (!left && !top ? 180 : 270));
++                }
++
++                Image {
++                    anchors.centerIn: parent
++                    width: fp6Overlay.angle % 180 ? parent.height : parent.width
++                    height: fp6Overlay.angle % 180 ? parent.width : parent.height
++                    rotation: fp6Overlay.angle
++                    source: fp6Overlay.visible ? "image://fp6pro/overlay/" + camera.pro.overlaySerial : ""
++                    cache: false
++                    smooth: false
++                    fillMode: Image.Stretch
++                }
++            }
+         }
+ 
+         /* Convenience item tracking the real position and size of the real video feed.
+diff --git a/qml/camera-app.qml b/qml/camera-app.qml
+index c1269d7..8defcb2 100644
+--- a/qml/camera-app.qml
++++ b/qml/camera-app.qml
+@@ -136,6 +136,12 @@ Window {
+             } else if (event.key == Qt.Key_WebCam || event.key == Qt.Key_Camera) {
+                 viewFinderView.finderOverlay.item.triggerShoot();
+                 event.accepted = true;
++            } else if ((event.key == Qt.Key_VolumeUp || event.key == Qt.Key_VolumeDown)
++                       && viewFinderView.inView) {
++                // FP6: volume keys are a shutter in the viewfinder
++                if (!event.isAutoRepeat)
++                    viewFinderView.finderOverlay.item.triggerShoot();
++                event.accepted = true;
+             }
+         }
+         Keys.onEscapePressed: main.exitFullScreen()
+diff --git a/qml/components/Fp6Histogram.qml b/qml/components/Fp6Histogram.qml
+new file mode 100644
+index 0000000..f90a4ad
+--- /dev/null
++++ b/qml/components/Fp6Histogram.qml
+@@ -0,0 +1,57 @@
++/*
++ * FP6 Pro mode: live histogram (luma filled, R/G/B lines).
++ * values: 4 x 64 values 0..1 (Fp6ProControls.histogram).
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; version 3.
++ */
++import QtQuick 2.12
++import Lomiri.Components 1.3
++
++Item {
++    id: hist
++    property var values: []
++    width: units.gu(16)
++    height: units.gu(7)
++    onValuesChanged: canvas.requestPaint()
++
++    Rectangle {
++        anchors.fill: parent
++        radius: units.gu(0.5)
++        color: Qt.rgba(0, 0, 0, 0.45)
++    }
++
++    Canvas {
++        id: canvas
++        anchors.fill: parent
++        anchors.margins: units.gu(0.5)
++        onPaint: {
++            var ctx = getContext("2d");
++            ctx.clearRect(0, 0, width, height);
++            var d = hist.values;
++            if (!d || d.length < 256)
++                return;
++            var bw = width / 64;
++            ctx.fillStyle = Qt.rgba(1, 1, 1, 0.55);
++            ctx.beginPath();
++            ctx.moveTo(0, height);
++            for (var i = 0; i < 64; i++)
++                ctx.lineTo(i * bw + bw / 2, height - d[i] * height);
++            ctx.lineTo(width, height);
++            ctx.closePath();
++            ctx.fill();
++            var colours = ["#ff4040", "#40ff40", "#4080ff"];
++            ctx.lineWidth = 1;
++            for (var c = 1; c < 4; c++) {
++                ctx.strokeStyle = colours[c - 1];
++                ctx.beginPath();
++                for (var j = 0; j < 64; j++) {
++                    var y = height - d[c * 64 + j] * height;
++                    if (j === 0) ctx.moveTo(0, y); else ctx.lineTo(j * bw + bw / 2, y);
++                }
++                ctx.stroke();
++            }
++        }
++    }
++}
+diff --git a/qml/components/Fp6LevelIndicator.qml b/qml/components/Fp6LevelIndicator.qml
+new file mode 100644
+index 0000000..2ba3738
+--- /dev/null
++++ b/qml/components/Fp6LevelIndicator.qml
+@@ -0,0 +1,107 @@
++/*
++ * FP6 Pro mode: electronic level (horizon) from the accelerometer
++ * (QtSensors via iio-sensor-proxy). The line shows the true horizon in
++ * the screen; it turns green within 1 degree of level. Pitch (camera
++ * pointing up/down) is shown as a small number, and "flat" when the phone
++ * lies face up/down (use the bubble then).
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; version 3.
++ */
++import QtQuick 2.12
++import QtSensors 5.0
++import Lomiri.Components 1.3
++
++Item {
++    id: level
++    property bool active: visible
++
++    // roll: rotation of the horizon in the screen (degrees, clockwise)
++    property real roll: 0
++    property real pitch: 0
++    property bool flat: false
++    property real bx: 0
++    property real by: 0
++    readonly property real snapped: {
++        // nearest of 0/90/180/270 (portrait/landscape), deviation from it
++        var r = ((roll % 360) + 360) % 360;
++        var q = Math.round(r / 90) * 90;
++        return r - q;
++    }
++    readonly property bool isLevel: !flat && Math.abs(snapped) < 1.0
++
++    Accelerometer {
++        id: accel
++        active: level.active
++        dataRate: 20
++        onReadingChanged: {
++            var x = reading.x, y = reading.y, z = reading.z;
++            var g = Math.sqrt(x * x + y * y + z * z);
++            if (g < 1) return;
++            var a = 0.25;   // low pass
++            level.flat = Math.abs(z) / g > 0.9;
++            // Gravity in screen coordinates: x right, y up (device frame).
++            var r = Math.atan2(x, y) * 180 / Math.PI;     // 0 = upright portrait
++            var d = r - level.roll;
++            while (d > 180) d -= 360;
++            while (d < -180) d += 360;
++            level.roll += a * d;
++            level.pitch += a * (Math.asin(Math.max(-1, Math.min(1, z / g))) * 180 / Math.PI - level.pitch);
++            level.bx += a * (x / g - level.bx);
++            level.by += a * (y / g - level.by);
++        }
++    }
++
++    // horizon line through the centre
++    Item {
++        anchors.centerIn: parent
++        width: Math.min(parent.width, parent.height) * 0.7
++        height: units.dp(2)
++        visible: !level.flat
++        rotation: level.roll
++        Rectangle {
++            anchors.fill: parent
++            color: level.isLevel ? "#40ff60" : "white"
++            opacity: 0.85
++        }
++        Rectangle {   // fixed reference marks at the ends
++            anchors.verticalCenter: parent.verticalCenter
++            anchors.left: parent.left
++            width: units.gu(2); height: units.dp(4)
++            color: level.isLevel ? "#40ff60" : "white"
++        }
++        Rectangle {
++            anchors.verticalCenter: parent.verticalCenter
++            anchors.right: parent.right
++            width: units.gu(2); height: units.dp(4)
++            color: level.isLevel ? "#40ff60" : "white"
++        }
++    }
++    Label {
++        anchors.centerIn: parent
++        anchors.verticalCenterOffset: units.gu(2.5)
++        visible: !level.flat
++        color: level.isLevel ? "#40ff60" : "white"
++        style: Text.Outline; styleColor: "black"
++        textSize: Label.Small
++        text: "%1°".arg(Math.abs(level.snapped).toFixed(1))
++    }
++
++    // bubble for shooting straight down/up
++    Item {
++        anchors.centerIn: parent
++        width: units.gu(8); height: width
++        visible: level.flat
++        Rectangle {
++            anchors.fill: parent; radius: width / 2
++            color: "transparent"; border.color: "white"; border.width: units.dp(1)
++        }
++        Rectangle {
++            width: units.gu(1.5); height: width; radius: width / 2
++            color: Math.abs(level.bx) < 0.02 && Math.abs(level.by) < 0.02 ? "#40ff60" : "white"
++            x: parent.width / 2 - width / 2 - level.bx * parent.width * 2
++            y: parent.height / 2 - height / 2 + level.by * parent.height * 2
++        }
++    }
++}
+diff --git a/qml/components/Fp6LongExposureFeedback.qml b/qml/components/Fp6LongExposureFeedback.qml
+new file mode 100644
+index 0000000..0b924d7
+--- /dev/null
++++ b/qml/components/Fp6LongExposureFeedback.qml
+@@ -0,0 +1,137 @@
++/*
++ * FP6 Pro mode: progress of a stacked long exposure / bulb exposure, and
++ * the dark-frame prompt. The viewfinder itself shows the running result.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; version 3.
++ */
++import QtQuick 2.12
++import Lomiri.Components 1.3
++
++Item {
++    id: fb
++    property var pro
++    property real totalUs: 0          // 0 = bulb
++    readonly property int state: pro ? pro.stackState : 0
++    readonly property bool busy: state >= 1 && state <= 5
++    visible: busy
++
++    // effective exposure collected so far, in us
++    readonly property real collectedUs: pro ? pro.stackFrames * pro.stackFrameUs : 0
++    readonly property real frameUs: pro && pro.frameDurationUs > 0 ? pro.frameDurationUs
++                                    : (pro ? pro.stackFrameUs : 0)
++
++    property real tick: 0
++    Timer {
++        interval: 250; repeat: true; running: fb.busy
++        onTriggered: fb.tick = pro.stackElapsedMs
++    }
++
++    function fmt(us) {
++        var s = Math.max(0, Math.round(us / 1e6));
++        var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = s % 60;
++        if (h > 0) return "%1:%2:%3".arg(h).arg(m < 10 ? "0" + m : m).arg(r < 10 ? "0" + r : r);
++        return "%1:%2".arg(m).arg(r < 10 ? "0" + r : r);
++    }
++
++    Rectangle {
++        anchors.centerIn: parent
++        width: Math.min(parent.width - units.gu(4), units.gu(40))
++        height: content.height + units.gu(3)
++        radius: units.gu(1)
++        color: Qt.rgba(0, 0, 0, 0.6)
++
++        Column {
++            id: content
++            anchors { left: parent.left; right: parent.right; top: parent.top; margins: units.gu(1.5) }
++            spacing: units.gu(1)
++
++            Label {
++                width: parent.width
++                horizontalAlignment: Text.AlignHCenter
++                color: "white"
++                textSize: Label.Large
++                text: {
++                    switch (fb.state) {
++                    case 1: return i18n.tr("Preparing…");
++                    case 2: return fb.totalUs > 0 ? i18n.tr("Long exposure") : i18n.tr("Bulb");
++                    case 3: return i18n.tr("Dark frame");
++                    case 4: return i18n.tr("Dark frame…");
++                    case 5: return i18n.tr("Saving…");
++                    }
++                    return "";
++                }
++            }
++            // big timer: exposure collected (/ total) and remaining
++            Label {
++                width: parent.width
++                horizontalAlignment: Text.AlignHCenter
++                color: "white"
++                font.pixelSize: units.gu(5)
++                font.weight: Font.Light
++                visible: fb.state === 2
++                text: fb.totalUs > 0 ? "%1 / %2".arg(fb.fmt(fb.collectedUs)).arg(fb.fmt(fb.totalUs))
++                                     : fb.fmt(fb.collectedUs)
++            }
++            Label {
++                width: parent.width
++                horizontalAlignment: Text.AlignHCenter
++                color: "white"
++                textSize: Label.Small
++                visible: fb.state === 2 || fb.state === 4
++                text: {
++                    var t = pro.stackTargetFrames;
++                    var s = fb.state === 4 ? i18n.tr("dark frames %1").arg(pro.stackDarkFrames)
++                          : t > 0 ? i18n.tr("frame %1 of %2").arg(pro.stackFrames).arg(t)
++                                  : i18n.tr("frame %1").arg(pro.stackFrames);
++                    if (fb.state === 2 && t > 0)
++                        s += " · " + i18n.tr("%1 left").arg(fb.fmt((t - pro.stackFrames) * fb.frameUs));
++                    if (fb.state === 2 && t === 0)
++                        s += " · " + i18n.tr("tap the shutter to stop");
++                    return s;
++                }
++            }
++            ProgressBar {
++                width: parent.width
++                visible: fb.state === 2 && pro.stackTargetFrames > 0
++                minimumValue: 0
++                maximumValue: Math.max(1, pro.stackTargetFrames)
++                value: pro.stackFrames
++            }
++            Label {
++                width: parent.width
++                wrapMode: Text.WordWrap
++                horizontalAlignment: Text.AlignHCenter
++                color: "white"
++                visible: fb.state === 3
++                text: i18n.tr("Cover the lens completely, then tap Continue. The dark frame removes sensor noise and hot pixels.")
++            }
++            Row {
++                anchors.horizontalCenter: parent.horizontalCenter
++                spacing: units.gu(1)
++                visible: fb.state >= 1 && fb.state <= 4
++                Button {
++                    visible: fb.state === 3
++                    text: i18n.tr("Continue")
++                    color: theme.palette.normal.positive
++                    onClicked: pro.continueStack()
++                }
++                Button {
++                    visible: fb.state === 3
++                    text: i18n.tr("Skip")
++                    onClicked: pro.stopStack()
++                }
++                Button {
++                    visible: fb.state === 2 || fb.state === 4
++                    text: i18n.tr("Stop")
++                    onClicked: pro.stopStack()
++                }
++                Button {
++                    text: i18n.tr("Cancel")
++                    onClicked: pro.cancelStack()
++                }
++            }
++        }
++    }
++}
+diff --git a/qml/components/Fp6ProChip.qml b/qml/components/Fp6ProChip.qml
+new file mode 100644
+index 0000000..2d37dfc
+--- /dev/null
++++ b/qml/components/Fp6ProChip.qml
+@@ -0,0 +1,50 @@
++/*
++ * FP6 Pro mode: small text toggle/selector button.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; version 3.
++ */
++import QtQuick 2.12
++import Lomiri.Components 1.3
++
++AbstractButton {
++    id: chip
++
++    property string title: ""
++    property string value: ""
++    property bool selected: false
++    property bool highlighted: false   // a manual value is active
++
++    implicitHeight: units.gu(4.5)
++    implicitWidth: Math.max(units.gu(5.5), column.width + units.gu(2))
++    opacity: enabled ? 1.0 : 0.4
++
++    Rectangle {
++        anchors.fill: parent
++        radius: units.gu(1)
++        color: chip.selected ? Qt.rgba(1, 1, 1, 0.25) : Qt.rgba(0, 0, 0, 0.45)
++        border.width: chip.highlighted ? units.dp(1) : 0
++        border.color: LomiriColors.orange
++    }
++
++    Column {
++        id: column
++        anchors.centerIn: parent
++        Label {
++            anchors.horizontalCenter: parent.horizontalCenter
++            text: chip.title
++            textSize: Label.XSmall
++            color: "white"
++            opacity: 0.7
++            visible: text !== ""
++        }
++        Label {
++            anchors.horizontalCenter: parent.horizontalCenter
++            text: chip.value
++            textSize: Label.Small
++            font.weight: Font.DemiBold
++            color: chip.highlighted ? LomiriColors.orange : "white"
++        }
++    }
++}
+diff --git a/qml/components/Fp6ProPanel.qml b/qml/components/Fp6ProPanel.qml
+new file mode 100644
+index 0000000..7ef68d6
+--- /dev/null
++++ b/qml/components/Fp6ProPanel.qml
+@@ -0,0 +1,408 @@
++/*
++ * FP6 Pro mode: manual shutter (incl. long exposure / bulb), ISO, EV,
++ * white balance, focus and the viewfinder tools. Values live in the
++ * viewfinder Settings (persisted); this panel only edits them.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; version 3.
++ */
++import QtQuick 2.12
++import Lomiri.Components 1.3
++import Lomiri.Components.Popups 1.3
++
++Item {
++    id: panel
++
++    property var settings
++    property var pro                 // Fp6ProControls
++    property string current: ""      // open editor: s, iso, ev, wb, f, tools
++    property bool aeLock: false
++    property bool awbLock: false
++    property bool afLock: false
++
++    readonly property bool longExposure: settings.proExposureUs < 0
++        || (pro.maxExposureUs > 0 && settings.proExposureUs > pro.maxExposureUs)
++
++    // shutter stops in us; 0 = auto, -1 = bulb
++    readonly property var shutterStops: [0, 125, 250, 500, 1000, 2000, 4000, 8000,
++        16667, 33333, 66667, 125000, 250000, 500000, 1000000, 2000000, 4000000,
++        8000000, 15000000, 30000000, 60000000, 120000000, 300000000, 600000000,
++        1200000000, 1800000000, 3600000000, -1]
++    readonly property var isoStops: [0, 100, 125, 160, 200, 250, 320, 400, 500, 640,
++        800, 1000, 1250, 1600, 2000, 2500, 3200, 4000, 5000, 6400]
++    readonly property var wbPresets: [
++        { label: i18n.tr("Auto"), k: 0 },
++        { label: i18n.tr("Tungsten"), k: 2850 },
++        { label: i18n.tr("Fluorescent"), k: 4000 },
++        { label: i18n.tr("Daylight"), k: 5500 },
++        { label: i18n.tr("Cloudy"), k: 6500 },
++        { label: i18n.tr("Shade"), k: 7500 }
++    ]
++
++    function nearestIndex(list, v) {
++        var best = 0;
++        for (var i = 0; i < list.length; i++) {
++            if (list[i] === v) return i;
++            if (list[i] > 0 && v > 0 && Math.abs(Math.log(list[i] / v)) <
++                    Math.abs(Math.log((list[best] > 0 ? list[best] : 1) / v)))
++                best = i;
++        }
++        return best;
++    }
++
++    function shutterLabel(us) {
++        if (us < 0) return "B";
++        return pro.formatShutter(us);
++    }
++
++    function evLabel(ev) {
++        var r = Math.round(ev * 3) / 3;
++        if (Math.abs(r) < 0.01) return "±0";
++        return (r > 0 ? "+" : "−") + Math.abs(r).toFixed(1);
++    }
++
++    function toggle(name) { current = (current === name) ? "" : name; }
++
++    implicitHeight: column.height
++    height: column.height
++
++    Column {
++        id: column
++        anchors { left: parent.left; right: parent.right; bottom: parent.bottom }
++        spacing: units.gu(1)
++
++        // ---------------------------------------------------------- editors
++        Item {
++            id: editor
++            anchors { left: parent.left; right: parent.right }
++            height: visible ? editorColumn.height + units.gu(2) : 0
++            visible: panel.current !== ""
++
++            Rectangle {
++                anchors.fill: parent
++                radius: units.gu(1)
++                color: Qt.rgba(0, 0, 0, 0.55)
++            }
++
++            Column {
++                id: editorColumn
++                anchors {
++                    left: parent.left; right: parent.right; top: parent.top
++                    margins: units.gu(1)
++                }
++                spacing: units.gu(1)
++
++                // ------------------------------------------------ shutter
++                Column {
++                    width: parent.width
++                    spacing: units.gu(1)
++                    visible: panel.current === "s"
++
++                    Label {
++                        width: parent.width
++                        horizontalAlignment: Text.AlignHCenter
++                        color: "white"
++                        text: settings.proExposureUs < 0 ? i18n.tr("Bulb: shutter open until you tap again")
++                              : settings.proExposureUs === 0 ? i18n.tr("Shutter: automatic")
++                              : i18n.tr("Shutter %1").arg(shutterLabel(settings.proExposureUs))
++                    }
++                    Fp6Slider {
++                        id: shutterSlider
++                        width: parent.width
++                        minimumValue: 0
++                        maximumValue: panel.shutterStops.length - 1
++                        value: panel.nearestIndex(panel.shutterStops, settings.proExposureUs)
++                        onMoved: settings.proExposureUs =
++                                            panel.shutterStops[Math.round(value)]
++                    }
++                    Row {
++                        anchors.horizontalCenter: parent.horizontalCenter
++                        spacing: units.gu(1)
++                        Fp6ProChip { value: i18n.tr("Auto"); selected: settings.proExposureUs === 0
++                            onClicked: settings.proExposureUs = 0 }
++                        Fp6ProChip { value: i18n.tr("Custom…"); onClicked: PopupUtils.open(customShutterDialog) }
++                        Fp6ProChip { value: "B"; title: i18n.tr("bulb"); selected: settings.proExposureUs < 0
++                            onClicked: settings.proExposureUs = -1 }
++                        Fp6ProChip { title: "AE-L"; value: panel.aeLock ? i18n.tr("on") : i18n.tr("off")
++                            selected: panel.aeLock; onClicked: panel.aeLock = !panel.aeLock }
++                    }
++                    // long exposure options
++                    Column {
++                        width: parent.width
++                        spacing: units.gu(1)
++                        visible: panel.longExposure
++                        Label {
++                            width: parent.width
++                            wrapMode: Text.WordWrap
++                            horizontalAlignment: Text.AlignHCenter
++                            textSize: Label.Small
++                            color: "white"
++                            text: i18n.tr("Longest single frame: %1. Longer exposures stack frames.")
++                                  .arg(pro.formatShutter(pro.maxExposureUs))
++                        }
++                        Row {
++                            anchors.horizontalCenter: parent.horizontalCenter
++                            spacing: units.gu(1)
++                            Fp6ProChip { title: i18n.tr("stack"); value: i18n.tr("Sum")
++                                selected: settings.proStackMode === 0; onClicked: settings.proStackMode = 0 }
++                            Fp6ProChip { title: i18n.tr("stack"); value: i18n.tr("Mean")
++                                selected: settings.proStackMode === 1; onClicked: settings.proStackMode = 1 }
++                            Fp6ProChip { title: i18n.tr("dark frame"); value: settings.proDarkFrame ? i18n.tr("on") : i18n.tr("off")
++                                selected: settings.proDarkFrame; onClicked: settings.proDarkFrame = !settings.proDarkFrame }
++                        }
++                    }
++                }
++
++                // ------------------------------------------------ ISO
++                Column {
++                    width: parent.width
++                    spacing: units.gu(1)
++                    visible: panel.current === "iso"
++                    Label {
++                        width: parent.width
++                        horizontalAlignment: Text.AlignHCenter
++                        color: "white"
++                        text: settings.proIso > 0 ? "ISO %1".arg(settings.proIso)
++                                                  : i18n.tr("ISO automatic (now %1)").arg(pro.currentIso)
++                    }
++                    Fp6Slider {
++                        width: parent.width
++                        minimumValue: 0
++                        maximumValue: panel.isoStops.length - 1
++                        value: panel.nearestIndex(panel.isoStops, settings.proIso)
++                        onMoved: settings.proIso = panel.isoStops[Math.round(value)]
++                    }
++                    Row {
++                        anchors.horizontalCenter: parent.horizontalCenter
++                        spacing: units.gu(1)
++                        Fp6ProChip { value: i18n.tr("Auto"); selected: settings.proIso === 0
++                            onClicked: settings.proIso = 0 }
++                        Fp6ProChip { title: "AE-L"; value: panel.aeLock ? i18n.tr("on") : i18n.tr("off")
++                            selected: panel.aeLock; onClicked: panel.aeLock = !panel.aeLock }
++                    }
++                }
++
++                // ------------------------------------------------ EV
++                Column {
++                    width: parent.width
++                    spacing: units.gu(1)
++                    visible: panel.current === "ev"
++                    Label {
++                        width: parent.width
++                        horizontalAlignment: Text.AlignHCenter
++                        color: "white"
++                        text: (settings.proExposureUs > 0 && settings.proIso > 0)
++                              ? i18n.tr("EV has no effect with manual shutter and ISO")
++                              : i18n.tr("Exposure compensation %1 EV").arg(panel.evLabel(settings.proEv))
++                    }
++                    Fp6Slider {
++                        width: parent.width
++                        minimumValue: -12
++                        maximumValue: 12
++                        value: Math.round(settings.proEv * 3)
++                        onMoved: settings.proEv = Math.round(value) / 3
++                    }
++                    Fp6ProChip { anchors.horizontalCenter: parent.horizontalCenter
++                        value: "±0"; onClicked: settings.proEv = 0 }
++                }
++
++                // ------------------------------------------------ WB
++                Column {
++                    width: parent.width
++                    spacing: units.gu(1)
++                    visible: panel.current === "wb"
++                    Label {
++                        width: parent.width
++                        horizontalAlignment: Text.AlignHCenter
++                        color: "white"
++                        text: settings.proWbKelvin > 0 ? i18n.tr("White balance %1 K").arg(settings.proWbKelvin)
++                              : i18n.tr("White balance automatic (now %1 K)").arg(pro.currentKelvin)
++                    }
++                    Flow {
++                        width: parent.width
++                        spacing: units.gu(1)
++                        Repeater {
++                            model: panel.wbPresets
++                            Fp6ProChip {
++                                value: modelData.label
++                                selected: settings.proWbKelvin === modelData.k
++                                onClicked: { settings.proWbKelvin = modelData.k; panel.awbLock = false; }
++                            }
++                        }
++                        Fp6ProChip { title: "AWB-L"; value: panel.awbLock ? i18n.tr("on") : i18n.tr("off")
++                            selected: panel.awbLock; enabled: settings.proWbKelvin === 0
++                            onClicked: panel.awbLock = !panel.awbLock }
++                    }
++                    Fp6Slider {
++                        width: parent.width
++                        minimumValue: 2000
++                        maximumValue: 10000
++                        value: settings.proWbKelvin > 0 ? settings.proWbKelvin
++                               : (pro.currentKelvin > 0 ? pro.currentKelvin : 5000)
++                        onMoved: settings.proWbKelvin = Math.round(value / 50) * 50
++                    }
++                }
++
++                // ------------------------------------------------ focus
++                Column {
++                    width: parent.width
++                    spacing: units.gu(1)
++                    visible: panel.current === "f"
++                    Label {
++                        width: parent.width
++                        horizontalAlignment: Text.AlignHCenter
++                        color: "white"
++                        text: !pro.hasFocus ? i18n.tr("This camera has fixed focus")
++                              : settings.proFocus < 0 ? i18n.tr("Autofocus (tap the image to focus there)")
++                              : i18n.tr("Manual focus %1 %").arg(Math.round(settings.proFocus * 100))
++                    }
++                    Row {
++                        width: parent.width
++                        spacing: units.gu(1)
++                        enabled: pro.hasFocus
++                        Label { text: "∞"; color: "white"; anchors.verticalCenter: parent.verticalCenter }
++                        Fp6Slider {
++                            width: parent.width - units.gu(6)
++                            minimumValue: 0
++                            maximumValue: 1
++                            value: settings.proFocus >= 0 ? settings.proFocus
++                                   : (pro.currentFocus >= 0 ? pro.currentFocus : 0)
++                            onMoved: settings.proFocus = value
++                        }
++                        Label { text: i18n.tr("near"); color: "white"; textSize: Label.Small
++                            anchors.verticalCenter: parent.verticalCenter }
++                    }
++                    Row {
++                        anchors.horizontalCenter: parent.horizontalCenter
++                        spacing: units.gu(1)
++                        enabled: pro.hasFocus
++                        Fp6ProChip { value: "AF"; selected: settings.proFocus < 0
++                            onClicked: { settings.proFocus = -1; panel.afLock = false; } }
++                        Fp6ProChip { title: "AF-L"; value: panel.afLock ? i18n.tr("on") : i18n.tr("off")
++                            selected: panel.afLock; enabled: settings.proFocus < 0
++                            onClicked: panel.afLock = !panel.afLock }
++                        Fp6ProChip { title: i18n.tr("peaking"); value: settings.proPeaking ? i18n.tr("on") : i18n.tr("off")
++                            selected: settings.proPeaking; onClicked: settings.proPeaking = !settings.proPeaking }
++                    }
++                }
++
++                // ------------------------------------------------ tools
++                Flow {
++                    width: parent.width
++                    spacing: units.gu(1)
++                    visible: panel.current === "tools"
++                    Fp6ProChip { title: i18n.tr("histogram"); value: settings.proHistogram ? i18n.tr("on") : i18n.tr("off")
++                        selected: settings.proHistogram; onClicked: settings.proHistogram = !settings.proHistogram }
++                    Fp6ProChip { title: i18n.tr("zebra"); value: settings.proZebra ? i18n.tr("on") : i18n.tr("off")
++                        selected: settings.proZebra; onClicked: settings.proZebra = !settings.proZebra }
++                    Fp6ProChip { title: i18n.tr("peaking"); value: settings.proPeaking ? i18n.tr("on") : i18n.tr("off")
++                        selected: settings.proPeaking; onClicked: settings.proPeaking = !settings.proPeaking }
++                    Fp6ProChip { title: i18n.tr("level"); value: settings.proLevel ? i18n.tr("on") : i18n.tr("off")
++                        selected: settings.proLevel; onClicked: settings.proLevel = !settings.proLevel }
++                    Fp6ProChip { title: i18n.tr("grid"); value: settings.gridEnabled ? i18n.tr("on") : i18n.tr("off")
++                        selected: settings.gridEnabled; onClicked: settings.gridEnabled = !settings.gridEnabled }
++                    Fp6ProChip { value: i18n.tr("Reset all")
++                        onClicked: {
++                            settings.proExposureUs = 0; settings.proIso = 0; settings.proEv = 0;
++                            settings.proWbKelvin = 0; settings.proFocus = -1;
++                            panel.aeLock = false; panel.awbLock = false; panel.afLock = false;
++                        }
++                    }
++                }
++            }
++        }
++
++        // ---------------------------------------------------------- chips
++        Row {
++            anchors.horizontalCenter: parent.horizontalCenter
++            spacing: units.gu(0.75)
++
++            Fp6ProChip {
++                title: "S"
++                value: settings.proExposureUs === 0 ? "A" : shutterLabel(settings.proExposureUs)
++                highlighted: settings.proExposureUs !== 0 || panel.aeLock
++                selected: panel.current === "s"
++                onClicked: panel.toggle("s")
++            }
++            Fp6ProChip {
++                title: "ISO"
++                value: settings.proIso > 0 ? settings.proIso : "A"
++                highlighted: settings.proIso > 0
++                selected: panel.current === "iso"
++                onClicked: panel.toggle("iso")
++            }
++            Fp6ProChip {
++                title: "EV"
++                value: panel.evLabel(settings.proEv)
++                highlighted: Math.abs(settings.proEv) > 0.01
++                selected: panel.current === "ev"
++                onClicked: panel.toggle("ev")
++            }
++            Fp6ProChip {
++                title: "WB"
++                value: settings.proWbKelvin > 0 ? (settings.proWbKelvin / 1000).toFixed(1) + "K"
++                       : (panel.awbLock ? "L" : "A")
++                highlighted: settings.proWbKelvin > 0 || panel.awbLock
++                selected: panel.current === "wb"
++                onClicked: panel.toggle("wb")
++            }
++            Fp6ProChip {
++                title: i18n.tr("focus")
++                value: !pro.hasFocus ? "—" : settings.proFocus >= 0 ? "MF"
++                       : (panel.afLock ? "AF-L" : "AF")
++                highlighted: settings.proFocus >= 0 || panel.afLock
++                selected: panel.current === "f"
++                onClicked: panel.toggle("f")
++            }
++            Fp6ProChip {
++                value: "⋯"
++                selected: panel.current === "tools"
++                onClicked: panel.toggle("tools")
++            }
++        }
++    }
++
++    Component {
++        id: customShutterDialog
++        Dialog {
++            id: dialog
++            title: i18n.tr("Shutter time")
++            text: i18n.tr("For example 1/8000, 1/30, 0.5, 2.5s, 90, 5m or 1h30m. "
++                          + "Times above %1 are stacked from several frames.")
++                  .arg(pro.formatShutter(pro.maxExposureUs))
++            TextField {
++                id: field
++                inputMethodHints: Qt.ImhNoPredictiveText | Qt.ImhPreferNumbers
++                placeholderText: "1/250"
++                text: settings.proExposureUs > 0 ? pro.formatShutter(settings.proExposureUs).replace("\"", "s") : ""
++                Component.onCompleted: forceActiveFocus()
++                onAccepted: okButton.clicked()
++            }
++            Label {
++                id: error
++                visible: text !== ""
++                color: theme.palette.normal.negative
++                text: ""
++            }
++            Button {
++                id: okButton
++                text: i18n.tr("Set")
++                color: theme.palette.normal.positive
++                onClicked: {
++                    var us = pro.parseShutter(field.text);
++                    if (us < 30 || us > 4 * 3600e6) {
++                        error.text = i18n.tr("Use a time between 1/30000 s and 4 h");
++                        return;
++                    }
++                    settings.proExposureUs = Math.round(us);
++                    PopupUtils.close(dialog);
++                }
++            }
++            Button {
++                text: i18n.tr("Cancel")
++                onClicked: PopupUtils.close(dialog)
++            }
++        }
++    }
++}
+diff --git a/qml/components/Fp6Slider.qml b/qml/components/Fp6Slider.qml
+new file mode 100644
+index 0000000..28e35e5
+--- /dev/null
++++ b/qml/components/Fp6Slider.qml
+@@ -0,0 +1,56 @@
++/*
++ * FP6 Pro mode: simple slider. "value" may stay bound; user drags emit
++ * moved(value) with the new value instead of breaking the binding.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; version 3.
++ */
++import QtQuick 2.12
++import Lomiri.Components 1.3
++
++Item {
++    id: slider
++    property real minimumValue: 0
++    property real maximumValue: 1
++    property real value: 0
++    readonly property bool pressed: area.pressed
++    signal moved(real value)
++
++    implicitHeight: units.gu(4)
++    height: units.gu(4)
++
++    readonly property real fraction: maximumValue > minimumValue
++        ? Math.max(0, Math.min(1, (value - minimumValue) / (maximumValue - minimumValue))) : 0
++
++    Rectangle {
++        id: track
++        anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter
++                  leftMargin: thumb.width / 2; rightMargin: thumb.width / 2 }
++        height: units.dp(2)
++        color: Qt.rgba(1, 1, 1, 0.45)
++        Rectangle {
++            width: slider.fraction * parent.width
++            height: parent.height
++            color: LomiriColors.orange
++        }
++    }
++    Rectangle {
++        id: thumb
++        width: units.gu(2.5); height: width; radius: width / 2
++        color: "white"
++        anchors.verticalCenter: parent.verticalCenter
++        x: slider.fraction * track.width
++    }
++    MouseArea {
++        id: area
++        anchors.fill: parent
++        preventStealing: true
++        function update(mx) {
++            var f = Math.max(0, Math.min(1, (mx - track.x) / track.width));
++            slider.moved(slider.minimumValue + f * (slider.maximumValue - slider.minimumValue));
++        }
++        onPressed: update(mouse.x)
++        onPositionChanged: update(mouse.x)
++    }
++}
+diff --git a/qml/components/ShootButton.qml b/qml/components/ShootButton.qml
+index bcee979..358ffa5 100644
+--- a/qml/components/ShootButton.qml
++++ b/qml/components/ShootButton.qml
+@@ -21,6 +21,8 @@ Item {
+     id: shootButton
+ 
+     signal clicked()
++    signal pressAndHold()     // FP6: burst
++    signal released()
+ 
+     width: icon.width
+     height: icon.height
+@@ -29,6 +31,9 @@ Item {
+     MouseArea {
+         anchors.fill: parent
+         onClicked: shootButton.clicked()
++        onPressAndHold: shootButton.pressAndHold()
++        onReleased: shootButton.released()
++        onCanceled: shootButton.released()
+     }
+ 
+     Image {
