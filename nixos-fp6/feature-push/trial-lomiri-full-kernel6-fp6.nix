@@ -64,6 +64,10 @@ let
       # Reconnect at startup: restore last state / always on / off).
       # results/feature-push-20261024/persistence/README.md
       ({ ... }: { imports = [ ./persistence/persistence-fp6.nix ]; hardware.fairphone6.persistence.enable = true; })
+      # Edge lighting: screen-edge glow for notifications while the display
+      # is off (Settings > Edge Lighting, off by default); always-on display
+      # research. results/feature-push-20261024/edge-flash/README.md
+      ({ ... }: { imports = [ ./edge-flash/edge-flash-fp6.nix ]; hardware.fairphone6.edgeFlash.enable = true; })
       ({ config, lib, ... }: let
       kernel = config.mobile.boot.stage-1.kernel.package;
     in {
