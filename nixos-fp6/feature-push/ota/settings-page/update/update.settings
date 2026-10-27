@@ -1,0 +1,24 @@
+{
+    "icon": "preferences-system-updates-symbolic",
+    "name": "System update",
+    "translations": "lomiri-system-settings",
+    "category": "system",
+    "priority": 20,
+    "form-factors": [
+        "phone",
+        "tablet"
+    ],
+    "keywords": [
+        "update",
+        "updates",
+        "upgrade",
+        "version",
+        "release",
+        "rollback",
+        "ota",
+        "nixos"
+    ],
+    "has-dynamic-keywords": false,
+    "has-dynamic-visibility": false,
+    "page-component": "PageComponent.qml"
+}

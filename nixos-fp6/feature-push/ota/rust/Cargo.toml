@@ -1,0 +1,33 @@
+[package]
+name = "fp6-ota"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Signed over-the-air updates with A/B rollback for NixOS on the Fairphone 6"
+
+[lib]
+name = "fp6_ota"
+path = "src/lib.rs"
+
+[[bin]]
+name = "fp6-updated"
+path = "src/bin/updated.rs"
+
+[[bin]]
+name = "fp6-release"
+path = "src/bin/release.rs"
+
+[dependencies]
+base64 = "0.22"
+blake2 = "0.10"
+ed25519-dalek = { version = "2", default-features = false, features = ["std", "zeroize"] }
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
