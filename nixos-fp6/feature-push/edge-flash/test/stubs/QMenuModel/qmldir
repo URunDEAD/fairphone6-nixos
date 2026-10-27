@@ -1,0 +1,4 @@
+module QMenuModel
+QDBusActionGroup 1.0 QDBusActionGroup.qml
+DBus 1.0 DBus.qml
+singleton FakeEdge 1.0 FakeEdge.qml

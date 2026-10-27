@@ -1,0 +1,56 @@
+--- a/qml/Notifications/Notification.qml
++++ b/qml/Notifications/Notification.qml
+@@ -88,6 +88,15 @@
+             return;
+         }
+         fp6WokeScreen = !(fp6Silenced && fp6View.fp6Dnd.dndNoWake);
++        // FP6 edge lighting: a bubble that DND lets through lights the
++        // screen edges instead of waking the display (display off only).
++        if (fp6WokeScreen && !fp6Silenced && fp6View.fp6EdgeFlash &&
++                fp6View.fp6EdgeFlash.offer(hints,
++                    type !== Notification.SnapDecision && type !== Notification.Confirmation,
++                    notification.iconSource,
++                    notification.notification ? notification.notification.urgency === Notification.Critical : false)) {
++            fp6WokeScreen = false;
++        }
+ 
+         // Turn on screen as needed (Powerd.Notification means the screen
+         // stays on for a shorter amount of time)
+--- a/qml/Notifications/Notifications.qml
++++ b/qml/Notifications/Notifications.qml
+@@ -69,6 +69,10 @@
+         id: fp6DndSettings
+         schema.id: "com.fairphone6.notifications"
+     }
++    // FP6 edge lighting (nixos-fp6/feature-push/edge-flash): set by the
++    // shell; Notification.qml offers bubbles that would wake the display.
++    property var fp6EdgeFlash: null
++
+     // true: no sound, no screen wake (and no bubble if dnd-hide-popups).
+     function fp6Silenced(hints, type, urgency) {
+         if (!fp6DndSettings.dndActive) return false;
+--- a/qml/Shell.qml
++++ b/qml/Shell.qml
+@@ -917,6 +917,7 @@
+         Notifications {
+             id: notifications
+             fp6Shade: fp6NotificationShade
++            fp6EdgeFlash: fp6EdgeFlash
+ 
+             model: NotificationBackend.Model
+             margin: units.gu(1)
+@@ -1080,6 +1081,14 @@
+         onWheel: wheel.accepted = true
+     }
+ 
++    // FP6 edge lighting: black frame + edge glow while the display is off
++    // (above everything, including the display-off input block).
++    Fp6EdgeFlash {
++        id: fp6EdgeFlash
++        anchors.fill: parent
++        z: cursor.z + 2
++    }
++
+     Timer {
+         id: cursorHidingTimer
+         interval: 3000

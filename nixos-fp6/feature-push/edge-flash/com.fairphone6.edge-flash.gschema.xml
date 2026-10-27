@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- FP6 edge lighting: a short glow along the screen edges for notifications
+     that arrive while the display is off (the FP6 has no notification LED).
+     Written by Settings > Notifications > Edge lighting, read live by Lomiri
+     (qml/Notifications/Fp6EdgeFlash.qml). b/i/s/as keys only. -->
+<schemalist>
+  <schema id="com.fairphone6.edge-flash" path="/com/fairphone6/edge-flash/">
+    <key name="enabled" type="b">
+      <default>false</default>
+      <summary>Edge lighting</summary>
+      <description>Notifications that arrive while the display is off light the screen edges for a moment instead of turning the whole display on. Calls, alarms and other urgent pop-ups still turn it on. Do Not Disturb and bedtime decide as before: silenced notifications do not light up.</description>
+    </key>
+    <key name="only-calls-messages" type="b">
+      <default>false</default>
+      <summary>Only for calls and messages</summary>
+      <description>Light up only for missed calls, text messages and the apps in message-apps; other notifications behave as without edge lighting.</description>
+    </key>
+    <key name="message-apps" type="as">
+      <default>['teleports.ubports', 'lomiri-messaging-app', 'messaging-app', 'org.lomiri.messaging-app', 'dekko2.dekkoproject', 'fluffychat.christianpauly']</default>
+      <summary>Messaging apps</summary>
+      <description>Notification app names (Notify app_name, or the desktop entry) that count as messages for only-calls-messages.</description>
+    </key>
+    <key name="color-mode" type="s">
+      <choices>
+        <choice value="app"/>
+        <choice value="fixed"/>
+      </choices>
+      <default>'app'</default>
+      <summary>Colour</summary>
+      <description>app: the main colour of the notification's icon (a stable colour per app when the icon has none); fixed: the colour key.</description>
+    </key>
+    <key name="color" type="s">
+      <default>'#3eb4f0'</default>
+      <summary>Fixed colour</summary>
+      <description>#RRGGBB, used when color-mode is fixed.</description>
+    </key>
+    <key name="brightness" type="i">
+      <range min="1" max="64"/>
+      <default>16</default>
+      <summary>Glow brightness</summary>
+      <description>Panel brightness while the edges glow (1-64 of 255; also limited by battery saver's cap).</description>
+    </key>
+    <key name="duration-ms" type="i">
+      <range min="1000" max="6000"/>
+      <default>2600</default>
+      <summary>Glow duration</summary>
+      <description>Milliseconds per flash.</description>
+    </key>
+    <key name="reminder-minutes" type="i">
+      <range min="0" max="60"/>
+      <default>0</default>
+      <summary>Reminder</summary>
+      <description>Flash again every this many minutes while notifications that lit up are still unseen (display not turned on since); 0 = never.</description>
+    </key>
+    <key name="reminder-count" type="i">
+      <range min="1" max="20"/>
+      <default>6</default>
+      <summary>Reminders at most</summary>
+      <description>Stop reminding after this many repeats.</description>
+    </key>
+    <key name="in-battery-saver" type="b">
+      <default>false</default>
+      <summary>Also with battery saver</summary>
+      <description>Off: while battery saver is on, notifications behave as without edge lighting.</description>
+    </key>
+    <key name="preview-request" type="i">
+      <default>0</default>
+      <summary>Internal: Settings' "Preview" button</summary>
+      <description>Bumped by the Settings page; Lomiri shows one glow over the screen (display on) without changing the brightness.</description>
+    </key>
+  </schema>
+</schemalist>

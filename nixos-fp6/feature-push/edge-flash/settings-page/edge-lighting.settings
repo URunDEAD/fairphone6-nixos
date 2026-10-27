@@ -1,0 +1,27 @@
+{
+    "icon": "notification",
+    "name": "Edge Lighting",
+    "translations": "lomiri-system-settings",
+    "category": "personal",
+    "priority": 6,
+    "form-factors": [
+        "phone",
+        "tablet"
+    ],
+    "keywords": [
+        "edge",
+        "lighting",
+        "glow",
+        "led",
+        "light",
+        "notification",
+        "flash",
+        "screen off",
+        "reminder",
+        "colour",
+        "color"
+    ],
+    "has-dynamic-keywords": false,
+    "has-dynamic-visibility": false,
+    "page-component": "PageComponent.qml"
+}
