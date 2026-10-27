@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Share
+Comment=Share with apps and nearby devices
+Exec=fp6-share-ui %U
+Icon=document-send
+Terminal=false
+Categories=Utility;
+MimeType=x-scheme-handler/share;image/png;image/jpeg;image/webp;application/pdf;text/plain;application/octet-stream;audio/mpeg;video/mp4;
+X-Lomiri-Touch=true
+X-Lomiri-Splash-Color=#f6f6f6
+X-Lomiri-DefaultDepartmentID=accessories

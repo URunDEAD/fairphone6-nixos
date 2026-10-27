@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=com.fairphone6.Share1
+Exec=fp6-share daemon
+SystemdService=fp6-share.service

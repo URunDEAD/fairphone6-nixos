@@ -52,6 +52,9 @@ let
       # Data saver and smart Wi-Fi/mobile switching (both off until enabled in Settings), built by a Codex worker:
       # nixos-fp6/feature-push/netpolicy/README.md
       ({ ... }: { imports = [ ./netpolicy/module.nix ]; hardware.fairphone6.netpolicy = { enable = true; user = "user"; uid = 10000; }; })
+      # Unified share sheet (Quick Share, KDE Connect, link/QR, content-hub, copy/save/print/OCR), built by a Codex worker:
+      # nixos-fp6/feature-push/sharesheet/README.md
+      ({ ... }: { imports = [ ./sharesheet/module.nix ]; hardware.fairphone6.share.enable = true; })
       # Persist the modem's EFS working copy across boots (real partitions stay read-only;
       # supervised test passed 2026-10-27, user approved). Removes the per-boot modem restart.
       ({ ... }: { hardware.fairphone6.modem.persistShadow = true; })

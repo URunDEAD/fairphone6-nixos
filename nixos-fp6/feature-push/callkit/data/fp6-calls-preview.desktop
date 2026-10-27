@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Internet Calls Preview
+Comment=Synthetic incoming-call screen prototype
+Exec=fp6-calls-preview
+Icon=call-start
+Terminal=false
+Categories=Telephony;Utility;
+X-Lomiri-Touch=true
