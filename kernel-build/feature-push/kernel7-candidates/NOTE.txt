@@ -44,3 +44,28 @@ kernel7 candidates (staged 2026-10-26; NOT in kernel6, whose pinned drv is uncha
   charge_control_end_threshold while charging below 80 % and confirm the
   current returns (no 95 % hysteresis); a write while the ADSP is down must
   now fail with an error instead of succeeding.
+
+0003-input-eswin-eph861x-no-stale-chg-reads-report-gesture-errors.patch
+  (2026-10-27; touch at idle display-off)
+  Symptom on kernel6: every idle display-off logs ESWIN SPI read errors
+  ("No response type: 255" / "Failed to read header: (-5)" / "Failed to read
+  message (-5)") and fp6-lomiri-powerd sometimes logs "touch lp_mode change
+  failed: [Errno 16]".
+  Cause (code reading): the CHG IRQ thread waits on comms_mutex while a
+  synchronous command (eph_write_control_config) reads its own response,
+  then reads the already-consumed message -> 0xff. LP entry sends two
+  commands, so two error triads per display-off (same triad during probe).
+  EBUSY from lp_mode = gesture_wakeup_enable clear: the gesture_wakeup store
+  returned success even when its controller command failed.
+  The patch: IRQ thread skips the read when CHG is no longer asserted (not in
+  bootloader); gesture_wakeup store returns the command error and takes
+  lp_lock; lp_mode logs which condition was busy.
+  powerd (sensors/fp6-lomiri-powerd.py) already copes without it: LP before
+  blank, non-blocking retry with backoff that re-selects double tap.
+  Apply AFTER ../sensors/0003 and 0001 above.
+  Compile check (W=1, no warnings in eswin_eph861x.c): eswin-lp-compile-check.nix ->
+    /nix/store/dzb5c90x2hbl5xl01i7h71xsdhqja936-fp6-kernel7-candidate-eswin-lp-compile-check-63289f441152-nixos6
+  To check on the first kernel7 boot: idle display-off with double tap on;
+    dmesg | grep -E "eswin|gesture lp"   -> "gesture lp entered", no
+    "No response type: 255" after it; double tap still wakes; touch works
+    after wake; a failing gesture_wakeup write now returns an error.

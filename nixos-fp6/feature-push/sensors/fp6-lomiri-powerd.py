@@ -35,6 +35,7 @@ and caller authorisation, copied here unchanged in behaviour) and adds:
 Nothing here suspends or touches the IMU.
 """
 import argparse
+import errno
 import math
 import os
 from pathlib import Path
@@ -100,6 +101,14 @@ POCKET_OVERRIDE_WINDOW = 3.0   # second blocked power press within this wakes an
 POCKET_LATE_RELEASE = 0.6      # uncovered this soon after a blocked press: wake
 POCKET_DISPLAY_OFF = 5.0       # a lit display that gets pocketed goes off after this
 PROXIMITY_SENSOR = "stk36c61"
+# Touch gesture-LP (lp_mode) writes that fail transiently are retried from a
+# GLib timer, never by sleeping. EBUSY: the driver had no gesture selected
+# (its gesture_wakeup store returns success even when the controller command
+# failed) or the controller was mid reset/suspend; ENODEV: input not open yet;
+# EIO/ETIMEDOUT: SPI command failure. Each retry re-selects double tap first.
+TOUCH_LP_RETRY = (0.25, 0.5, 1.0, 2.0, 4.0)   # seconds before attempt 2, 3, ...
+TOUCH_LP_RETRY_ERRNOS = frozenset((errno.EBUSY, errno.EAGAIN, errno.ENODEV, errno.EIO,
+                                   errno.ETIMEDOUT))
 EVENT = struct.Struct("llHHi")
 
 
@@ -357,6 +366,10 @@ class Core:
     pocket_listeners = ()
     peek_id = 0
     iio_root = Path("/sys/bus/iio/devices")
+    # touch gesture-LP: wanted state, pending retry timer, failed attempts
+    touch_lp_want = None
+    touch_lp_timer = None
+    touch_lp_failures = 0
 
     def __init__(self, bus, backlight, touch, curve, screen_power, sensors=True):
         self.bus, self.backlight, self.touch = bus, backlight, touch
@@ -580,13 +593,14 @@ class Core:
         else:
             self.ramp_id += 1
             self.ramp_target = None
+            # In LP the controller suppresses touches (cheek) and reports
+            # double tap as KEY_WAKEUP. Enter it before blanking, as the
+            # vendor driver does on the early DRM BLANK event.
+            self._touch_lp(self.dt2w or "proximity" in self.off_reasons)
             try:
                 self.backlight.blank()
             except Exception as error:
                 log("screen-off blank failed:", error)
-            # In LP the controller suppresses touches (cheek) and reports
-            # double tap as KEY_WAKEUP.
-            self._touch_lp(self.dt2w or "proximity" in self.off_reasons)
         self._update_light_claim()
         log("display", "on" if want_on else "off", "reason", reason, sorted(self.off_reasons))
         self._idle_screen_changed(want_on)
@@ -596,6 +610,18 @@ class Core:
     def _touch_lp(self, enabled):
         if not self.touch.supported:
             return
+        enabled = bool(enabled)
+        self._touch_lp_cancel()
+        self.touch_lp_want, self.touch_lp_failures = enabled, 0
+        self._touch_lp_attempt()
+
+    def _touch_lp_cancel(self):
+        if self.touch_lp_timer is not None:
+            GLib.source_remove(self.touch_lp_timer)
+            self.touch_lp_timer = None
+
+    def _touch_lp_attempt(self):
+        enabled = self.touch_lp_want
         try:
             if enabled and not self.touch.gesture_enabled():
                 # lp_mode requires a selected gesture; select double tap so
@@ -605,7 +631,25 @@ class Core:
             if not enabled and not self.dt2w and self.touch.gesture_enabled():
                 self.touch.set_double_tap(False)
         except OSError as error:
-            log("touch lp_mode change failed:", error)
+            failures = self.touch_lp_failures
+            if error.errno in TOUCH_LP_RETRY_ERRNOS and failures < len(TOUCH_LP_RETRY):
+                delay = TOUCH_LP_RETRY[failures]
+                if failures == 0:
+                    log("touch lp_mode", int(enabled), "busy:", error, "- retrying in", delay, "s")
+                self.touch_lp_failures = failures + 1
+                self.touch_lp_timer = self._schedule(delay, self._touch_lp_retry)
+            else:
+                log("touch lp_mode change failed:", error,
+                    f"(after {failures + 1} attempts)" if failures else "")
+            return
+        if self.touch_lp_failures:
+            log("touch lp_mode", int(enabled), "set after", self.touch_lp_failures + 1, "attempts")
+
+    def _touch_lp_retry(self):
+        with self.lock:
+            self.touch_lp_timer = None
+            if self.touch_lp_want is not None:
+                self._touch_lp_attempt()
 
     def _proximity(self, near):
         if near == self.prox_near:

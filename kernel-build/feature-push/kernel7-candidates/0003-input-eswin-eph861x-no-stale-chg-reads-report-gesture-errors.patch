@@ -1,0 +1,107 @@
+From fa68613900c6221b3816fea3775feca8989fbe54 Mon Sep 17 00:00:00 2001
+From: Paul Schuldesz <paulschuldesz@gmail.com>
+Date: Tue, 27 Oct 2026 08:06:01 +0200
+Subject: [PATCH] Input: eswin_eph861x: no stale CHG reads, report
+ gesture_wakeup failures
+
+At every idle display-off on the FP6 the driver logs SPI read errors
+("No response type: 255", "Failed to read header: (-5)", "Failed to
+read message (-5)") and fp6-lomiri-powerd sometimes gets -EBUSY from
+lp_mode.
+
+The read errors are the CHG IRQ thread racing the synchronous command
+path: eph_write_control_config() callers hold comms_mutex across the
+TLV write and the response read, and the response asserts CHG. The IRQ
+thread blocks on comms_mutex and, once it gets it, reads a message the
+command already consumed; the controller returns 0xff. Entering
+gesture LP sends two commands, so each display-off logs two of these
+error triads (the same pattern shows up during probe). Skip the read
+when CHG (active low) is no longer asserted; bootloader handshakes are
+left unchanged.
+
+gesture_wakeup's store returned count even when the controller command
+failed, leaving gesture_wakeup_enable clear. The next lp_mode write
+then failed with -EBUSY ("no gesture selected") and userspace had no
+way to tell why. Return the command error from the store, serialise it
+with lp_mode entry/exit through lp_lock (both rewrite gesture_mode) and
+log which condition made lp_mode busy.
+
+Apply after ../sensors/0003-input-eswin-eph861x-gesture-wake-pm-lp-mode.patch
+and 0001-input-eswin-eph861x-wait-for-reset-report-in-probe.patch.
+Compile-checked only against the kernel6 tree.
+---
+ .../touchscreen/eswin_touch/eswin_eph861x.c   | 32 +++++++++++++++++--
+ 1 file changed, 30 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/input/touchscreen/eswin_touch/eswin_eph861x.c b/drivers/input/touchscreen/eswin_touch/eswin_eph861x.c
+index 5f4f543..f136bda 100644
+--- a/drivers/input/touchscreen/eswin_touch/eswin_eph861x.c
++++ b/drivers/input/touchscreen/eswin_touch/eswin_eph861x.c
+@@ -164,6 +164,20 @@ static int eph_read_and_process_messages(struct eph_data *ephdata)
+     //dev_dbg(&ephdata->commsdevice->dev, "%s >\n", __func__);
+ 
+     mutex_lock(&ephdata->comms_mutex);
++    /*
++     * The synchronous command path (eph_write_control_config() and
++     * friends) holds comms_mutex across write + response read, and the
++     * response itself asserts CHG. This thread then runs once the
++     * command has already consumed the message: CHG is back high and a
++     * read only returns 0xff ("No response type: 255", "Failed to read
++     * header: (-5)"). Skip the read when CHG (active low) is not
++     * asserted. Bootloader handshakes use CHG differently; keep them
++     * unchanged.
++     */
++    if (!ephdata->in_bootloader && eph_read_chg(ephdata)) {
++        mutex_unlock(&ephdata->comms_mutex);
++        return 0;
++    }
+     /* Read report */
+     ret_val = eph_read_report(ephdata, ephdata->report_buf);
+     mutex_unlock(&ephdata->comms_mutex);
+@@ -1041,8 +1055,12 @@ static int eph_gesture_lp_enter(struct eph_data *ephdata)
+     if (ephdata->lp)
+         return 0;
+     if (!ephdata->gesture_wakeup_enable || ephdata->in_bootloader ||
+-        ephdata->updating_device_settings || ephdata->suspended)
++        ephdata->updating_device_settings || ephdata->suspended) {
++        dev_info(dev, "gesture lp: busy (gesture %d bootloader %d settings %d suspended %d)\n",
++                 ephdata->gesture_wakeup_enable, ephdata->in_bootloader,
++                 ephdata->updating_device_settings, ephdata->suspended);
+         return -EBUSY;
++    }
+ 
+     ret = eph_report_event_set(ephdata, false);
+     if (ret)
+@@ -1402,14 +1420,23 @@ static ssize_t eph_devattr_gesture_wakeup_store(struct device *dev,
+         return -EINVAL;
+     }
+ 
++    /* Serialise with lp_mode entry/exit, which rewrites gesture_mode. */
++    mutex_lock(&ephdata->lp_lock);
++
+     set_mode = (input > 0) ? (ephdata->gesture_mode | gesture_mode) :
+             (ephdata->gesture_mode & gesture_mode);
+ 
+     ret_val = eph_gesture_mode_set(ephdata, set_mode);
+ 
+     if (ret_val) {
++        mutex_unlock(&ephdata->lp_lock);
+         dev_err(&ephdata->commsdevice->dev, "mode set/clr fail %x", ret_val);
+-        goto exit;
++        /*
++         * Report the controller failure instead of claiming success:
++         * userspace otherwise only learns about it from a later
++         * lp_mode write failing with -EBUSY (no gesture selected).
++         */
++        return ret_val < 0 ? ret_val : -EIO;
+     }
+ 
+     if (ephdata->gesture_mode & 0xE) {
+@@ -1419,6 +1446,7 @@ static ssize_t eph_devattr_gesture_wakeup_store(struct device *dev,
+         ephdata->gesture_wakeup_enable = false;
+         dev_info(&ephdata->commsdevice->dev, "gesture disabled\n");
+     }
++    mutex_unlock(&ephdata->lp_lock);
+ 
+ exit:
+     return count;

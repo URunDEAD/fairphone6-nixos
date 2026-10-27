@@ -322,6 +322,95 @@ check(core.screen_on, "Peek then touch input: display stays on")
 check(core.peek(10) is False, "Peek with the display already on does nothing")
 m.GLib.source_remove = real_source_remove
 
+# touch gesture-LP retries (lp_mode EBUSY at display-off) -----------------
+import errno
+class FakeTouch:
+    supported = True
+    def __init__(self):
+        self.gesture, self.lp, self.ops, self.fail = False, False, [], []
+    def gesture_enabled(self):
+        return self.gesture
+    def set_double_tap(self, enabled):
+        self.ops.append(("dt", enabled))
+        self.gesture = enabled
+    def set_lp(self, enabled):
+        self.ops.append(("lp", enabled))
+        if self.fail:
+            code = self.fail.pop(0)
+            if code:
+                if code == errno.EBUSY:
+                    self.gesture = False   # driver: selection silently lost
+                raise OSError(code, os.strerror(code))
+        self.lp = enabled
+class FakeBlank:
+    def __init__(self, touch):
+        self.touch, self.blanked_with_lp = touch, None
+    def blank(self):
+        self.blanked_with_lp = self.touch.lp
+    def write(self, value):
+        return value
+    def read(self):
+        return 100
+core = object.__new__(m.Core)
+core.lock, core.screen_power, core.screen_on = threading.RLock(), True, True
+core.off_reasons, core.prox_clients, core.notification_woke = set(), set(), False
+core.touch = FakeTouch(); core.backlight = FakeBlank(core.touch)
+core.dt2w, core.auto, core.user_value, core.ramp_id, core.ramp_target = True, False, 100, 0, None
+core.listeners = []
+core._update_light_claim = lambda: None
+core._idle_screen_changed = lambda on: None
+lp_timers = {}
+def lp_schedule(seconds, callback):
+    key = len(lp_timers) + 500
+    lp_timers[key] = (seconds, callback)
+    return key
+core._schedule = lp_schedule
+m.GLib.source_remove = lambda key: lp_timers.pop(key, None)
+def lp_fire():
+    (key, (sec, cb)), = lp_timers.items()
+    del lp_timers[key]
+    cb()
+    return sec
+core.off_reasons.add("user"); core._apply_screen(m.REASON_INACTIVITY)
+check(core.touch.lp and core.backlight.blanked_with_lp is True,
+      "display off: touch LP entered before the panel is blanked")
+check(not lp_timers, "LP accepted at once: no retry timer")
+core.off_reasons.clear(); core._apply_screen(m.REASON_POWERKEY)
+check(not core.touch.lp, "display on: touch LP left")
+# EBUSY twice, then OK: non-blocking backoff, double tap re-selected each time
+core.touch.fail = [errno.EBUSY, errno.EBUSY]; del core.touch.ops[:]
+core.off_reasons.add("user"); core._apply_screen(m.REASON_INACTIVITY)
+check(not core.screen_on and not core.touch.lp and len(lp_timers) == 1,
+      "EBUSY at display-off: display still goes off, retry scheduled (no sleep)")
+first = lp_fire()
+second = lp_fire()
+check(core.touch.lp and not lp_timers and first < second,
+      f"retries with growing backoff ({first}, {second}) until LP is accepted")
+check(core.touch.ops.count(("dt", True)) == 2,
+      f"each retry re-selects double tap after the driver dropped it {core.touch.ops}")
+# display back on while a retry is pending: retry cancelled, LP left
+core.off_reasons.clear(); core._apply_screen(m.REASON_POWERKEY)
+core.touch.fail = [errno.EBUSY]
+core.off_reasons.add("user"); core._apply_screen(m.REASON_INACTIVITY)
+check(len(lp_timers) == 1, "retry pending")
+core.off_reasons.clear(); core._apply_screen(m.REASON_POWERKEY)
+check(not lp_timers and not core.touch.lp, "display on cancels the pending LP retry")
+# persistent EBUSY: bounded number of attempts, then give up
+core.touch.fail = [errno.EBUSY] * 20
+core.off_reasons.add("user"); core._apply_screen(m.REASON_INACTIVITY)
+attempts = 1
+while lp_timers:
+    lp_fire(); attempts += 1
+check(attempts == len(m.TOUCH_LP_RETRY) + 1 and not core.touch.lp,
+      f"persistent EBUSY: gives up after {attempts} attempts")
+# non-transient error (EINVAL): no retry
+core.touch.fail = []
+core.off_reasons.clear(); core._apply_screen(m.REASON_POWERKEY)
+core.touch.fail = [errno.EINVAL]
+core.off_reasons.add("user"); core._apply_screen(m.REASON_INACTIVITY)
+check(not lp_timers, "EINVAL is not retried")
+m.GLib.source_remove = real_source_remove
+
 # D-Bus service ------------------------------------------------------------
 tmp = Path(tempfile.mkdtemp())
 bl = tmp / "bl"; bl.mkdir()
