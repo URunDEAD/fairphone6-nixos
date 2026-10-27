@@ -1,0 +1,8 @@
+module Lomiri.Content
+ContentPeerPicker 1.3 ContentPeerPicker.qml
+ContentStore 1.3 ContentStore.qml
+ContentTransferHint 1.3 ContentTransferHint.qml
+ContentScope 1.3 ContentScope.qml
+ContentHandler 1.3 ContentHandler.qml
+ContentType 1.3 ContentType.qml
+ContentTransfer 1.3 ContentTransfer.qml

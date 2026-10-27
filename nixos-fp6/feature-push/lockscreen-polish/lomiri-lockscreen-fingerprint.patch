@@ -1,0 +1,476 @@
+diff --git a/qml/Greeter/CoverPage.qml b/qml/Greeter/CoverPage.qml
+index 0d98ea8..1f2cf99 100644
+--- a/qml/Greeter/CoverPage.qml
++++ b/qml/Greeter/CoverPage.qml
+@@ -42,6 +42,8 @@ Showable {
+     // biometryd identification): an icon while the reader listens, a pulse
+     // while it reads, shake + red on a rejected finger, green on a match.
+     property bool fingerprintActive: false
++    // FP6 lockscreen-polish: the side-sensor hint replaces the centre icon.
++    property bool fp6EdgeHint: false
+ 
+     function fingerprintReading() {
+         fingerprintReadingAnimation.restart();
+@@ -219,7 +221,7 @@ Showable {
+         anchors.horizontalCenter: parent.horizontalCenter
+         anchors.bottom: parent.bottom
+         anchors.bottomMargin: units.gu(10)
+-        visible: root.fingerprintActive
++        visible: root.fingerprintActive && !root.fp6EdgeHint
+         opacity: 0.85
+ 
+         Icon {
+diff --git a/qml/Greeter/Fp6FingerprintHint.qml b/qml/Greeter/Fp6FingerprintHint.qml
+new file mode 100644
+index 0000000..0fdf38b
+--- /dev/null
++++ b/qml/Greeter/Fp6FingerprintHint.qml
+@@ -0,0 +1,323 @@
++/*
++ * Copyright (C) 2026 Paul Schuldesz
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; version 3.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++// FP6 lock screen (nixos-fp6/feature-push/lockscreen-polish): fingerprint
++// hint for the side-mounted sensor in the power button. A soft glow on the
++// right screen edge next to the button, a short text cue, and feedback for
++// the biometryd identification states. UI only: Greeter.qml keeps deciding
++// what unlocks.
++//
++// Cost: everything is invisible and every animation stopped unless
++// `available` or `lockedOut` is set, and both need the display on (Greeter's
++// biometryd.idEnabled includes Powerd.status === Powerd.On). While shown,
++// the glow is static between events; animations run only briefly after
++// the lock screen appears, a touch, a failure or a match.
++
++import QtQuick 2.15
++import QtGraphicalEffects 1.12
++import Lomiri.Components 1.3
++
++Item {
++    id: root
++    objectName: "fp6FingerprintHint"
++
++    // Fingerprint unlock can be used now (identification runs, under the
++    // failure limit).
++    property bool available: false
++    // Identification runs but fingerprint unlock is disabled after too many
++    // failures (the passcode is needed).
++    property bool lockedOut: false
++    // Sensor centre and length, fractions of the portrait screen height.
++    property real sensorCenter: 0.443
++    property real sensorLength: 0.075
++    // The lock screen is portrait-only on the phone; the hint follows only
++    // the upright portrait orientation.
++    property bool portrait: true
++    // 0..1: how much of the cover page is shown (1 = fully shown). The text
++    // cue lives on the cover page and fades with it into the passcode screen.
++    property real coverProgress: 1
++    // Show the text cue when the hint appears.
++    property bool textCue: true
++    // Bedtime/DND night state: dimmer glow, no attention pulse.
++    property bool quiet: false
++    // The lock uses a passphrase rather than a passcode.
++    property bool passphrase: false
++    // Vibrate on a rejected finger (Haptics also follows the system setting).
++    property bool haptics: true
++
++    readonly property bool shown: (available || lockedOut) && portrait
++    readonly property real sensorY: height * sensorCenter
++    readonly property real sensorHeight: Math.max(units.gu(4), height * sensorLength)
++
++    // The text cue currently shown ("" = none).
++    readonly property string message: d.message
++
++    signal passcodeRequested()
++
++    function reading() {
++        if (!shown) return;
++        d.flash(1.0);
++    }
++
++    // kind: "nomatch", "busy", "error" or "lockout".
++    function failed(kind) {
++        if (!shown) return;
++        if (kind === "busy") {
++            d.say(i18n.tr("Fingerprint sensor busy"), 1800);
++            d.flash(0.8);
++            return;
++        }
++        if (kind === "lockout") {
++            d.tint = d.lockColor;
++            d.say(root.passphrase ? i18n.tr("Use your passphrase") : i18n.tr("Use your passcode"), 2200);
++            shake.restart();
++            d.buzz();
++            if (root.coverProgress > 0.99) passcodeTimer.restart();
++            return;
++        }
++        d.tint = d.failColor;
++        tintReset.restart();
++        d.say(kind === "error" ? i18n.tr("Fingerprint not read, try again")
++                               : i18n.tr("Not recognised"), 1800);
++        shake.restart();
++        d.buzz();
++    }
++
++    function succeeded() {
++        if (!available) return;
++        d.tint = d.successColor;
++        d.message = "";
++        success.restart();
++    }
++
++    visible: shown || success.running
++    enabled: false   // never takes input
++
++    onShownChanged: {
++        if (shown) {
++            d.tint = lockedOut ? d.lockColor : d.idleColor;
++            glow.opacity = d.restOpacity;
++            if (!quiet && available) attention.restart();
++            if (textCue && available) d.say(i18n.tr("Touch the power button to unlock"), 2600);
++        } else {
++            attention.stop(); flashAnim.stop(); shake.stop(); passcodeTimer.stop();
++            buzzTimer.stop(); messageTimer.stop(); tintReset.stop();
++            d.message = "";
++            glow.opacity = 0;
++        }
++    }
++    onLockedOutChanged: if (shown) d.tint = lockedOut ? d.lockColor : d.idleColor
++
++    QtObject {
++        id: d
++        readonly property color idleColor: "#f2f6ff"
++        readonly property color failColor: "#ff4636"
++        readonly property color lockColor: "#9aa0a6"
++        readonly property color successColor: "#ffffff"
++        readonly property real restOpacity: root.lockedOut ? 0.3 : (root.quiet ? 0.28 : 0.55)
++        property color tint: idleColor
++        property string message: ""
++        property string lastMessage: ""   // kept while the cue fades out
++
++        function say(text, ms) {
++            message = text;
++            lastMessage = text;
++            messageTimer.interval = ms;
++            messageTimer.restart();
++        }
++        function flash(peak) {
++            flashAnim.peak = peak;
++            flashAnim.restart();
++        }
++        function buzz() {
++            if (!root.haptics) return;
++            Haptics.play({ duration: 30 });
++            buzzTimer.restart();
++        }
++    }
++
++    Timer { id: messageTimer; onTriggered: d.message = "" }
++    Timer { id: tintReset; interval: 1400; onTriggered: d.tint = root.lockedOut ? d.lockColor : d.idleColor }
++    Timer { id: buzzTimer; interval: 110; onTriggered: Haptics.play({ duration: 30 }) }
++    Timer { id: passcodeTimer; interval: 1100; onTriggered: if (root.coverProgress > 0.99) root.passcodeRequested() }
++
++    // The glow: light coming in from the screen edge at the button, a thin
++    // bright line on the edge plus a soft elliptical halo (both static
++    // between events; the halo gradient is cached).
++    Item {
++        id: glow
++        objectName: "fp6FingerprintGlow"
++        x: root.width - width + shakeOffset
++        y: root.sensorY - height / 2
++        width: units.gu(7)
++        height: root.sensorHeight * 1.9
++        opacity: 0
++        transformOrigin: Item.Right
++        property real shakeOffset: 0
++
++        RadialGradient {
++            id: halo
++            anchors.fill: parent
++            horizontalOffset: width / 2
++            horizontalRadius: width
++            verticalRadius: height / 2
++            cached: true
++            gradient: Gradient {
++                GradientStop { position: 0.0; color: Qt.rgba(d.tint.r, d.tint.g, d.tint.b, 0.62) }
++                GradientStop { position: 0.35; color: Qt.rgba(d.tint.r, d.tint.g, d.tint.b, 0.26) }
++                GradientStop { position: 1.0; color: Qt.rgba(d.tint.r, d.tint.g, d.tint.b, 0.0) }
++            }
++        }
++        Rectangle {
++            id: core
++            anchors.right: parent.right
++            anchors.verticalCenter: parent.verticalCenter
++            width: units.gu(0.55)
++            height: root.sensorHeight
++            radius: width / 2
++            gradient: Gradient {
++                GradientStop { position: 0.0; color: Qt.rgba(d.tint.r, d.tint.g, d.tint.b, 0.0) }
++                GradientStop { position: 0.22; color: d.tint }
++                GradientStop { position: 0.78; color: d.tint }
++                GradientStop { position: 1.0; color: Qt.rgba(d.tint.r, d.tint.g, d.tint.b, 0.0) }
++            }
++        }
++    }
++
++    // A short attention pulse when the hint appears (then static).
++    SequentialAnimation {
++        id: attention
++        loops: 2
++        ParallelAnimation {
++            NumberAnimation { target: glow; property: "opacity"; to: 1; duration: 420; easing.type: Easing.OutQuad }
++            NumberAnimation { target: glow; property: "scale"; to: 1.12; duration: 420; easing.type: Easing.OutQuad }
++        }
++        ParallelAnimation {
++            NumberAnimation { target: glow; property: "opacity"; to: d.restOpacity; duration: 640; easing.type: Easing.InOutQuad }
++            NumberAnimation { target: glow; property: "scale"; to: 1.0; duration: 640; easing.type: Easing.InOutQuad }
++        }
++    }
++
++    // A touch the sensor could not decide on yet: brighten briefly.
++    SequentialAnimation {
++        id: flashAnim
++        property real peak: 1
++        NumberAnimation { target: glow; property: "opacity"; to: flashAnim.peak; duration: 110 }
++        NumberAnimation { target: glow; property: "opacity"; to: d.restOpacity; duration: 380; easing.type: Easing.InQuad }
++    }
++
++    // Rejected finger: shake towards the screen and back (like the passcode).
++    SequentialAnimation {
++        id: shake
++        ScriptAction { script: { attention.stop(); glow.opacity = 1; glow.scale = 1; } }
++        NumberAnimation { target: glow; property: "shakeOffset"; to: -units.gu(1.4); duration: 60; easing.type: Easing.OutQuad }
++        NumberAnimation { target: glow; property: "shakeOffset"; to: units.gu(0.4); duration: 90; easing.type: Easing.InOutQuad }
++        NumberAnimation { target: glow; property: "shakeOffset"; to: -units.gu(0.8); duration: 90; easing.type: Easing.InOutQuad }
++        NumberAnimation { target: glow; property: "shakeOffset"; to: 0; duration: 260; easing.type: Easing.OutElastic }
++        NumberAnimation { target: glow; property: "opacity"; to: d.restOpacity; duration: 500 }
++    }
++
++    // Match: the glow flares and a light ripple runs out from the button
++    // while the greeter slides away.
++    Rectangle {
++        id: ripple
++        objectName: "fp6FingerprintRipple"
++        property real r: 0
++        x: root.width - r
++        y: root.sensorY - r
++        width: 2 * r
++        height: 2 * r
++        radius: r
++        color: "transparent"
++        border.color: "#ffffff"
++        border.width: units.gu(0.6)
++        opacity: 0
++        visible: opacity > 0
++    }
++    Rectangle {
++        id: wash
++        anchors.fill: parent
++        color: "white"
++        opacity: 0
++        visible: opacity > 0
++    }
++    SequentialAnimation {
++        id: success
++        ScriptAction { script: { attention.stop(); shake.stop(); glow.shakeOffset = 0; } }
++        ParallelAnimation {
++            NumberAnimation { target: glow; property: "opacity"; to: 1; duration: 90 }
++            NumberAnimation { target: glow; property: "scale"; to: 1.35; duration: 160; easing.type: Easing.OutQuad }
++            NumberAnimation { target: ripple; property: "r"; from: units.gu(1); to: Math.max(root.width, root.height) * 0.9; duration: 380; easing.type: Easing.OutCubic }
++            SequentialAnimation {
++                NumberAnimation { target: ripple; property: "opacity"; from: 0.9; to: 0; duration: 380; easing.type: Easing.InQuad }
++            }
++            SequentialAnimation {
++                NumberAnimation { target: wash; property: "opacity"; from: 0; to: 0.12; duration: 120 }
++                NumberAnimation { target: wash; property: "opacity"; to: 0; duration: 260 }
++            }
++        }
++        ParallelAnimation {
++            NumberAnimation { target: glow; property: "opacity"; to: 0; duration: 160 }
++            NumberAnimation { target: glow; property: "scale"; to: 1.0; duration: 160 }
++        }
++    }
++
++    // The text cue, a bubble pointing at the button, on the cover page only.
++    Item {
++        id: cue
++        objectName: "fp6FingerprintCue"
++        anchors.right: parent.right
++        anchors.rightMargin: units.gu(3.5)
++        y: root.sensorY - height / 2
++        width: cueText.width + units.gu(3)
++        height: cueText.height + units.gu(1.6)
++        opacity: (d.message !== "" ? 1 : 0) * Math.max(0, (root.coverProgress - 0.6) / 0.4)
++        visible: opacity > 0
++        Behavior on opacity { NumberAnimation { duration: 220 } }
++
++        Item {   // bubble + arrow tip towards the edge, one translucent layer
++            anchors.fill: parent
++            anchors.rightMargin: -units.gu(1)
++            opacity: 0.72
++            layer.enabled: cue.visible
++            Rectangle {
++                width: units.gu(1.3)
++                height: width
++                rotation: 45
++                anchors.right: parent.right
++                anchors.rightMargin: units.gu(0.35)
++                anchors.verticalCenter: parent.verticalCenter
++                color: "black"
++            }
++            Rectangle {
++                anchors.fill: parent
++                anchors.rightMargin: units.gu(1)
++                radius: height / 2
++                color: "black"
++            }
++        }
++        Label {
++            id: cueText
++            objectName: "fp6FingerprintCueText"
++            anchors.centerIn: parent
++            width: Math.min(implicitWidth, root.width * 0.6)
++            text: d.lastMessage
++            color: Qt.colorEqual(d.tint, d.failColor) ? "#ffd5d0" : "white"
++            wrapMode: Text.WordWrap
++            horizontalAlignment: Text.AlignRight
++        }
++    }
++}
+diff --git a/qml/Greeter/Greeter.qml b/qml/Greeter/Greeter.qml
+index f307ca6..9c449f6 100644
+--- a/qml/Greeter/Greeter.qml
++++ b/qml/Greeter/Greeter.qml
+@@ -249,7 +249,9 @@ Showable {
+             d.selectUser(d.currentIndex);
+             LightDMService.prompts.prepend(msg, LightDMService.prompts.Error);
+             if (loader.item) {
+-                loader.item.showErrorMessage(msg);
++                // FP6 lockscreen-polish: the edge hint shows it on the cover page.
++                if (!loader.item.fp6FingerprintHint)
++                    loader.item.showErrorMessage(msg);
+                 loader.item.notifyAuthenticationFailed();
+             }
+         }
+@@ -402,6 +404,16 @@ Showable {
+             restoreMode: Binding.RestoreBinding
+         }
+ 
++        // FP6 lockscreen-polish: identification runs, but fingerprint
++        // unlock is off after too many failures (the passcode is needed).
++        Binding {
++            target: loader.item
++            property: "fp6FingerprintLockedOut"
++            value: biometryd.idEnabled && d.isLockscreen && !d.secureFingerprint
++            when: loader.item !== null && loader.item.fp6FingerprintLockedOut !== undefined
++            restoreMode: Binding.RestoreBinding
++        }
++
+         Binding {
+             target: loader.item
+             property: "panelHeight"
+@@ -644,11 +656,17 @@ Showable {
+ 
+         function failOperation(reason) {
+             console.log("Failed to identify user by fingerprint:", reason);
+-            if (loader.item && loader.item.fingerprintFailed) loader.item.fingerprintFailed(); // FP6
++            // FP6 lockscreen-polish: what the edge hint shows (UI only; the
++            // failure counting above and below is unchanged).
++            var fp6Kind = !d.secureFingerprint ? "lockout" :
++                          /busy|InUse/i.test(String(reason)) ? "busy" :
++                          (reason === "verify-no-match" || reason === "not the selected user") ? "nomatch" : "error";
++            if (loader.item && loader.item.fingerprintFailed) loader.item.fingerprintFailed(fp6Kind); // FP6
+             restartOperation();
+-            var msg = d.secureFingerprint ? i18n.tr("Try again") :
+-                      d.alphanumeric ? i18n.tr("Enter passphrase to unlock") :
+-                                       i18n.tr("Enter passcode to unlock");
++            var msg = !d.secureFingerprint ? (d.alphanumeric ? i18n.tr("Use your passphrase") : i18n.tr("Use your passcode")) :
++                      fp6Kind === "busy" ? i18n.tr("Fingerprint sensor busy") :
++                      fp6Kind === "error" ? i18n.tr("Fingerprint not read, try again") :
++                                            i18n.tr("Not recognised");
+             d.showFingerprintMessage(msg);
+         }
+ 
+diff --git a/qml/Greeter/GreeterView.qml b/qml/Greeter/GreeterView.qml
+index ee9f62d..2a51a3e 100644
+--- a/qml/Greeter/GreeterView.qml
++++ b/qml/Greeter/GreeterView.qml
+@@ -45,6 +45,9 @@ FocusScope {
+     property var userModel // Set from outside
+     property bool multiUser: false
+     property bool fingerprintActive: false // FP6
++    // FP6 lockscreen-polish: side-sensor hint (Fp6FingerprintHint.qml).
++    property bool fp6FingerprintLockedOut: false
++    readonly property bool fp6FingerprintHint: true
+     property int orientation
+     property bool isLandscape: root.orientation == Qt.LandscapeOrientation ||
+                                root.orientation == Qt.InvertedLandscapeOrientation ||
+@@ -111,9 +114,10 @@ FocusScope {
+     }
+ 
+     // FP6: fingerprint feedback on the cover page.
+-    function fingerprintReading() { coverPage.fingerprintReading(); }
+-    function fingerprintFailed() { coverPage.fingerprintFailed(); }
+-    function fingerprintSucceeded() { coverPage.fingerprintSucceeded(); }
++    // FP6 lockscreen-polish: and on the edge hint next to the power button.
++    function fingerprintReading() { coverPage.fingerprintReading(); fp6FingerprintHint.reading(); }
++    function fingerprintFailed(kind) { coverPage.fingerprintFailed(); fp6FingerprintHint.failed(kind || "nomatch"); }
++    function fingerprintSucceeded() { coverPage.fingerprintSucceeded(); fp6FingerprintHint.succeeded(); }
+ 
+     onLockedChanged: changeLockscreenState()
+     onMultiUserChanged: changeLockscreenState()
+@@ -366,6 +370,7 @@ FocusScope {
+ 
+         showInfographic: !root.multiUser && root.usageMode != "desktop"
+         fingerprintActive: root.fingerprintActive
++        fp6EdgeHint: true // FP6 lockscreen-polish: no fingerprint icon mid-screen
+ 
+         onShowProgressChanged: {
+             if (showProgress === 0) {
+@@ -549,6 +554,34 @@ FocusScope {
+         }
+     }
+ 
++    // FP6 lockscreen-polish: the fingerprint sensor is in the power button
++    // on the right edge; hint there, above the cover page and the passcode
++    // screen (fingerprint unlock works on both), below the emergency sheet.
++    GSettings {
++        id: fp6Lockscreen
++        schema.id: "com.fairphone6.lockscreen"
++    }
++    GSettings {
++        id: fp6Bedtime
++        schema.id: "@FP6_BEDTIME_SCHEMA@"
++    }
++    Fp6FingerprintHint {
++        id: fp6FingerprintHint
++        anchors.fill: parent
++        z: 950
++        available: root.fingerprintActive && root.locked
++        lockedOut: root.fp6FingerprintLockedOut && root.locked
++        portrait: root.height > root.width && root.orientation !== Qt.InvertedPortraitOrientation
++        sensorCenter: fp6Lockscreen.fingerprintSensorCenter > 0 ? fp6Lockscreen.fingerprintSensorCenter : 0.443
++        sensorLength: fp6Lockscreen.fingerprintSensorLength > 0 ? fp6Lockscreen.fingerprintSensorLength : 0.075
++        textCue: fp6Lockscreen.fingerprintHintText !== false
++        haptics: fp6Lockscreen.fingerprintHaptics !== false
++        quiet: fp6Bedtime.bedtimeActive === true
++        coverProgress: coverPage.shown ? coverPage.showProgress : 0
++        passphrase: root.alphanumeric
++        onPasscodeRequested: if (coverPage.shown && root.locked) root.tryToUnlock(false)
++    }
++
+     // FP6 privacy-lock: emergency information without unlocking.
+     EmergencyInfo {
+         id: emergencyInfo

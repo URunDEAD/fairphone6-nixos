@@ -1,0 +1,175 @@
+diff --git a/qml/Components/Fp6WallpaperEffects.qml b/qml/Components/Fp6WallpaperEffects.qml
+new file mode 100644
+index 0000000..c06022a
+--- /dev/null
++++ b/qml/Components/Fp6WallpaperEffects.qml
+@@ -0,0 +1,48 @@
++/*
++ * Copyright (C) 2026 Paul Schuldesz
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; version 3.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++// FP6 wallpapers (nixos-fp6/feature-push/lockscreen-polish): optional blur
++// and dim of the home-screen wallpaper (Wallpaper.qml fp6Blur / fp6Dim, set
++// by Stage.qml from com.fairphone6.lockscreen). The blur is cached: it is
++// computed once per image, not per frame. Nothing exists while both are 0.
++
++import QtQuick 2.15
++import QtGraphicalEffects 1.12
++
++Item {
++    id: root
++    property Item source
++    property real blur: 0   // 0..1
++    property real dim: 0    // 0..1
++    readonly property bool blurring: blur > 0 && source !== null
++
++    Loader {
++        anchors.fill: parent
++        active: root.blurring
++        sourceComponent: FastBlur {
++            source: root.source
++            radius: Math.round(16 + 48 * root.blur)
++            cached: true
++        }
++    }
++
++    Rectangle {
++        anchors.fill: parent
++        color: "black"
++        opacity: Math.max(0, Math.min(0.8, root.dim))
++        visible: opacity > 0
++    }
++}
+diff --git a/qml/Components/Wallpaper.qml b/qml/Components/Wallpaper.qml
+index cc0d811..66c7623 100644
+--- a/qml/Components/Wallpaper.qml
++++ b/qml/Components/Wallpaper.qml
+@@ -33,6 +33,11 @@ Item {
+     // it's set.
+     property real sourceSize: -1.0
+ 
++    // FP6 wallpapers: blur (0..1) and dim (0..1) of the home-screen
++    // wallpaper; 0 = as before. Set by Stage.qml only.
++    property real fp6Blur: 0
++    property real fp6Dim: 0
++
+     Image {
+         id: image
+         objectName: "wallpaperImage"
+@@ -72,6 +77,19 @@ Item {
+         source: intermediarySourceSize !== -1.0 ? root.source : ""
+     }
+ 
++    // FP6 wallpapers: home blur/dim, below the fade and the bedtime dim.
++    Fp6WallpaperEffects {
++        anchors.fill: parent
++        source: image
++        blur: root.fp6Blur
++        dim: root.fp6Dim
++    }
++    Binding {
++        target: image
++        property: "visible"
++        value: !(root.fp6Blur > 0)   // the blurred copy replaces it
++    }
++
+     Rectangle {
+         id: wallpaperFadeRectangle
+         objectName: "wallpaperFadeRectangle"
+diff --git a/qml/Shell.qml b/qml/Shell.qml
+index 6708664..b19d728 100644
+--- a/qml/Shell.qml
++++ b/qml/Shell.qml
+@@ -28,6 +28,7 @@ import Lomiri.ModemConnectivity 0.1
+ import Lomiri.Launcher 0.1
+ import GlobalShortcut 1.0 // has to be before Utils, because of WindowInputFilter
+ import GSettings 1.0
++import Qt.labs.folderlistmodel 2.12 // FP6 wallpapers
+ import Utils 0.1
+ import Powerd 0.1
+ import SessionBroadcast 0.1
+@@ -204,6 +205,42 @@ StyledItem {
+         ]
+     }
+ 
++    // FP6 wallpapers (nixos-fp6/feature-push/lockscreen-polish): a separate
++    // lock-screen wallpaper. System Settings stores it as
++    // <greeter data dir>/<user>/fp6-lock-wallpaper-<stamp>.<ext>, readable by
++    // the user's session and the LightDM greeter. None = the lock screen
++    // shows the home wallpaper, as before.
++    FolderListModel {
++        id: fp6LockWallpaperFolder
++        folder: AccountsService.user !== "" ? "file://@FP6_GREETER_DATA_DIR@/" + AccountsService.user : ""
++        nameFilters: [ "fp6-lock-wallpaper-*" ]
++        showDirs: false
++        showDotAndDotDot: false
++        showHidden: false
++        sortField: FolderListModel.Name
++        sortReversed: true   // newest stamp first
++    }
++    Instantiator {
++        id: fp6LockWallpaperFiles
++        model: fp6LockWallpaperFolder
++        delegate: QtObject { readonly property url url: fileURL }
++        property url current: ""
++        function update() {
++            var o = count > 0 ? objectAt(0) : null;
++            current = o ? o.url : "";
++        }
++        onObjectAdded: update()
++        onObjectRemoved: update()
++    }
++    ImageResolver {
++        id: lockWallpaperResolver
++        objectName: "lockWallpaperResolver"
++        readonly property bool hasCustomBackground: resolvedImage != wallpaperResolver.defaultBackground
++        candidates: fp6LockWallpaperFiles.current != ""
++            ? [ fp6LockWallpaperFiles.current ].concat(wallpaperResolver.candidates)
++            : wallpaperResolver.candidates
++    }
++
+     readonly property alias greeter: greeterLoader.item
+ 
+     function activateApplication(appId) {
+@@ -491,9 +528,9 @@ StyledItem {
+             usageMode: shell.usageScenario
+             orientation: shell.orientation
+             forcedUnlock: wizard.active || shell.mode === "full-shell"
+-            background: wallpaperResolver.resolvedImage
++            background: lockWallpaperResolver.resolvedImage // FP6 wallpapers
+             backgroundSourceSize: shell.largestScreenDimension
+-            hasCustomBackground: wallpaperResolver.hasCustomBackground
++            hasCustomBackground: lockWallpaperResolver.hasCustomBackground
+             inputMethodRect: inputMethod.visibleRect
+             hasKeyboard: shell.hasKeyboard
+             allowFingerprint: !dialogs.hasActiveDialog &&
+diff --git a/qml/Stage/Stage.qml b/qml/Stage/Stage.qml
+index 571c762..12a1f96 100644
+--- a/qml/Stage/Stage.qml
++++ b/qml/Stage/Stage.qml
+@@ -788,6 +788,13 @@ FocusScope {
+             objectName: "stageBackground"
+             anchors.fill: parent
+             source: root.background
++            // FP6 wallpapers: optional home-screen blur and dim.
++            fp6Blur: fp6HomeWallpaper.homeWallpaperBlur === true ? 1 : 0
++            fp6Dim: fp6HomeWallpaper.homeWallpaperDim || 0
++            GSettings {
++                id: fp6HomeWallpaper
++                schema.id: "com.fairphone6.lockscreen"
++            }
+             // Make sure it's the lowest item. Due to the left edge drag we sometimes need
+             // to put the dash at -1 and we don't want it behind the Wallpaper
+             z: -2

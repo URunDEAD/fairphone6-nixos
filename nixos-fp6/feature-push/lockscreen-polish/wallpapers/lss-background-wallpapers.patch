@@ -1,0 +1,182 @@
+diff -ru a/MainPage.qml b/MainPage.qml
+--- a/MainPage.qml
++++ b/MainPage.qml
+@@ -28,6 +28,7 @@
+ import Lomiri.Components.Popups 1.3
+ import Lomiri.SystemSettings.Background 1.0
+ import Lomiri.SystemSettings.Background.Theme 1.0
++import Fp6.Wallpapers 1.0 // FP6 wallpapers: separate lock-screen wallpaper
+ import "utilities.js" as Utilities
+ 
+ ItemPage {
+@@ -40,6 +41,52 @@
+ 
+     readonly property string welcomeBackground: backgroundPanel.backgroundFile
+ 
++    // FP6 wallpapers (nixos-fp6/feature-push/lockscreen-polish): home and
++    // lock screen can differ. Home = the stock AccountsService
++    // BackgroundFile; lock = Fp6Wallpapers (a copy in the greeter data dir,
++    // none = same as home).
++    readonly property string fp6DefaultWallpaper: "file://@FP6_DEFAULT_WALLPAPER@"
++    readonly property string fp6HomeWallpaper: fp6Wallpapers.existingOr(welcomeBackground, fp6DefaultWallpaper)
++    readonly property string fp6LockWallpaper: fp6Wallpapers.hasLockWallpaper ? fp6Wallpapers.lockWallpaper : fp6HomeWallpaper
++
++    // where: "home", "lock" or "both".
++    function fp6Apply(uri, where) {
++        if (where === "lock") {
++            fp6Wallpapers.setLockWallpaper(uri);
++        } else if (where === "home") {
++            // Android-like: changing only the home screen keeps the lock
++            // screen as it was: pin the current home picture as the lock
++            // picture first (the stock code may delete its old copy).
++            if (!fp6Wallpapers.hasLockWallpaper) {
++                fp6PendingHome = uri;
++                fp6Wallpapers.setLockWallpaper(fp6HomeWallpaper);
++            } else {
++                Utilities.setBackground(uri);
++            }
++        } else {
++            Utilities.setBackground(uri);
++            fp6Wallpapers.clearLockWallpaper();
++        }
++    }
++
++    property var fp6PendingHome: null
++
++    Fp6Wallpapers {
++        id: fp6Wallpapers
++        onFinished: {
++            if (mainPage.fp6PendingHome !== null) {
++                var uri = mainPage.fp6PendingHome;
++                mainPage.fp6PendingHome = null;
++                Utilities.setBackground(uri);
++            }
++        }
++    }
++
++    GSettings {
++        id: fp6Settings
++        schema.id: "com.fairphone6.lockscreen"
++    }
++
+     property var activeTransfer
+ 
+     function preview(props) {
+@@ -137,9 +184,33 @@
+             }
+ 
+             SettingsItemTitle {
+-                text: i18n.tr("Background image:")
++                text: i18n.tr("Wallpaper:")
++            }
++
++            // FP6 wallpapers: lock and home side by side, home options.
++            Fp6WallpaperSection {
++                anchors.left: parent.left
++                anchors.right: parent.right
++                lockSource: mainPage.fp6LockWallpaper
++                homeSource: mainPage.fp6HomeWallpaper
++                separateLock: fp6Wallpapers.hasLockWallpaper
++                busy: fp6Wallpapers.busy
++                homeDim: fp6Settings.homeWallpaperDim || 0
++                homeBlur: fp6Settings.homeWallpaperBlur === true
++                onUseHomeForLock: fp6Wallpapers.clearLockWallpaper()
++                onHomeDimChosen: fp6Settings.homeWallpaperDim = value
++                onHomeBlurChosen: fp6Settings.homeWallpaperBlur = value
++            }
++
++            SettingsListItems.StandardProgression {
++                objectName: "fp6ChooseFromPictures"
++                text: i18n.tr("Choose from Pictures…")
++                onClicked: pageStack.addPageToNextColumn(mainPage, Qt.resolvedUrl("Fp6PicturesPage.qml"),
++                                                         { folder: fp6Wallpapers.picturesUrl, rootFolder: fp6Wallpapers.picturesUrl, chooser: mainPage })
+             }
+ 
++            ListItem.ThinDivider { }
++
+             WallpaperGrid {
+                 id: systemArtGrid
+                 objectName: "SystemArtGrid"
+@@ -190,7 +261,7 @@
+     Connections {
+         id: selectedItemConnection
+         onSave: {
+-            Utilities.setBackground(target.uri)
++            mainPage.fp6Apply(target.uri, target.fp6Target || "both") // FP6 wallpapers
+         }
+         function onStateChanged() {
+             var trans = mainPage.activeTransfer;
+diff -ru a/Preview.qml b/Preview.qml
+--- a/Preview.qml
++++ b/Preview.qml
+@@ -22,6 +22,7 @@
+ import SystemSettings 1.0
+ import SystemSettings.ListItems 1.0 as SettingsListItems
+ import Lomiri.Components 1.3
++import Lomiri.Components.Popups 1.3
+ 
+ ItemPage {
+     id: preview
+@@ -31,6 +32,10 @@
+ 
+     // whether an image was just imported from e.g. contentHub
+     property bool imported: false
++    // FP6 wallpapers: "home", "lock" or "both" (chosen when setting).
++    property string fp6Target: "both"
++    objectName: "fp6PreviewPage"
++    function fp6OpenWhere() { PopupUtils.open(fp6WhereDialog); }
+     signal save
+     property Item headerStyle: header.__styleInstance ?
+                                    header.__styleInstance : null
+@@ -57,14 +62,47 @@
+                     Action {
+                         text: i18n.tr("Set")
+                         iconName: "tick"
+-                        onTriggered: {
+-                            save();
+-                            pageStack.removePages(preview);
+-                        }
++                        // FP6 wallpapers: ask where (home, lock or both).
++                        onTriggered: preview.fp6OpenWhere()
+                     }]
+                 }
+     }
+ 
++    Component {
++        id: fp6WhereDialog
++        Dialog {
++            id: whereDialog
++            objectName: "fp6WallpaperWhereDialog"
++            title: i18n.tr("Set wallpaper")
++            function apply(where) {
++                preview.fp6Target = where;
++                PopupUtils.close(whereDialog);
++                preview.save();
++                pageStack.removePages(preview);
++            }
++            Button {
++                objectName: "fp6SetHome"
++                text: i18n.tr("Home screen")
++                onClicked: whereDialog.apply("home")
++            }
++            Button {
++                objectName: "fp6SetLock"
++                text: i18n.tr("Lock screen")
++                onClicked: whereDialog.apply("lock")
++            }
++            Button {
++                objectName: "fp6SetBoth"
++                text: i18n.tr("Home and lock screens")
++                color: theme.palette.normal.positive
++                onClicked: whereDialog.apply("both")
++            }
++            Button {
++                text: i18n.tr("Cancel")
++                onClicked: PopupUtils.close(whereDialog)
++            }
++        }
++    }
++
+     Image {
+         id: previewImage
+         anchors {

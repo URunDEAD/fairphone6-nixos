@@ -82,6 +82,12 @@ let
       # notifications; edit mode, Settings > Quick settings) and rounded-corner
       # insets for the status bar. results/feature-push-20261024/quick-settings/README.md
       ({ ... }: { imports = [ ./quick-settings/quick-settings-fp6.nix ]; hardware.fairphone6.quickSettings.enable = true; })
+      # Lock screen: fingerprint hint at the power button (side sensor) instead of
+      # a centre icon; separate lock/home wallpapers (Settings > Background).
+      # results/feature-push-20261024/lockscreen/README.md
+      ({ ... }: { imports = [ ./lockscreen-polish/lockscreen-polish-fp6.nix ];
+                  hardware.fairphone6.lockscreenPolish.enable = true;
+                  hardware.fairphone6.wallpapers.enable = true; })
       ({ lib, options, ... }: {
         # fp6-lomiri-powerd replaces the manual-only brightness bridge.
         # lomiri-gpu-fp6.nix restates it at mkOverride 10.
