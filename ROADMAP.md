@@ -9,43 +9,43 @@ Every user-facing feature gets a setting/toggle in System Settings. Status:
 ### Sensor gestures (in the Gesture Shortcuts settings page)
 - ✅ Shake to … (flashlight / app / command), off by default
 - ✅ Power button double/triple press shortcuts (none by default)
-- ⏳ Pocket mode — ignore touches and power presses in a pocket (proximity + light)
-- ⏳ Flip to silence — face down silences calls/notifications
-- ⏳ Raise to wake / lift to check — screen on when picked up
-- ⏳ Back tap (double/triple) shortcuts — accelerometer
-- ⏳ Volume keys long-press = next/previous track while the screen is off
+- ✅ Pocket mode — ignore touches and power presses in a pocket (proximity + light)
+- ✅ Flip to silence — face down silences calls/notifications
+- ✅ Raise to wake / lift to check — screen on when picked up
+- 🔧 Back tap (experimental, needs calibration) (double/triple) shortcuts — accelerometer
+- ✅ Volume keys long-press = next/previous track while the screen is off
 
 ### Display
-- ⏳ Night light / blue-light filter — scheduled (sunset/sunrise or times), strength
-- ⏳ Dark theme on a schedule
-- ⏳ Font size and display scaling settings
+- ✅ Night light / blue-light filter — scheduled (sunset/sunrise or times), strength
+- ✅ Dark theme on a schedule
+- 🔧 Font size and display scaling settings (display size done; text size for Lomiri apps in progress)
 
 ### Battery and charging
-- ⏳ Charge limit (e.g. 80 %) to protect the battery
-- ⏳ Adaptive charging — finish at 100 % just before the alarm
-- ⏳ Battery saver mode — CPU limits, background apps, sync, brightness
-- ⏳ Battery health and usage — wear, cycles, per-app usage
+- ✅ Charge limit (e.g. 80 %) to protect the battery
+- ✅ Adaptive charging — finish at 100 % just before the alarm
+- ✅ Battery saver mode — CPU limits, background apps, sync, brightness
+- ✅ Battery health and usage — wear, cycles, per-app usage
 - ❓ Suspend (UFS fix built; needs a supervised test) — biggest battery win
 
 ### Lock screen, notifications, privacy
-- ⏳ Auto-lock — timeout and lock on power press (verify and expose)
-- ⏳ Emergency info on the lock screen, SOS shortcut, location sharing
-- ⏳ Do Not Disturb with schedules and exceptions; bedtime mode
-- ⏳ Notification history
-- ⏳ Camera / microphone / location in-use indicators in the status bar
+- ✅ Auto-lock — timeout and lock on power press (verify and expose)
+- ✅ Emergency info on the lock screen, SOS shortcut, location sharing
+- ✅ Do Not Disturb with schedules and exceptions; bedtime mode
+- ✅ Notification history
+- ✅ Camera / microphone / location in-use indicators in the status bar
 - ⏳ Clipboard privacy (auto-clear, read notifications) — blocked: Mir 2.15 has no
   data-control protocol; needs a Mir upgrade (see below) or a backport
-- ⏳ Wi-Fi MAC address randomisation
+- ✅ Wi-Fi MAC address randomisation
 
 ## Priority 2 — system
 
-- ⏳ Upgrade Mir (2.15 → current, e.g. 2.28 in nixpkgs) for Lomiri/qtmir —
+- 🔧 Upgrade Mir (2.15 → current, e.g. 2.28 in nixpkgs) for Lomiri/qtmir —
   brings data-control (clipboard privacy), viewporter/fractional scale (removes the
   Firefox scaling shim) and newer Wayland protocols; needs qtmir porting
 
 - ⏳ Over-the-air updates with automatic rollback (same safe boot procedure)
-- ⏳ Backup and restore (settings, messages, contacts, photos; encrypted)
-- ⏳ Storage manager
+- 🔧 Backup and restore (settings, messages, contacts, photos; encrypted)
+- 🔧 Storage manager
 - ⏳ Adaptive screen timeout (stay on while held)
 - ⏳ Always-on display (measure battery cost first)
 - ⏳ Higher refresh rate if the panel supports it
@@ -99,14 +99,15 @@ Every user-facing feature gets a setting/toggle in System Settings. Status:
 
 ## In progress elsewhere
 
-- 🔧 Camera: fast launch
+- ✅ Camera: fast launch and lock-screen secure mode
 - ⏳ Camera: full field of view for main/ultrawide photos (today a 2× centre crop:
   the soft ISP can't scale — needs a binning/scaling path or full-size stream)
-- ⏳ Hardware video encoder (iris) — enables faster timelapse, screen recording,
+- ✅ Hardware video encoder (iris) works (used by screen recording); camera use next: — enables faster timelapse, screen recording,
   slow motion (ultrawide 120 fps mode) and electronic stabilisation (gyro)
 - ✅ Camera Phase 2: RAW/DNG, HDR, night mode, timelapse, bracketing,
   intervalometer, panorama (Rust), front/ultrawide colour calibration, mirror selfie
-- 🔧 Keep apps ready (prelaunch, preload, zram, OOM policy)
-- 🔧 Sensor utility apps (Tools folder), batch 2 next
-- 🔧 Screenshots and screen recording
+- ✅ Keep apps ready (prelaunch, preload, zram, OOM policy)
+- 🔧 Sensor utility apps (Tools folder): batch 1 done, batch 2 in progress
+- ✅ Screenshots and screen recording
+- ✅ USB Drive app (DriveDroid-like: share ISO/disk images over USB)
 - ❓ Supervised suspend test, 24 h battery and 7-day stability runs
