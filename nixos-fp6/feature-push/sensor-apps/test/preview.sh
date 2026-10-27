@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Offline UI preview on the laptop (x86): renders one app under Xvfb with
 # the phone's Lomiri scaling (GRID_UNIT_PX=8, scale 3, 372x804 logical) and
-# a fake IIO tree, and saves a PNG.
+# a fake IIO tree (batch 2: synthetic signals from fake-signals.py), and
+# saves a PNG.
 #   test/preview.sh /nix/store/...-fp6-sensor-apps-0.1.0 compass out.png [preview-page] [theme]
 set -eu
 pkg=$1 tool=$2 out=$3 page=${4:-} themeName=${5:-Lomiri.Components.Themes.Ambiance}
@@ -23,5 +24,26 @@ if [ "$tool" = gps ] && [ -n "${FAKE_SKY:-}" ]; then
   python3 "$here/fake-sky.py" "$FP6_SKY_SOCKET" & sky=$!
   sleep 0.5
 fi
-xvfb-run -a -s "-screen 0 1200x2600x24" "$pkg/bin/fp6-sensor-tools" "$tool"
+# batch 2: synthetic signals only (no laptop microphone, speaker, camera or
+# position is used)
+export FP6_PW_PLAY=$here/fake-pw-play.sh FP6_NO_INDICATOR=1
+mkdir -p "$tmp/led" && echo 255 > "$tmp/led/max_brightness" && echo 0 > "$tmp/led/brightness"
+export FP6_TORCH_LED=$tmp/led
+echo 50 > "$FP6_IIO_ROOT/iio:device2/sampling_frequency"
+bin=$pkg/bin/fp6-sensor-tools
+pids=
+case $tool in
+  steps) python3 "$here/fake-signals.py" accel-walk "$FP6_IIO_ROOT/iio:device2" & pids=$! ;;
+  vibration) python3 "$here/fake-signals.py" accel-vibe "$FP6_IIO_ROOT/iio:device2" & pids=$! ;;
+  metal) python3 "$here/fake-signals.py" magn-metal "$FP6_IIO_ROOT/iio:device3" & pids=$! ;;
+  tuner) export FP6_PW_RECORD=$here/fake-pw-record.sh ;;
+  speed)
+    if [ -n "${FAKE_FIX:-}" ]; then
+      export FP6_LOCATION_STATE=on FP6_NMEA_DEMO=$tmp/demo.nmea
+      python3 "$here/fake-signals.py" nmea "$FP6_NMEA_DEMO"
+    fi ;;
+  magnifier) bin=$pkg/bin/fp6-magnifier ;;
+esac
+xvfb-run -a -s "-screen 0 1200x2600x24" "$bin" "$tool"
 [ -n "${sky:-}" ] && kill "$sky" || true
+[ -n "$pids" ] && kill $pids || true

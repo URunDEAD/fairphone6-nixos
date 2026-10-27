@@ -1,4 +1,5 @@
-# FP6 sensor apps (one launcher binary for the 8 apps). Complain mode by
+# FP6 sensor apps (one launcher binary for the batch-1 and batch-2 apps;
+# the Magnifier has its own profile, fp6-magnifier). Complain mode by
 # default (sensor-apps-fp6.nix); denials show up with fp6-apparmor-denials.
 abi <abi/5.0>,
 include <tunables/global>
@@ -8,8 +9,16 @@ profile fp6-sensor-apps /nix/store/*-fp6-sensor-apps-*/bin/{.fp6-sensor-tools-wr
   include <abstractions/fp6-audio>
 
   /nix/store/*-fp6-sensor-apps-*/bin/* mrix,
-  # PipeWire capture for the sound meter, iio-sensor-proxy query (dashboard)
-  /nix/store/*/bin/{pw-record,pw-cat,.pw-cat-wrapped,gdbus} mrix,
+  # PipeWire capture (sound meter, tuner) and playback (tone generator,
+  # metal-detector beep); gdbus: iio-sensor-proxy query (dashboard) and the
+  # indicator-power flashlight action (flashlight)
+  /nix/store/*/bin/{pw-record,pw-play,pw-cat,.pw-cat-wrapped,gdbus} mrix,
+
+  # torch LED (flashlight): brightness is writable for the video group only
+  # (torch-fp6.nix); flash/strobe/timeout attributes stay root-only
+  /sys/class/leds/ r,
+  /sys/class/leds/white:flash r,
+  /sys/devices/**/leds/white:flash/{brightness,max_brightness} rw,
 
   # IIO sysfs (read only) and the panel's DT node (ruler)
   /sys/bus/iio/devices/ r,

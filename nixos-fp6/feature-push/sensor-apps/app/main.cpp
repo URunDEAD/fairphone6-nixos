@@ -1,6 +1,10 @@
 // fp6-sensor-tools TOOL: one launcher for the sensor apps; TOOL picks the
-// QML app (compass, level, measure, altimeter, sound, light, gps,
-// dashboard). Each app has its own desktop entry fp6-TOOL.desktop.
+// QML app (batch 1: compass, level, measure, altimeter, sound, light, gps,
+// dashboard; batch 2: speed, metal, vibration, steps, flashlight, tuner,
+// tone). Each app has its own desktop entry fp6-TOOL.desktop.
+// fp6-magnifier is the same source built with FP6_FIXED_TOOL="magnifier":
+// a separate binary so the camera stack's environment and the camera
+// AppArmor rules apply to the magnifier only.
 #include "sensorfeed.h"
 
 #include <QDir>
@@ -18,9 +22,16 @@
 
 int main(int argc, char *argv[])
 {
+#ifdef FP6_FIXED_TOOL
+    const QStringList tools{QStringLiteral(FP6_FIXED_TOOL)};
+    QString tool = tools.first();
+#else
     const QStringList tools{"compass", "level", "measure", "altimeter",
-                            "sound", "light", "gps", "dashboard"};
+                            "sound", "light", "gps", "dashboard",
+                            "speed", "metal", "vibration", "steps",
+                            "flashlight", "tuner", "tone"};
     QString tool = argc > 1 ? QString::fromLocal8Bit(argv[1]) : QStringLiteral("dashboard");
+#endif
     if (!tools.contains(tool)) {
         std::fprintf(stderr, "usage: fp6-sensor-tools {%s}\n", qPrintable(tools.join('|')));
         return 2;

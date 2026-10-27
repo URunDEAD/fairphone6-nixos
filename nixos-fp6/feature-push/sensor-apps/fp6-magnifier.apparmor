@@ -1,0 +1,44 @@
+# FP6 Magnifier (fp6-magnifier: the sensor-apps launcher built for the
+# magnifier only, with Lomiri Camera's camera stack in its environment).
+# Complain by default like fp6-sensor-apps (sensor-apps-fp6.nix). Camera
+# rules follow the apparmor module's lomiri-camera-app profile, minus
+# everything for saving photos/videos (the magnifier saves nothing).
+abi <abi/5.0>,
+include <tunables/global>
+
+profile fp6-magnifier /nix/store/*-fp6-sensor-apps-*/bin/{.fp6-magnifier-wrapped,fp6-magnifier} flags=(attach_disconnected, mediate_deleted) {
+  include <abstractions/fp6-gui>
+
+  /nix/store/*-fp6-sensor-apps-*/bin/* mrix,
+  /nix/store/*-gstreamer-*/libexec/gstreamer-1.0/gst-plugin-scanner mrix,
+  # gdbus: the indicator-power flashlight action (light button)
+  /nix/store/*/bin/gdbus mrix,
+
+  # Camera + ISP nodes (CAMSS, sensor subdevs), DMA heaps.
+  /dev/ r,
+  /dev/video* rw,
+  /dev/media* rw,
+  /dev/v4l-subdev* rw,
+  /dev/dma_heap/* rw,
+  @{sys}/class/video4linux/{,**} r,
+  @{sys}/devices/platform/**/video4linux/** r,
+  @{sys}/devices/platform/**/media*/** r,
+  @{sys}/bus/media/{,**} r,
+  @{run}/udev/data/c81:* r,
+  @{run}/udev/data/c2[0-9][0-9]:* r,
+  /etc/fp6-camera/camera.conf r,
+  owner @{HOME}/.config/fp6-camera/{,**} r,
+
+  # torch LED (light button)
+  /sys/class/leds/ r,
+  /sys/class/leds/white:flash r,
+  /sys/devices/**/leds/white:flash/{brightness,max_brightness} rw,
+
+  # settings (zoom), GStreamer registry cache
+  owner @{HOME}/.config/fp6-sensor-apps/{,**} rwk,
+  owner @{HOME}/.cache/gstreamer-1.0/{,**} rwk,
+  owner @{HOME}/.cache/fp6-*/{,**} rwk,
+  owner /tmp/** rwk,
+
+  include if exists <local/fp6-magnifier>
+}

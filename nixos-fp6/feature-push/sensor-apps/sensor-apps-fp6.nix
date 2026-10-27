@@ -1,5 +1,22 @@
 # FP6 sensor apps for Lomiri (batch 1): Compass, Level, Measure, Altimeter,
 # Sound meter, Light meter, GPS status, Sensors (dashboard).
+# Batch 2: Speedometer, Metal Detector, Vibration Meter, Step Counter,
+# Flashlight, Magnifier, Tuner, Tone Generator (same package, launcher,
+# desktop-entry scheme and Tools folder).
+#
+#  * Microphone (Tuner) and speaker (Tone generator, metal beep) through
+#    PipeWire helpers (pw-record / pw-play) that run only while the app is
+#    in front; the privacy indicator lists the Tuner by its APP_ID.
+#  * Torch (Flashlight, Magnifier light): indicator-power's flashlight
+#    action for on/off (status bar in sync, same path as the shake gesture)
+#    plus the white:flash brightness attribute (torch-fp6.nix, video group)
+#    for brightness, strobe and SOS.
+#  * Magnifier: its own binary fp6-magnifier with Lomiri Camera's camera
+#    stack environment (fp6camerabinsrc -> libcamera) and its own AppArmor
+#    profile; the camera in-use indicator picks it up from the CAMSS nodes.
+#    Installed only with hardware.fp6LomiriCamera.
+#  * Speedometer: QtPositioning/GeoClue like GPS Status; nothing while
+#    Location is off.
 #
 #  * One package (package.nix): Rust backend (std only) + a one-class Qt 5.15
 #    QML shim + Lomiri UI Toolkit QML. One launcher binary
@@ -25,9 +42,17 @@ let
   cfg = config.hardware.fairphone6.sensorApps;
   haveFolders = options.hardware.fairphone6 ? drawerFolders;
 
-  pkg = pkgs.callPackage ./package.nix {
+  # Lomiri Camera wired to the FP6 libcamera stack (camera/), if enabled:
+  # the magnifier reuses its Qt camerabin, plugin and libcamera.
+  cameraApp = pkgs.lomiri.lomiri-camera-app;
+  haveCamera = (config.hardware.fp6LomiriCamera.enable or false) && cameraApp ? qtmultimediaFp6;
+
+  pkg = pkgs.callPackage ./package.nix ({
     pipewire = config.services.pipewire.package;
-  };
+  } // lib.optionalAttrs haveCamera {
+    camera = cameraApp;
+    cameraLibcamera = config.hardware.fp6Camera.package;
+  });
 
   appMeta = {
     compass = {
@@ -78,6 +103,57 @@ let
       keywords = "sensors;accelerometer;gyroscope;magnetometer;proximity;";
       portrait = false;
     };
+    # batch 2
+    speed = {
+      name = "Speedometer";
+      comment = "GPS speed, distance and trip average";
+      keywords = "speed;speedometer;gps;trip;odometer;distance;";
+      portrait = true;
+    };
+    metal = {
+      name = "Metal Detector";
+      comment = "Magnetometer field strength with a beep for metal and magnets";
+      keywords = "metal;detector;magnetometer;magnet;stud;finder;tesla;";
+      portrait = true;
+    };
+    vibration = {
+      name = "Vibration Meter";
+      comment = "Vibration level, peak and frequency from the accelerometer";
+      keywords = "vibration;seismometer;accelerometer;rms;shake;";
+      portrait = true;
+    };
+    steps = {
+      name = "Step Counter";
+      comment = "Counts steps while open; no background tracking";
+      keywords = "steps;pedometer;walk;walking;";
+      portrait = true;
+    };
+    flashlight = {
+      name = "Flashlight";
+      comment = "Torch with brightness, strobe and SOS";
+      keywords = "flashlight;torch;light;led;strobe;sos;";
+      portrait = true;
+    };
+    magnifier = {
+      name = "Magnifier";
+      comment = "Magnifying glass with the camera, zoom and light";
+      keywords = "magnifier;magnifying;zoom;loupe;read;camera;";
+      portrait = true;
+      exec = "${pkg}/bin/fp6-magnifier";
+      available = haveCamera;
+    };
+    tuner = {
+      name = "Tuner";
+      comment = "Instrument tuner: note and cents from the microphone";
+      keywords = "tuner;guitar;violin;ukulele;bass;pitch;note;music;";
+      portrait = true;
+    };
+    tone = {
+      name = "Tone Generator";
+      comment = "Sine, square, triangle and sawtooth tones";
+      keywords = "tone;generator;frequency;sine;signal;audio;test;";
+      portrait = true;
+    };
   };
 
   enabledApps = lib.filterAttrs (n: _: cfg.apps.${n}.enable) appMeta;
@@ -88,7 +164,7 @@ let
     Name=${m.name}
     Comment=${m.comment}
     Keywords=${m.keywords}
-    Exec=${pkg}/bin/fp6-sensor-tools ${tool}
+    Exec=${m.exec or "${pkg}/bin/fp6-sensor-tools ${tool}"}
     Icon=${pkg}/share/fp6-sensor-apps/icons/fp6-${tool}.png
     Terminal=false
     Categories=Utility;
@@ -109,13 +185,14 @@ let
 in
 {
   options.hardware.fairphone6.sensorApps = {
-    enable = lib.mkEnableOption "the FP6 sensor apps (compass, level, measure, altimeter, sound/light meter, GPS status, sensor dashboard)";
+    enable = lib.mkEnableOption "the FP6 sensor apps (compass, level, measure, altimeter, sound/light meter, GPS status, sensor dashboard; speedometer, metal detector, vibration meter, step counter, flashlight, magnifier, tuner, tone generator)";
 
     apps = lib.mapAttrs (tool: m: {
       enable = lib.mkOption {
         type = lib.types.bool;
-        default = true;
-        description = "Install the ${m.name} launcher (fp6-${tool}.desktop).";
+        default = m.available or true;
+        description = "Install the ${m.name} launcher (fp6-${tool}.desktop)."
+          + lib.optionalString (tool == "magnifier") " Needs hardware.fp6LomiriCamera (default: on when it is enabled).";
       };
     }) appMeta;
 
@@ -177,10 +254,20 @@ in
 
   config = lib.mkIf cfg.enable (lib.mkMerge [
     {
+      assertions = [{
+        assertion = cfg.apps.magnifier.enable -> haveCamera;
+        message = "sensorApps.apps.magnifier needs hardware.fp6LomiriCamera (the camera stack it reuses).";
+      }];
       environment.systemPackages = [ pkg desktopEntries ];
       system.build.fp6-sensor-apps = pkg;
       system.build.fp6-sensor-apps-desktop = desktopEntries;
     }
+
+    # Flashlight: the torch brightness attribute for the video group (the
+    # same udev rule the camera and the shake gesture rely on).
+    (lib.optionalAttrs (options.hardware ? fp6Torch) (lib.mkIf cfg.apps.flashlight.enable {
+      hardware.fp6Torch.enable = lib.mkDefault true;
+    }))
 
     # Toolbox icon for the drawer folder the entries ask for (only if the
     # drawer-folders module is imported; another agent's module owns it).
@@ -247,12 +334,16 @@ in
         state = cfg.apparmor;
         path = ./fp6-sensor-apps.apparmor;
       };
+      security.apparmor.policies.fp6-magnifier = lib.mkIf cfg.apps.magnifier.enable {
+        state = cfg.apparmor;
+        path = ./fp6-magnifier.apparmor;
+      };
       system.checks = [
         (pkgs.runCommand "fp6-sensor-apps-apparmor-compile" { } ''
           ${pkgs.apparmor-parser}/bin/apparmor_parser --config-file /dev/null -Q -K \
             -I ${config.environment.etc."apparmor.d".source} \
             ${lib.concatMapStringsSep " " (p: "-I ${p}/etc/apparmor.d") config.security.apparmor.packages} \
-            ${./fp6-sensor-apps.apparmor} 2>&1 | { grep -v 'Cache read/write disabled' || true; }
+            ${./fp6-sensor-apps.apparmor} ${./fp6-magnifier.apparmor} 2>&1 | { grep -v 'Cache read/write disabled' || true; }
           test "''${PIPESTATUS[0]}" = 0
           touch $out
         '')
