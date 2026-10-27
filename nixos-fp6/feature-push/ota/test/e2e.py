@@ -405,13 +405,23 @@ try:
     j = job("download")
     check(j["state"] == "failed" and "Battery saver" in j["error"], "download refused in battery saver")
     conditions(network="wifi")
-    j = job("download")
+    before = call("status")["available"]
+    # started from the page: the finish notice must show
+    shot("05-download-done", ["el('fp6UpdateDownload').clicked()", "0", "0", "0"], delay=1500)
+    if only:
+        call("download")
+    j = wait_job("download")
     check(j["state"] == "done", f"downloaded: {j.get('error')}")
+    check(j["total"] == before["downloadBytes"] and j["pathsTotal"] == before["missingPaths"] == j["pathsDone"] and j["done"] == j["total"],
+          f"progress counts only the missing paths ({j['pathsTotal']} files, {j['total']} B), not the closure")
+    check(j["result"]["paths"] == before["missingPaths"], "the result reports the fetched files")
+    cli = json.loads(sh(UPD, "--config", f"{FP}/config.json", "status", env=env).stdout)
+    check(cli["live"] and cli["job"]["op"] == "download" and cli["job"]["state"] == "done", "CLI status shows the running service's job")
     check(all(os.path.exists(f"{PHONE_STORE}{p}") for p in systems[2]), "toplevel and boot image are in the phone's separate store")
     check(sorted(os.listdir(f"{FP}/gcroots")) == ["pending-boot-image", "pending-toplevel"], "GC roots for the download")
     st = call("status")
     check(st["available"]["downloaded"], "marked downloaded")
-    shot("05-downloaded")
+    shot("05b-downloaded")
 
     before_b = part("boot_b")
     check("error" in call("install", {"when": "now"}, ok=False), "install without confirmation refused")

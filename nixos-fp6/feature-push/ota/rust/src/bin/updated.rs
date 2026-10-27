@@ -330,7 +330,26 @@ fn main() {
                 }
             }
         }
-        "status" => println!("{:#}", Engine::new(cfg).status()),
+        "status" => {
+            // The live state (job, progress) is in the running service: ask
+            // it over D-Bus (this also starts it if needed). Only if the bus
+            // call fails, show the state file without a job.
+            let c = if cfg.session_bus { zbus::blocking::Connection::session() } else { zbus::blocking::Connection::system() };
+            let live = c.and_then(|c| c.call_method(Some(BUS), PATH, Some(IFACE), "Call", &("status", "")))
+                .ok().and_then(|m| m.body().deserialize::<String>().ok()).and_then(|s| serde_json::from_str::<Value>(&s).ok());
+            match live {
+                Some(mut v) => {
+                    v["live"] = json!(true);
+                    println!("{v:#}");
+                }
+                None => {
+                    let mut v = Engine::new(cfg).status();
+                    v["live"] = json!(false);
+                    v["note"] = json!("fp6-updated service not reachable; job state unknown");
+                    println!("{v:#}");
+                }
+            }
+        }
         "slots" => println!("{:#}", slots_report(&cfg)),
         "pairs" => match pairs::compare_all(&cfg.by_partlabel) {
             Ok(p) => println!("{:#}", json!({"pairs": p, "verdict": pairs::verdict(&p, &cfg.allowed_slot_differences)})),

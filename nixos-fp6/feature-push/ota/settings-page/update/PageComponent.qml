@@ -32,6 +32,7 @@ ItemPage {
     readonly property var lastInstall: st && st.history && st.history.length > 0 ? st.history[0] : null
     property string message: ""
     property var serverTest: null
+    property string notice: ""
     property bool serverTesting: false
 
     // The field's text, else the saved server (Test connection works on both).
@@ -55,6 +56,7 @@ ItemPage {
 
     function act(method, args) {
         root.message = ""
+        root.notice = ""
         um.call(method, args || {}, function(err) { if (err) root.message = err })
     }
     function reasons(list) { return list && list.length ? list.join(", ") : "" }
@@ -69,7 +71,15 @@ ItemPage {
     Connections {
         target: um
         function onJobFinished(j) {
-            if (j.state === "failed" || j.state === "cancelled") root.message = j.error
+            if (j.state === "failed" || j.state === "cancelled") { root.message = j.error; root.notice = ""; return }
+            if (j.state !== "done") return
+            if (j.op === "download")
+                root.notice = i18n.tr("Download complete: release %1 is ready to install (%2 files, %3).")
+                                  .arg(j.result.release).arg(j.result.paths).arg(um.size(j.result.bytes))
+            else if (j.op === "install")
+                root.notice = i18n.tr("Installed. Restart to start using it.")
+            else if (j.op === "check")
+                root.notice = ""
         }
     }
 
@@ -194,22 +204,36 @@ ItemPage {
                 spacing: units.gu(0.5)
                 visible: root.jobRunning
                 Label {
-                    text: job ? (job.phase && job.op !== "download" ? job.phase : root.opName(job.op)) : ""
+                    objectName: "fp6UpdatePhase"
+                    text: !job ? "" : job.op === "download"
+                        ? (job.phase === "verifying" ? i18n.tr("Verifying the download…") : i18n.tr("Downloading…"))
+                        : (job.phase ? job.phase : root.opName(job.op))
                 }
                 ProgressBar {
                     objectName: "fp6UpdateProgress"
                     width: parent.width
-                    indeterminate: !(job && job.total > 0)
+                    indeterminate: !(job && job.total > 0) || (job && job.phase === "verifying")
                     minimumValue: 0
                     maximumValue: 1
                     value: job && job.total > 0 ? job.done / job.total : 0
                     showProgressPercentage: false
                 }
                 Label {
-                    visible: !!(job && job.total > 0)
+                    objectName: "fp6UpdateProgressText"
+                    visible: !!job && job.op === "download"
                     fontSize: "small"
-                    text: job ? i18n.tr("%1 of %2").arg(um.size(job.done)).arg(um.size(job.total)) : ""
+                    text: !job ? "" : job.pathsTotal > 0
+                        ? i18n.tr("%1 of %2 files · %3 of %4").arg(job.pathsDone).arg(job.pathsTotal).arg(um.size(job.done)).arg(um.size(job.total))
+                        : (job.phase === "verifying" ? "" : i18n.tr("Everything is already on the phone"))
                 }
+            }
+            Label {
+                objectName: "fp6UpdateNotice"
+                anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
+                visible: root.notice !== "" && !root.jobRunning
+                wrapMode: Text.WordWrap
+                color: theme.palette.normal.positive
+                text: root.notice
             }
             Row {
                 anchors { left: parent.left; leftMargin: units.gu(2) }
@@ -290,10 +314,18 @@ ItemPage {
                     wrapMode: Text.WordWrap
                     fontSize: "small"
                     color: theme.palette.normal.backgroundSecondaryText
-                    text: !av ? "" : (av.downloaded ? i18n.tr("Published %1 · downloaded, ready to install").arg(av.date.replace("T", " ").replace("Z", " UTC"))
+                    text: !av ? "" : (av.downloaded ? i18n.tr("Published %1 · downloaded").arg(av.date.replace("T", " ").replace("Z", " UTC"))
                         : i18n.tr("Published %1 · download %2 (%3 on the phone)").arg(av.date.replace("T", " ").replace("Z", " UTC"))
                             .arg(um.size(av.downloadBytes)).arg(um.size(av.unpackedBytes)))
                         + (av.kernel && av.kernel.release ? " · " + i18n.tr("kernel %1").arg(av.kernel.release) : "")
+                }
+                Label {
+                    objectName: "fp6UpdateReady"
+                    anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
+                    visible: !!av && av.downloaded && !root.jobRunning
+                    wrapMode: Text.WordWrap
+                    color: theme.palette.normal.positive
+                    text: i18n.tr("Ready to install")
                 }
                 Label {
                     objectName: "fp6UpdateChangelog"

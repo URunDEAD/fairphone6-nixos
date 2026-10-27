@@ -35,6 +35,9 @@ pub struct Job {
     pub phase: String,
     pub done: u64,
     pub total: u64,
+    /// Store paths fetched / to fetch (download only).
+    pub paths_done: u64,
+    pub paths_total: u64,
     pub started: i64,
     pub finished: i64,
     pub error: String,
@@ -83,6 +86,12 @@ impl Engine {
         j.phase = phase.into();
         j.done = done;
         j.total = total;
+    }
+
+    fn progress_paths(&self, done: u64, total: u64) {
+        let mut j = self.job.lock().unwrap();
+        j.paths_done = done;
+        j.paths_total = total;
     }
 
     /// Runs `f` as the one job (in this thread). Err if another runs.
@@ -225,11 +234,22 @@ impl Engine {
         let cond = system::conditions(&self.cfg);
         policy::allowed(&st.settings, &cond, purpose, system::local_hour(&self.cfg)).map_err(|w| w.join("; "))?;
         let want = vec![m.toplevel.clone(), m.boot_image.path.clone()];
-        let sizes: Vec<(String, u64)> = a.closure.paths.iter()
+        // Progress covers only what is missing now: the closure is mostly
+        // already on the phone (r1 -> r2 was 39 paths, 33 MB of 2450 paths).
+        let missing: Vec<(String, u64)> = a.closure.paths.iter()
+            .filter(|p| !nixops::present(&self.cfg, &p.path))
             .map(|p| (p.path.clone(), if p.file_size > 0 { p.file_size } else { p.nar_size })).collect();
-        let total: u64 = sizes.iter().map(|s| s.1).sum();
-        let count = |e: &Engine| sizes.iter().filter(|s| nixops::present(&e.cfg, &s.0)).map(|s| s.1).sum::<u64>();
-        self.progress("downloading", count(self), total);
+        let total: u64 = missing.iter().map(|s| s.1).sum();
+        let count = |e: &Engine| {
+            let have: Vec<&(String, u64)> = missing.iter().filter(|s| nixops::present(&e.cfg, &s.0)).collect();
+            (have.len() as u64, have.iter().map(|s| s.1).sum::<u64>())
+        };
+        let report = |e: &Engine| {
+            let (n, b) = count(e);
+            e.progress("downloading", b, total);
+            e.progress_paths(n, missing.len() as u64);
+        };
+        report(self);
         let mut child = nixops::copy_from(&self.cfg, &a.cache_url, &want)?;
         let tail = nixops::drain_stderr(&mut child);
         self.child.store(child.id(), Ordering::SeqCst);
@@ -251,7 +271,7 @@ impl Engine {
                     return Err(format!("Download paused: {}", w.join("; ")));
                 }
             }
-            self.progress("downloading", count(self), total);
+            report(self);
             std::thread::sleep(Duration::from_millis(1000));
         };
         self.child.store(0, Ordering::SeqCst);
@@ -260,6 +280,7 @@ impl Engine {
             let last = tail.lock().unwrap().iter().rev().find(|l| !l.trim().is_empty()).cloned().unwrap_or_default();
             return Err(format!("Download failed: {}", last.trim()));
         }
+        self.progress_paths(missing.len() as u64, missing.len() as u64);
         self.progress("verifying", total, total);
         nixops::valid(&self.cfg, &want)?;
         let img = nixops::local_path(&self.cfg, &m.boot_image.path);
@@ -282,7 +303,7 @@ impl Engine {
                 }
             }
         })?;
-        Ok(json!({"release": m.release, "bytes": total}))
+        Ok(json!({"release": m.release, "bytes": total, "paths": missing.len()}))
     }
 
     // ----------------------------------------------------------- install
