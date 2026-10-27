@@ -32,20 +32,33 @@ QtObject {
             if (!err) {
                 try { v = JSON.parse(res) } catch (e) { err = String(e) }
             }
-            if (!err && v && v.job !== undefined) { model.status = v; model.ok = true }
+            if (!err && v && v.job !== undefined) model._update(v)
             if (cb) cb(err, v)
         })
     }
 
+    // Every status reply goes through here. A job counts as finished when
+    // it was seen running and is not any more, OR when a newer job id shows
+    // up already finished (a refused install fails within milliseconds,
+    // between two polls).
     property var _lastJob: null
+    function _update(v) {
+        status = v
+        ok = true
+        error = ""
+        var j = v.job
+        if (j && j.id > 0 && j.state !== "running") {
+            var seenRunning = _lastJob && _lastJob.id === j.id && _lastJob.state === "running"
+            var newer = !_lastJob || j.id > _lastJob.id
+            if (seenRunning || (newer && _lastJob !== null))
+                jobFinished(j)
+        }
+        if (j) _lastJob = j
+    }
+
     function refresh() {
         call("status", {}, function(err, v) {
-            if (err) { ok = false; error = err; return }
-            error = ""
-            var j = v.job
-            if (j && _lastJob && _lastJob.id === j.id && _lastJob.state === "running" && j.state !== "running")
-                jobFinished(j)
-            _lastJob = j
+            if (err) { ok = false; error = err }
         })
     }
 

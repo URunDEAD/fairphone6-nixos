@@ -423,6 +423,22 @@ try:
     check(st["available"]["downloaded"], "marked downloaded")
     shot("05b-downloaded")
 
+    # a RAM-booted test system: the phone runs r2, but boot_b still holds r1
+    boot_as(2, "_b")
+    st = call("status")
+    check(st["systemMismatch"] and "test system that isn't installed" in st["systemMismatch"]
+          and st["blocked"]["install"][0] == st["systemMismatch"] and st["blocked"]["tonight"][0] == st["systemMismatch"],
+          "status flags the running system as not installed; Install and Install tonight blocked")
+    b_before_mismatch = part("boot_b")
+    j = job("install", {"when": "now", "confirm": True})
+    check(j["state"] == "failed" and j["error"].startswith("Can't install: this phone is running a test system"),
+          f"install refused with the user-facing reason: {j['error']}")
+    check(part("boot_b") == b_before_mismatch and not os.listdir(f"{FP}/state/backups") if os.path.isdir(f"{FP}/state/backups") else True,
+          "nothing written, no backup taken")
+    shot("05c-not-installed", ["scroll('fp6UpdatePage', 600)"], delay=1200)
+    boot_as(1, "_b")
+    check(call("status")["systemMismatch"] is None, "back on the installed system: no mismatch")
+
     before_b = part("boot_b")
     check("error" in call("install", {"when": "now"}, ok=False), "install without confirmation refused")
     j = job("install", {"when": "now", "confirm": True})
@@ -445,6 +461,7 @@ try:
     st = call("status")
     check(st["pending"]["mode"] == "single" and st["pending"]["release"] == 2, "pending restart (single-slot)")
     shot("06-installed-restart")
+    check(call("status")["systemMismatch"] is None, "no mismatch reported while an install waits for the restart")
     shot("07-confirm-restart", ["el('fp6UpdateRestart').clicked()"], delay=1200)
 
     # undo before the restart

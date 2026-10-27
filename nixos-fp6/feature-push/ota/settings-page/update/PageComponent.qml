@@ -60,6 +60,13 @@ ItemPage {
         um.call(method, args || {}, function(err) { if (err) root.message = err })
     }
     function reasons(list) { return list && list.length ? list.join(", ") : "" }
+    function opFailed(op) {
+        return op === "download" ? i18n.tr("Download failed") : op === "install" ? i18n.tr("Install failed")
+            : op === "rollback" ? i18n.tr("Rollback failed") : op === "scheduled" ? i18n.tr("Scheduled update failed")
+            : i18n.tr("Failed")
+    }
+    readonly property bool jobFailed: !!(job && (job.state === "failed" || job.state === "cancelled") && job.op !== "check")
+    readonly property string mismatch: st && st.systemMismatch ? st.systemMismatch : ""
     function opName(op) {
         return op === "check" ? i18n.tr("Checking for updates…")
             : op === "download" ? i18n.tr("Downloading…")
@@ -71,7 +78,7 @@ ItemPage {
     Connections {
         target: um
         function onJobFinished(j) {
-            if (j.state === "failed" || j.state === "cancelled") { root.message = j.error; root.notice = ""; return }
+            if (j.state === "failed" || j.state === "cancelled") { root.notice = ""; return }   // shown by fp6UpdateFailed
             if (j.state !== "done") return
             if (j.op === "download")
                 root.notice = i18n.tr("Download complete: release %1 is ready to install (%2 files, %3).")
@@ -188,6 +195,43 @@ ItemPage {
                     : i18n.tr("Automatic rollback is off. Updates rewrite this slot's boot partition after a backup; if a new version does not start, restoring needs a computer.")
             }
 
+            // ------------------------------------------------ installed, restart
+            Column {
+                anchors { left: parent.left; right: parent.right }
+                spacing: units.gu(1)
+                visible: !!pend
+                ListItem.ThinDivider {}
+                SettingsItemTitle { text: pend && pend.kind === "rollback" ? i18n.tr("Previous version restored") : i18n.tr("Update installed") }
+                Label {
+                    objectName: "fp6UpdatePending"
+                    anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
+                    wrapMode: Text.WordWrap
+                    font.bold: true
+                    text: !pend ? "" : pend.kind === "rollback" ? i18n.tr("Restart to return to the previous version.")
+                        : i18n.tr("Release %1 is installed. Restart to start using it.").arg(pend.release)
+                          + (pend.mode === "ab" ? " " + i18n.tr("It has %1 start attempts before the phone returns to this version.").arg(pend.maxAttempts) : "")
+                }
+                Row {
+                    anchors { left: parent.left; leftMargin: units.gu(2) }
+                    spacing: units.gu(1)
+                    Button {
+                        objectName: "fp6UpdateRestart"
+                        width: units.gu(22)
+                        text: i18n.tr("Restart now")
+                        color: theme.palette.normal.positive
+                        enabled: !um.busy
+                        onClicked: root.confirmRestart()
+                    }
+                    Button {
+                        objectName: "fp6UpdateUndo"
+                        visible: !!pend && pend.kind === "install"
+                        text: i18n.tr("Undo")
+                        enabled: !um.busy
+                        onClicked: root.confirmRollback()
+                    }
+                }
+            }
+
             ListItem.ThinDivider {}
 
             // ------------------------------------------------ status
@@ -260,40 +304,13 @@ ItemPage {
                 color: theme.palette.normal.negative
                 text: root.message
             }
-
-            // ------------------------------------------------ installed, restart
-            Column {
-                anchors { left: parent.left; right: parent.right }
-                spacing: units.gu(1)
-                visible: !!pend
-                ListItem.ThinDivider {}
-                SettingsItemTitle { text: pend && pend.kind === "rollback" ? i18n.tr("Previous version restored") : i18n.tr("Update installed") }
-                Label {
-                    objectName: "fp6UpdatePending"
-                    anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
-                    wrapMode: Text.WordWrap
-                    text: !pend ? "" : pend.kind === "rollback" ? i18n.tr("Restart to return to the previous version.")
-                        : i18n.tr("Release %1 is installed. Restart to start using it.").arg(pend.release)
-                          + (pend.mode === "ab" ? " " + i18n.tr("It has %1 start attempts before the phone returns to this version.").arg(pend.maxAttempts) : "")
-                }
-                Row {
-                    anchors { left: parent.left; leftMargin: units.gu(2) }
-                    spacing: units.gu(1)
-                    Button {
-                        objectName: "fp6UpdateRestart"
-                        text: i18n.tr("Restart now")
-                        color: theme.palette.normal.positive
-                        enabled: !um.busy
-                        onClicked: root.confirmRestart()
-                    }
-                    Button {
-                        objectName: "fp6UpdateUndo"
-                        visible: !!pend && pend.kind === "install"
-                        text: i18n.tr("Undo")
-                        enabled: !um.busy
-                        onClicked: root.confirmRollback()
-                    }
-                }
+            Label {
+                objectName: "fp6UpdateFailed"
+                anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
+                visible: root.jobFailed && !root.jobRunning
+                wrapMode: Text.WordWrap
+                color: theme.palette.normal.negative
+                text: root.jobFailed ? (job.state === "cancelled" ? job.error : root.opFailed(job.op) + ": " + job.error) : ""
             }
 
             // ------------------------------------------------ available
@@ -343,6 +360,14 @@ ItemPage {
                     color: theme.palette.normal.backgroundTertiaryText
                     text: av && av.kernel ? av.kernel.notes : ""
                 }
+                Label {
+                    objectName: "fp6UpdateMismatch"
+                    anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
+                    visible: root.mismatch !== ""
+                    wrapMode: Text.WordWrap
+                    color: theme.palette.normal.negative
+                    text: root.mismatch
+                }
                 Flow {
                     anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
                     spacing: units.gu(1)
@@ -366,13 +391,14 @@ ItemPage {
                         objectName: "fp6UpdateTonight"
                         visible: !!av && !(st && st.installTonight)
                         text: i18n.tr("Install tonight while charging")
-                        enabled: !um.busy
+                        enabled: !um.busy && root.mismatch === ""
                         onClicked: root.confirmTonight()
                     }
                 }
                 Label {
                     anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
-                    visible: !!av && !!um.blocked && ((!av.downloaded && um.blocked.download.length > 0) || (av.downloaded && um.blocked.install.length > 0))
+                    visible: !!av && !!um.blocked && ((!av.downloaded && um.blocked.download.length > 0)
+                             || (av.downloaded && root.mismatch === "" && um.blocked.install.length > 0))
                     wrapMode: Text.WordWrap
                     fontSize: "small"
                     color: theme.palette.normal.activity

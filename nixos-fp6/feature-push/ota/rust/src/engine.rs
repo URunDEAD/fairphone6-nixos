@@ -23,6 +23,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const MAX_MANIFEST: u64 = 256 * 1024;
+pub const NOT_INSTALLED: &str = "Can't install: this phone is running a test system that isn't installed (started from a computer). Restart into the installed system first.";
 const MAX_SIG: u64 = 4096;
 const MAX_CLOSURE: u64 = 32 * 1024 * 1024;
 
@@ -338,6 +339,22 @@ impl Engine {
         }
     }
 
+    /// The running system is not the one the running slot's boot partition
+    /// boots (e.g. a RAM-booted test system): installing would back up and
+    /// replace an image that is not the running one, so it is refused.
+    /// Read-only (the first 4 KiB of boot_<slot>).
+    pub fn system_mismatch(&self) -> Option<String> {
+        let slot = system::booted_slot(&self.cfg)?;
+        let booted = system::booted_toplevel(&self.cfg);
+        let pin = bootimg::resolve(&self.cfg.by_partlabel, &format!("boot{slot}"), self.cfg.fake.is_some())
+            .and_then(|p| bootimg::pinned_generation(&p.device));
+        match pin {
+            Ok(Some(p)) if p == booted => None,
+            Ok(_) => Some(NOT_INSTALLED.to_string()),
+            Err(e) => Some(format!("Can't install: the boot partition of slot {} cannot be read ({e}).", slot.trim_start_matches('_').to_uppercase())),
+        }
+    }
+
     pub fn install(&self, purpose: Purpose) -> Result<Value, String> {
         let st = self.store.read();
         let a = st.available.clone().ok_or("No update to install")?;
@@ -348,6 +365,9 @@ impl Engine {
             return Err("An installed update is waiting for a restart".into());
         }
         let m = a.manifest.clone();
+        if let Some(why) = self.system_mismatch() {
+            return Err(why);
+        }
         policy::allowed(&st.settings, &system::conditions(&self.cfg), purpose, system::local_hour(&self.cfg)).map_err(|w| w.join("; "))?;
         let running = read_release(&self.cfg.booted_release)?;
         if manifest::compare(&m, &running) != Offer::Newer {
@@ -378,7 +398,8 @@ impl Engine {
         if !ab {
             let pin = bootimg::pinned_generation(&part.device)?;
             if pin.as_deref() != Some(prev_top.as_str()) {
-                return Err(format!("{label} does not hold the running system ({pin:?}): not overwriting it"));
+                util::log(format!("fp6-updated: {label} does not hold the running system ({pin:?}): not overwriting it"));
+                return Err(NOT_INSTALLED.to_string());
             }
         }
         self.progress("backing up the boot partition", 0, 0);
@@ -702,7 +723,16 @@ impl Engine {
         let slots = self.boot.dump().ok();
         let cond = system::conditions(&self.cfg);
         let hour = system::local_hour(&self.cfg);
-        let why = |p| policy::allowed(&st.settings, &cond, p, hour).err().unwrap_or_default();
+        let mismatch = if st.pending.is_none() { self.system_mismatch() } else { None };
+        let why = |p| {
+            let mut w = policy::allowed(&st.settings, &cond, p, hour).err().unwrap_or_default();
+            if matches!(p, Purpose::InstallNow | Purpose::InstallTonight) {
+                if let Some(m) = &mismatch {
+                    w.insert(0, m.clone());
+                }
+            }
+            w
+        };
         let btop = system::booted_toplevel(&self.cfg);
         let previous = st.history.iter().find(|h| (h.mode == "single" || h.mode == "ab") && h.toplevel == btop)
             .map(|h| json!({"version": h.previous_version, "toplevel": h.previous_toplevel, "backup": h.backup, "trimmedBackup": h.trimmed_backup}));
@@ -737,6 +767,7 @@ impl Engine {
                         "autoDownload": why(Purpose::AutoDownload), "install": why(Purpose::InstallNow),
                         "tonight": why(Purpose::InstallTonight)},
             "job": self.job.lock().unwrap().clone(),
+            "systemMismatch": mismatch,
             "otherSlotSystem": other_pin,
             "bootedToplevel": btop,
             "busy": self.busy.load(Ordering::SeqCst),
