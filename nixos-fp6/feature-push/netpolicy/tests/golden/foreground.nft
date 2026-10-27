@@ -1,0 +1,13 @@
+flush chain inet fp6_netpolicy out
+add rule inet fp6_netpolicy out oifname "lo" return
+add rule inet fp6_netpolicy out oifname "wwan0" socket cgroupv2 level 2 "system.slice/systemd-resolved.service" return
+add rule inet fp6_netpolicy out oifname "wwan0" socket cgroupv2 level 5 "user.slice/user-1000.slice/user@1000.service/app.slice/app-chat.scope" counter name a63686174_tx return
+add rule inet fp6_netpolicy out oifname "wwan0" socket cgroupv2 level 2 "user.slice/user-1000.slice" drop
+add rule inet fp6_netpolicy out oifname "wwan0" socket cgroupv2 level 1 "system.slice" drop
+add rule inet fp6_netpolicy out oifname "wwan0" meta skuid 1000 drop
+flush chain inet fp6_netpolicy in
+add rule inet fp6_netpolicy in iifname "lo" return
+add rule inet fp6_netpolicy in iifname "wwan0" socket cgroupv2 level 2 "system.slice/systemd-resolved.service" return
+add rule inet fp6_netpolicy in iifname "wwan0" socket cgroupv2 level 5 "user.slice/user-1000.slice/user@1000.service/app.slice/app-chat.scope" counter name a63686174_rx return
+add rule inet fp6_netpolicy in iifname "wwan0" socket cgroupv2 level 2 "user.slice/user-1000.slice" drop
+add rule inet fp6_netpolicy in iifname "wwan0" socket cgroupv2 level 1 "system.slice" drop

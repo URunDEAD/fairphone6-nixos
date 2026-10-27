@@ -1,0 +1,36 @@
+[package]
+name = "fp6-netpolicy"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Local data saver and Wi-Fi quality policy for Mobile NixOS"
+
+[features]
+default = []
+ui = ["dep:qmetaobject"]
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+zbus = { version = "5.12", features = ["blocking"] }
+glob = "0.3"
+qmetaobject = { version = "0.2", optional = true }
+
+[[bin]]
+name = "netpolicy-ui"
+path = "src/bin/ui.rs"
+required-features = ["ui"]
+
+[[bin]]
+name = "netpolicy-helper"
+path = "src/bin/helper.rs"
+
+[[bin]]
+name = "netpolicyd"
+path = "src/bin/daemon.rs"
+
+[[bin]]
+name = "netpolicyctl"
+path = "src/bin/ctl.rs"

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Network policy
+Comment=Manage background data and Wi-Fi fallback
+Exec=netpolicy-ui
+Icon=network-wireless
+Terminal=false
+Categories=Settings;Network;
+X-Lomiri-Touch=true

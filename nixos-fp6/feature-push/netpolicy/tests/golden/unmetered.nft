@@ -1,0 +1,7 @@
+add table inet fp6_netpolicy
+add counter inet fp6_netpolicy a63686174_tx
+add counter inet fp6_netpolicy a63686174_rx
+add chain inet fp6_netpolicy out { type filter hook output priority -5; policy accept; }
+add rule inet fp6_netpolicy out oifname "lo" return
+add chain inet fp6_netpolicy in { type filter hook input priority -5; policy accept; }
+add rule inet fp6_netpolicy in iifname "lo" return

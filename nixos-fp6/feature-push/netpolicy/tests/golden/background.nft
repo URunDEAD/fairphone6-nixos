@@ -1,0 +1,16 @@
+add table inet fp6_netpolicy
+add counter inet fp6_netpolicy a63686174_tx
+add counter inet fp6_netpolicy a63686174_rx
+add chain inet fp6_netpolicy out { type filter hook output priority -5; policy accept; }
+add rule inet fp6_netpolicy out oifname "lo" return
+add rule inet fp6_netpolicy out oifname "wwan0" socket cgroupv2 level 2 "system.slice/systemd-resolved.service" return
+add rule inet fp6_netpolicy out oifname "wwan0" socket cgroupv2 level 5 "user.slice/user-1000.slice/user@1000.service/app.slice/app-chat.scope" drop
+add rule inet fp6_netpolicy out oifname "wwan0" socket cgroupv2 level 2 "user.slice/user-1000.slice" drop
+add rule inet fp6_netpolicy out oifname "wwan0" socket cgroupv2 level 1 "system.slice" drop
+add rule inet fp6_netpolicy out oifname "wwan0" meta skuid 1000 drop
+add chain inet fp6_netpolicy in { type filter hook input priority -5; policy accept; }
+add rule inet fp6_netpolicy in iifname "lo" return
+add rule inet fp6_netpolicy in iifname "wwan0" socket cgroupv2 level 2 "system.slice/systemd-resolved.service" return
+add rule inet fp6_netpolicy in iifname "wwan0" socket cgroupv2 level 5 "user.slice/user-1000.slice/user@1000.service/app.slice/app-chat.scope" counter name a63686174_rx drop
+add rule inet fp6_netpolicy in iifname "wwan0" socket cgroupv2 level 2 "user.slice/user-1000.slice" drop
+add rule inet fp6_netpolicy in iifname "wwan0" socket cgroupv2 level 1 "system.slice" drop

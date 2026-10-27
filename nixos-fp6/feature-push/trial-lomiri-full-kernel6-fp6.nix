@@ -49,6 +49,9 @@ let
       # Offline voice dictation service (Whisper; model downloaded on demand), built by a Codex worker:
       # nixos-fp6/feature-push/dictation/README.md
       ({ ... }: { imports = [ ./dictation/module.nix ]; hardware.fairphone6.dictation.enable = true; })
+      # Data saver and smart Wi-Fi/mobile switching (both off until enabled in Settings), built by a Codex worker:
+      # nixos-fp6/feature-push/netpolicy/README.md
+      ({ ... }: { imports = [ ./netpolicy/module.nix ]; hardware.fairphone6.netpolicy = { enable = true; user = "user"; uid = 10000; }; })
       # USB preferences: System Settings > USB (USB network / file transfer /
       # USB drive / ADB toggles, power role), "Charging via USB" notification.
       # Developer build: usb0 (172.16.42.1) is always kept for SSH over USB.
