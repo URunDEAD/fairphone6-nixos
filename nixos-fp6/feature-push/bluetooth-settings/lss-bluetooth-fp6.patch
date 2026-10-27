@@ -1,5 +1,5 @@
 diff --git a/plugins/bluetooth/CMakeLists.txt b/plugins/bluetooth/CMakeLists.txt
-index 0a98d9c..8198041 100644
+index 0a98d9c..bb31650 100644
 --- a/plugins/bluetooth/CMakeLists.txt
 +++ b/plugins/bluetooth/CMakeLists.txt
 @@ -9,6 +9,9 @@ ProvidePasskeyDialog.qml
@@ -21,6 +21,19 @@ index 0a98d9c..8198041 100644
    bluez_adapter1.h
    bluez_agentmanager1.h
    bluez_device1.h
+@@ -38,7 +43,11 @@ add_library(LomiriBluetoothPanel MODULE
+   ${QML_SOURCES}
+ )
+ 
+-target_link_libraries(LomiriBluetoothPanel Qt5::Qml Qt5::Quick Qt5::DBus)
++# FP6: GKeyFile for the store shared with the indicator and the sound UI.
++find_package(PkgConfig REQUIRED)
++pkg_check_modules(FP6_GLIB REQUIRED glib-2.0)
++target_include_directories(LomiriBluetoothPanel PRIVATE ${FP6_GLIB_INCLUDE_DIRS})
++target_link_libraries(LomiriBluetoothPanel Qt5::Qml Qt5::Quick Qt5::DBus ${FP6_GLIB_LIBRARIES})
+ 
+ set(PLUG_DIR ${PLUGIN_PRIVATE_MODULE_DIR}/Lomiri/SystemSettings/Bluetooth)
+ install(TARGETS LomiriBluetoothPanel DESTINATION ${PLUG_DIR})
 diff --git a/plugins/bluetooth/DevicePage.qml b/plugins/bluetooth/DevicePage.qml
 index ee5cf5f..25ac733 100644
 --- a/plugins/bluetooth/DevicePage.qml
@@ -423,10 +436,10 @@ index 0000000..ce218c9
 +}
 diff --git a/plugins/bluetooth/Fp6Kinds.js b/plugins/bluetooth/Fp6Kinds.js
 new file mode 100644
-index 0000000..6eeff73
+index 0000000..7cd8f3a
 --- /dev/null
 +++ b/plugins/bluetooth/Fp6Kinds.js
-@@ -0,0 +1,19 @@
+@@ -0,0 +1,21 @@
 +// FP6: labels of the device types (Device::knownKinds()). Not a
 +// .pragma library, so i18n from the importing component is in scope.
 +function label(kind) {
@@ -443,6 +456,8 @@ index 0000000..6eeff73
 +    case "phone":      return i18n.tr("Phone")
 +    case "computer":   return i18n.tr("Computer")
 +    case "tv":         return i18n.tr("TV")
++    case "hifi":       return i18n.tr("Hi-fi speaker")
++    case "portable":   return i18n.tr("Portable speaker")
 +    default:           return i18n.tr("Other")
 +    }
 +}
@@ -1367,10 +1382,10 @@ index 1588119..9bd1013 100644
      Agent m_agent;
  };
 diff --git a/plugins/bluetooth/device.cpp b/plugins/bluetooth/device.cpp
-index 9d26ba2..a0bf899 100644
+index 9d26ba2..3356059 100644
 --- a/plugins/bluetooth/device.cpp
 +++ b/plugins/bluetooth/device.cpp
-@@ -25,6 +25,277 @@
+@@ -25,6 +25,284 @@
  #include <QTimer>
  
  #include "dbus-shared.h"
@@ -1381,23 +1396,26 @@ index 9d26ba2..a0bf899 100644
 +#define BLUEZ_BATTERY_IFACE "org.bluez.Battery1"
 +
 +namespace {
-+struct Fp6Kind { const char *kind; const char *icon; };
++struct Fp6Kind { const char *kind; const char *icon; bool offered; };
 +// Kinds offered in "Type"; icons from Suru (fp6-audio-earbuds-symbolic is
 +// shipped by the FP6 module into hicolor).
 +const Fp6Kind FP6_KINDS[] = {
-+    { "car",        "audio-carkit-symbolic" },
-+    { "speaker",    "audio-speakers-symbolic" },
-+    { "headphones", "audio-headphones-symbolic" },
-+    { "earbuds",    "fp6-audio-earbuds-symbolic" },
-+    { "headset",    "audio-headset-symbolic" },
-+    { "watch",      "smartwatch-symbolic" },
-+    { "keyboard",   "input-keyboard-symbolic" },
-+    { "mouse",      "input-mouse-symbolic" },
-+    { "gamepad",    "input-gaming-symbolic" },
-+    { "phone",      "phone-smartphone-symbolic" },
-+    { "computer",   "computer-symbolic" },
-+    { "tv",         "video-display-symbolic" },
-+    { "other",      "bluetooth-active" },
++    { "car",        "audio-carkit-symbolic",      true },
++    { "speaker",    "audio-speakers-symbolic",    true },
++    { "headphones", "audio-headphones-symbolic",  true },
++    { "earbuds",    "fp6-audio-earbuds-symbolic", true },
++    { "headset",    "audio-headset-symbolic",     true },
++    { "watch",      "smartwatch-symbolic",        true },
++    { "keyboard",   "input-keyboard-symbolic",    true },
++    { "mouse",      "input-mouse-symbolic",       true },
++    { "gamepad",    "input-gaming-symbolic",      true },
++    { "phone",      "phone-smartphone-symbolic",  true },
++    { "computer",   "computer-symbolic",          true },
++    { "tv",         "video-display-symbolic",     true },
++    { "other",      "bluetooth-active",           true },
++    // Written by the sound UI's own vocabulary; accepted, not offered.
++    { "hifi",       "audio-speakers-symbolic",    false },
++    { "portable",   "audio-speakers-symbolic",    false },
 +};
 +
 +struct Fp6Profile { const char *uuid16; const char *label; };
@@ -1420,7 +1438,8 @@ index 9d26ba2..a0bf899 100644
 +{
 +    QStringList kinds;
 +    for (const auto &k : FP6_KINDS)
-+        kinds << QString::fromLatin1(k.kind);
++        if (k.offered)
++            kinds << QString::fromLatin1(k.kind);
 +    return kinds;
 +}
 +
@@ -1601,10 +1620,13 @@ index 9d26ba2..a0bf899 100644
 +    // An empty alias makes BlueZ fall back to the device's own name.
 +    auto call = m_bluezDeviceProperties->Set(BLUEZ_DEVICE_IFACE, "Alias", QDBusVariant(alias.trimmed()));
 +    auto watcher = new QDBusPendingCallWatcher(call, this);
-+    QObject::connect(watcher, &QDBusPendingCallWatcher::finished, [this](QDBusPendingCallWatcher *watcher) {
++    const QString chosen = alias.trimmed();
++    QObject::connect(watcher, &QDBusPendingCallWatcher::finished, [this, chosen](QDBusPendingCallWatcher *watcher) {
 +        QDBusPendingReply<void> reply = *watcher;
 +        if (reply.isError())
 +            qWarning() << "Could not rename device:" << reply.error().name();
++        else
++            Fp6Store::setName(m_address, chosen); // "" removes name=
 +        Q_EMIT(aliasActionDone(!reply.isError()));
 +        watcher->deleteLater();
 +    });
@@ -1648,7 +1670,7 @@ index 9d26ba2..a0bf899 100644
  
  Device::Device(const QString &path, QDBusConnection &bus) :
     m_name("unknown"),
-@@ -45,6 +316,8 @@ void Device::initDevice(const QString &path, QDBusConnection &bus)
+@@ -45,6 +323,8 @@ void Device::initDevice(const QString &path, QDBusConnection &bus)
      QObject::connect(this, SIGNAL(typeChanged()), this, SIGNAL(deviceChanged()));
      QObject::connect(this, SIGNAL(connectionChanged()), this, SIGNAL(deviceChanged()));
      QObject::connect(this, SIGNAL(strengthChanged()), this, SIGNAL(deviceChanged()));
@@ -1657,7 +1679,7 @@ index 9d26ba2..a0bf899 100644
  
      m_bluezDevice.reset(new BluezDevice1(BLUEZ_SERVICE, path, bus));
      /* Give our calls a bit more time than the default 25 seconds to
-@@ -56,6 +329,8 @@ void Device::initDevice(const QString &path, QDBusConnection &bus)
+@@ -56,6 +336,8 @@ void Device::initDevice(const QString &path, QDBusConnection &bus)
  
      QObject::connect(m_bluezDeviceProperties.data(), SIGNAL(PropertiesChanged(const QString&, const QVariantMap&, const QStringList&)),
                       this, SLOT(slotPropertiesChanged(const QString&, const QVariantMap&, const QStringList&)));
@@ -1666,7 +1688,7 @@ index 9d26ba2..a0bf899 100644
  
      Q_EMIT(pathChanged());
  
-@@ -73,6 +348,17 @@ void Device::initDevice(const QString &path, QDBusConnection &bus)
+@@ -73,6 +355,17 @@ void Device::initDevice(const QString &path, QDBusConnection &bus)
  
          watcher->deleteLater();
      });
@@ -1684,7 +1706,7 @@ index 9d26ba2..a0bf899 100644
  }
  
  void Device::slotPropertiesChanged(const QString &interface, const QVariantMap &changedProperties,
-@@ -145,7 +431,7 @@ void Device::pair()
+@@ -145,7 +438,7 @@ void Device::pair()
  
      setConnection(Device::Connecting);
  
@@ -1693,7 +1715,7 @@ index 9d26ba2..a0bf899 100644
  
      auto call = m_bluezDevice->asyncCall("Pair");
  
-@@ -161,7 +447,7 @@ void Device::pair()
+@@ -161,7 +454,7 @@ void Device::pair()
              success = false;
          }
  
@@ -1702,7 +1724,7 @@ index 9d26ba2..a0bf899 100644
  
          Q_EMIT(pairingDone(success));
  
-@@ -186,7 +472,7 @@ void Device::cancelPairing()
+@@ -186,7 +479,7 @@ void Device::cancelPairing()
              updateConnection();
          } else {
              // Only mark us a not pairing when call succeeded
@@ -1711,7 +1733,7 @@ index 9d26ba2..a0bf899 100644
          }
  
          watcher->deleteLater();
-@@ -322,8 +608,19 @@ void Device::updateIcon()
+@@ -322,8 +615,19 @@ void Device::updateIcon()
         Try to guess the icon from the device type,
         and use the bluez-provided icon as a fallback */
  
@@ -1731,7 +1753,7 @@ index 9d26ba2..a0bf899 100644
      switch (type) {
      case Type::Headset:
          setIconName("image://theme/audio-headset-symbolic");
-@@ -356,8 +653,22 @@ void Device::updateIcon()
+@@ -356,8 +660,22 @@ void Device::updateIcon()
      case Type::Computer:
          setIconName("image://theme/computer-symbolic");
          break;
@@ -1755,7 +1777,7 @@ index 9d26ba2..a0bf899 100644
      }
  }
  
-@@ -379,15 +690,31 @@ void Device::updateProperty(const QString &key, const QVariant &value)
+@@ -379,15 +697,31 @@ void Device::updateProperty(const QString &key, const QVariant &value)
          } else {
              setValid(true);
          }
@@ -1788,7 +1810,7 @@ index 9d26ba2..a0bf899 100644
      } else if (key == "Paired") {
          setPaired(value.toBool());
  
-@@ -466,6 +793,9 @@ Device::Type Device::getTypeFromClass (quint32 c)
+@@ -466,6 +800,9 @@ Device::Type Device::getTypeFromClass (quint32 c)
          case 0x0b: // vcr
          case 0x0c: // video camera
          case 0x0d: // camcorder
@@ -2232,17 +2254,18 @@ index 9a35b84..a8a6ea2 100644
  #endif // BLUETOOTH_DEVICE_MODEL_H
 diff --git a/plugins/bluetooth/fp6store.cpp b/plugins/bluetooth/fp6store.cpp
 new file mode 100644
-index 0000000..dcb6601
+index 0000000..8ebef33
 --- /dev/null
 +++ b/plugins/bluetooth/fp6store.cpp
-@@ -0,0 +1,96 @@
+@@ -0,0 +1,144 @@
 +#include "fp6store.h"
 +
-+#include <QCryptographicHash>
 +#include <QDir>
++#include <QFile>
 +#include <QFileInfo>
-+#include <QSettings>
-+#include <QStandardPaths>
++
++#include <glib.h>
++#include <glib/gstdio.h>
 +
 +namespace {
 +QString xdgDir(const char *var, const QString &fallback)
@@ -2256,18 +2279,60 @@ index 0000000..dcb6601
 +QString configDir() { return xdgDir("XDG_CONFIG_HOME", QStringLiteral("/.config")); }
 +QString stateDir() { return xdgDir("XDG_STATE_HOME", QStringLiteral("/.local/state")); }
 +
-+void ensureDir(const QString &file)
-+{
-+    QDir().mkpath(QFileInfo(file).absolutePath());
-+}
++// RAII GKeyFile loaded from path (missing file = empty).
++struct KeyFile {
++    GKeyFile *kf;
++    QByteArray path;
++    explicit KeyFile(const QString &p) : kf(g_key_file_new()), path(QFile::encodeName(p)) {
++        g_key_file_load_from_file(kf, path.constData(),
++                                  GKeyFileFlags(G_KEY_FILE_KEEP_COMMENTS), nullptr);
++    }
++    ~KeyFile() { g_key_file_free(kf); }
++    QString get(const QString &group, const char *key) const {
++        gchar *v = g_key_file_get_string(kf, group.toUtf8().constData(), key, nullptr);
++        QString r = v ? QString::fromUtf8(v) : QString();
++        g_free(v);
++        return r;
++    }
++    void set(const QString &group, const char *key, const QString &value) {
++        g_key_file_set_string(kf, group.toUtf8().constData(), key, value.toUtf8().constData());
++    }
++    void remove(const QString &group, const char *key) {
++        g_key_file_remove_key(kf, group.toUtf8().constData(), key, nullptr);
++        gsize n = 0;
++        gchar **keys = g_key_file_get_keys(kf, group.toUtf8().constData(), &n, nullptr);
++        g_strfreev(keys);
++        if (n == 0)
++            g_key_file_remove_group(kf, group.toUtf8().constData(), nullptr);
++    }
++    void removeGroup(const QString &group) {
++        g_key_file_remove_group(kf, group.toUtf8().constData(), nullptr);
++    }
++    bool save() {
++        const QByteArray dir = QFile::encodeName(QFileInfo(QFile::decodeName(path)).absolutePath());
++        g_mkdir_with_parents(dir.constData(), 0700);
++        g_chmod(dir.constData(), 0700);
++        gsize len = 0;
++        gchar *data = g_key_file_to_data(kf, &len, nullptr);
++        GError *error = nullptr;
++        const bool ok = g_file_set_contents_full(path.constData(), data, (gssize) len,
++                                                 G_FILE_SET_CONTENTS_CONSISTENT, 0600, &error);
++        if (!ok) {
++            qWarning("fp6-bluetooth store: %s", error ? error->message : "write failed");
++            g_clear_error(&error);
++        } else {
++            // GLib keeps the mode of an existing file; the store is private.
++            g_chmod(path.constData(), 0600);
++        }
++        g_free(data);
++        return ok;
++    }
++};
 +}
 +
 +QString Fp6Store::deviceKey(const QString &address)
 +{
-+    if (address.isEmpty())
-+        return QString();
-+    return QString::fromLatin1(QCryptographicHash::hash(address.toUpper().toUtf8(),
-+                                                        QCryptographicHash::Sha256).toHex());
++    return address.toUpper();
 +}
 +
 +QString Fp6Store::devicesPath() { return configDir() + QStringLiteral("/devices.ini"); }
@@ -2276,85 +2341,91 @@ index 0000000..dcb6601
 +
 +QString Fp6Store::kindOverride(const QString &address)
 +{
-+    const QString key = deviceKey(address);
-+    if (key.isEmpty())
++    if (address.isEmpty())
 +        return QString();
-+    QSettings s(devicesPath(), QSettings::IniFormat);
-+    return s.value(key + QStringLiteral("/type")).toString();
++    return KeyFile(devicesPath()).get(deviceKey(address), "type");
 +}
 +
 +void Fp6Store::setKindOverride(const QString &address, const QString &kind, const QString &icon)
 +{
-+    const QString key = deviceKey(address);
-+    if (key.isEmpty())
++    if (address.isEmpty())
 +        return;
-+    ensureDir(devicesPath());
-+    QSettings s(devicesPath(), QSettings::IniFormat);
++    KeyFile f(devicesPath());
++    const QString g = deviceKey(address);
 +    if (kind.isEmpty()) {
-+        s.remove(key);
++        f.remove(g, "type");
++        f.remove(g, "icon");
 +    } else {
-+        s.setValue(key + QStringLiteral("/type"), kind);
-+        s.setValue(key + QStringLiteral("/icon"), icon);
++        f.set(g, "type", kind);
++        f.set(g, "icon", icon);
 +    }
-+    s.sync();
++    f.save();
++}
++
++void Fp6Store::setName(const QString &address, const QString &name)
++{
++    if (address.isEmpty())
++        return;
++    KeyFile f(devicesPath());
++    if (name.trimmed().isEmpty())
++        f.remove(deviceKey(address), "name");
++    else
++        f.set(deviceKey(address), "name", name.trimmed());
++    f.save();
 +}
 +
 +qint64 Fp6Store::lastConnected(const QString &address)
 +{
-+    const QString key = deviceKey(address);
-+    if (key.isEmpty())
++    if (address.isEmpty())
 +        return 0;
-+    QSettings s(lastConnectedPath(), QSettings::IniFormat);
-+    return s.value(key + QStringLiteral("/last-connected")).toLongLong();
++    return KeyFile(lastConnectedPath()).get(deviceKey(address), "last-connected").toLongLong();
 +}
 +
 +void Fp6Store::setLastConnected(const QString &address, qint64 when)
 +{
-+    const QString key = deviceKey(address);
-+    if (key.isEmpty())
++    if (address.isEmpty())
 +        return;
-+    ensureDir(lastConnectedPath());
-+    QSettings s(lastConnectedPath(), QSettings::IniFormat);
-+    s.setValue(key + QStringLiteral("/last-connected"), when);
-+    s.sync();
++    KeyFile f(lastConnectedPath());
++    f.set(deviceKey(address), "last-connected", QString::number(when));
++    f.save();
 +}
 +
 +void Fp6Store::forget(const QString &address)
 +{
-+    const QString key = deviceKey(address);
-+    if (key.isEmpty())
++    if (address.isEmpty())
 +        return;
 +    for (const QString &path : { devicesPath(), lastConnectedPath() }) {
 +        if (!QFileInfo::exists(path))
 +            continue;
-+        QSettings s(path, QSettings::IniFormat);
-+        s.remove(key);
-+        s.sync();
++        KeyFile f(path);
++        f.removeGroup(deviceKey(address));
++        f.save();
 +    }
 +}
 diff --git a/plugins/bluetooth/fp6store.h b/plugins/bluetooth/fp6store.h
 new file mode 100644
-index 0000000..d495ae2
+index 0000000..405c4b4
 --- /dev/null
 +++ b/plugins/bluetooth/fp6store.h
-@@ -0,0 +1,36 @@
+@@ -0,0 +1,38 @@
 +/*
 + * FP6: small per-user store shared with the Bluetooth indicator and the
-+ * audio UI. Format (documented in results/feature-push-20261024/
-+ * bluetooth-settings/README.md):
++ * sound UI (ayatana-indicator-sound / Settings > Sound). Format (also in
++ * results/feature-push-20261024/bluetooth-settings/README.md):
 + *
-+ *   $XDG_CONFIG_HOME/fp6-bluetooth/devices.ini   (written by System Settings)
-+ *     [<key>]
-+ *     type=car            one of Device::knownKinds()
-+ *     icon=audio-carkit-symbolic
++ *   $XDG_CONFIG_HOME/fp6-bluetooth/devices.ini   (GKeyFile; dir 0700, file 0600)
++ *     [AA:BB:CC:DD:EE:FF]        device address, upper case
++ *     name=Car speaker           optional, the name chosen in Settings
++ *                                (System Settings also sets BlueZ Alias)
++ *     type=car                   optional, see Device::knownKinds() + hifi,
++ *                                portable (unknown -> "other")
++ *     icon=audio-carkit-symbolic optional, themed icon for that type
 + *
 + *   $XDG_STATE_HOME/fp6-bluetooth/last-connected.ini
-+ *     [<key>]
-+ *     last-connected=1761500000     (unix seconds, UTC)
++ *     [AA:BB:CC:DD:EE:FF]
++ *     last-connected=1761500000  unix seconds
 + *
-+ *   <key> = lowercase hex SHA-256 of the device address in upper case with
-+ *   colons ("AA:BB:CC:DD:EE:FF", UTF-8, no newline). No address or name is
-+ *   stored in clear.
++ * Files are replaced atomically (g_file_set_contents_full).
 + */
 +#ifndef FP6_BLUETOOTH_STORE_H
 +#define FP6_BLUETOOTH_STORE_H
@@ -2368,6 +2439,7 @@ index 0000000..d495ae2
 +    QString settingsPath();
 +    QString kindOverride(const QString &address);
 +    void setKindOverride(const QString &address, const QString &kind, const QString &icon);
++    void setName(const QString &address, const QString &name);
 +    qint64 lastConnected(const QString &address);
 +    void setLastConnected(const QString &address, qint64 when);
 +    void forget(const QString &address);

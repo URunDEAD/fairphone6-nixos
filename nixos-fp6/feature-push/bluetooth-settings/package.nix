@@ -7,7 +7,7 @@
 #  indicator:    ayatana-indicator-bluetooth with indicator-bluetooth-fp6.patch
 #                (paired devices with connect switches in the phone menu).
 #  icons:        fp6-audio-earbuds-symbolic (hicolor; Suru has no earbuds).
-{ lib, stdenv, cmake, libsForQt5, lomiri, ayatana-indicator-bluetooth, runCommand }:
+{ lib, stdenv, cmake, pkg-config, glib, libsForQt5, lomiri, ayatana-indicator-bluetooth, runCommand }:
 let
   lssUnwrapped = lomiri.lomiri-system-settings-unwrapped;
 
@@ -35,8 +35,8 @@ let
     '';
 
     strictDeps = true;
-    nativeBuildInputs = [ cmake ];
-    buildInputs = [ libsForQt5.qtbase libsForQt5.qtdeclarative ];
+    nativeBuildInputs = [ cmake pkg-config ];
+    buildInputs = [ libsForQt5.qtbase libsForQt5.qtdeclarative glib ];
     dontWrapQtApps = true;
 
     postInstall = ''

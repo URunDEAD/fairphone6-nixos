@@ -95,17 +95,16 @@ DEVICES = [
 ]
 
 
-def sha(addr):
-    import hashlib
-    return hashlib.sha256(addr.upper().encode()).hexdigest()
+def key(addr):
+    return addr.upper()
 
 
 # user store: BT-01 is really a car speaker; buds last connected 2 days ago
 open(f"{home}/.config/fp6-bluetooth/devices.ini", "w").write(
-    f"[{sha(DEVICES[0][0])}]\ntype=car\nicon=audio-carkit-symbolic\n")
+    f"[{key(DEVICES[0][0])}]\ntype=car\n")
 open(f"{home}/.local/state/fp6-bluetooth/last-connected.ini", "w").write(
-    f"[{sha(DEVICES[1][0])}]\nlast-connected={int(time.time()) - 2 * 86400 - 600}\n"
-    f"[{sha(DEVICES[2][0])}]\nlast-connected={int(time.time()) - 3 * 3600}\n")
+    f"[{key(DEVICES[1][0])}]\nlast-connected={int(time.time()) - 2 * 86400 - 600}\n"
+    f"[{key(DEVICES[2][0])}]\nlast-connected={int(time.time()) - 3 * 3600}\n")
 
 paths = {}
 for addr, name, cls, app, uuids, paired, connected, battery in DEVICES:
@@ -405,10 +404,14 @@ shot("10-device-type-page", delay=900, steps=["", "", "mv.openDevice('02:00:00:0
 
 
 def check_kind():
-    txt = open(f"{home}/.config/fp6-bluetooth/devices.ini").read()
-    key = sha("02:00:00:00:00:03")
-    ok = key in txt and "type=gamepad" in txt.split(key, 1)[1].split("[", 1)[0]
-    return ok, ["devices.ini after choosing Game controller:\n    " + txt.replace("\n", "\n    ")]
+    path = f"{home}/.config/fp6-bluetooth/devices.ini"
+    txt = open(path).read()
+    k = "[" + key("02:00:00:00:00:03") + "]"
+    ok = k in txt and "type=gamepad" in txt.split(k, 1)[1].split("[", 1)[0]
+    mode = oct(os.stat(path).st_mode & 0o777)
+    dmode = oct(os.stat(os.path.dirname(path)).st_mode & 0o777)
+    ok = ok and mode == "0o600" and dmode == "0o700"
+    return ok, [f"devices.ini (mode {mode}, dir {dmode}) after choosing Game controller:\n    " + txt.replace("\n", "\n    ")]
 
 
 shot("11-device-type-chosen", delay=900, steps=["", "", "mv.openDevice('02:00:00:00:00:03')", "el('fp6DeviceType').clicked()",
@@ -419,13 +422,18 @@ dump_menu("12-indicator-after-type-change")
 
 def check_dev_alias():
     d = props(paths["02:00:00:00:00:02"], "org.bluez.Device1")
-    ok = str(d["Alias"]) == "Test Buds (renamed)"
-    return ok, [f"Device1.Alias after rename: {d['Alias']}"]
+    txt = open(f"{home}/.config/fp6-bluetooth/devices.ini").read()
+    k = "[" + key("02:00:00:00:00:02") + "]"
+    ok = str(d["Alias"]) == "Test Buds (renamed)" and k in txt and \
+        "name=Test Buds (renamed)" in txt.split(k, 1)[1].split("[", 1)[0]
+    return ok, [f"Device1.Alias after rename: {d['Alias']}; devices.ini name= written: {ok}"]
 
 
 shot("13-device-rename", delay=900, steps=["", "", "mv.openDevice('02:00:00:00:00:02')", "el('fp6DeviceName').clicked()",
                                             "el('fp6RenameField').text = 'Test Buds (renamed)'", "el('fp6RenameSave').clicked()", ""],
      after=check_dev_alias)
+time.sleep(1.5)
+dump_menu("16-indicator-after-rename")
 shot("14-forget-confirm", delay=900, steps=["", "", "mv.openDevice('02:00:00:00:00:03')", "el('fp6DeviceForget').clicked()", ""])
 shot("15-device-page-dark", delay=900, theme="SuruDark", steps=["", "", "mv.openDevice('02:00:00:00:00:01')", ""])
 

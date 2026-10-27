@@ -1,5 +1,5 @@
 diff --git a/src/bluez.vala b/src/bluez.vala
-index 16e237a..b903089 100644
+index 16e237a..47708b1 100644
 --- a/src/bluez.vala
 +++ b/src/bluez.vala
 @@ -55,10 +55,20 @@ public class Bluez: Bluetooth, Object
@@ -101,11 +101,16 @@ index 16e237a..b903089 100644
  
      // look up the device's human-readable name
      v = device_proxy.get_cached_property ("Alias");
-@@ -313,14 +360,37 @@ public class Bluez: Bluetooth, Object
+@@ -313,14 +360,42 @@ public class Bluez: Bluetooth, Object
      v = device_proxy.get_cached_property ("Address");
      var address = v == null ? null : v.get_string ();
  
 -    // look up the device's bus address
++    // FP6: the name chosen in System Settings wins (it is also the Alias)
++    var chosen = fp6_store.name_for (address);
++    if (chosen != null)
++      name = chosen;
++
 +    // FP6: the user's type/icon from System Settings, else the same
 +    // automatic choice as System Settings.
      v = device_proxy.get_cached_property ("Icon");
@@ -141,7 +146,7 @@ index 16e237a..b903089 100644
      // derive the uuid-related attributes we care about
      v = device_proxy.get_cached_property ("UUIDs");
      uint16[] uuids = {};
-@@ -341,7 +411,9 @@ public class Bluez: Bluetooth, Object
+@@ -341,7 +416,9 @@ public class Bluez: Bluetooth, Object
                                           true,
                                           is_connected,
                                           supports_browsing,
@@ -152,7 +157,7 @@ index 16e237a..b903089 100644
  
      devices_changed ();
      update_connected ();
-@@ -353,6 +425,9 @@ public class Bluez: Bluetooth, Object
+@@ -353,6 +430,9 @@ public class Bluez: Bluetooth, Object
      path_to_id.remove (path);
      id_to_path.remove (id);
      id_to_device.remove (id);
@@ -163,7 +168,7 @@ index 16e237a..b903089 100644
      devices_changed ();
    }
 diff --git a/src/device.vala b/src/device.vala
-index 51bec03..0acb8bc 100644
+index 51bec03..b116985 100644
 --- a/src/device.vala
 +++ b/src/device.vala
 @@ -48,6 +48,9 @@ public class Device: Object
@@ -198,7 +203,7 @@ index 51bec03..0acb8bc 100644
    }
  
    public static Type class_to_device_type (uint32 c)
-@@ -154,3 +161,178 @@ public class Device: Object
+@@ -154,3 +161,230 @@ public class Device: Object
      return 0;
    }
  }
@@ -206,9 +211,11 @@ index 51bec03..0acb8bc 100644
 +/**
 + * FP6: per-user store shared with System Settings > Bluetooth and the sound
 + * UI (format: lomiri-system-settings plugins/bluetooth/fp6store.h).
-+ *   $XDG_CONFIG_HOME/fp6-bluetooth/devices.ini         [<key>] type=, icon=
-+ *   $XDG_STATE_HOME/fp6-bluetooth/last-connected.ini   [<key>] last-connected=
-+ * <key> = lowercase hex SHA-256 of the upper-case "AA:BB:CC:DD:EE:FF".
++ *   $XDG_CONFIG_HOME/fp6-bluetooth/devices.ini
++ *     [AA:BB:CC:DD:EE:FF]  name=  type=  icon=     (all optional)
++ *   $XDG_STATE_HOME/fp6-bluetooth/last-connected.ini
++ *     [AA:BB:CC:DD:EE:FF]  last-connected=<unix seconds>
++ * Directories 0700, files 0600, replaced atomically.
 + */
 +public class Fp6Store : Object
 +{
@@ -219,7 +226,7 @@ index 51bec03..0acb8bc 100644
 +
 +  public static string key_for (string address)
 +  {
-+    return Checksum.compute_for_string (ChecksumType.SHA256, address.up ());
++    return address.up ();
 +  }
 +
 +  public static string devices_path ()
@@ -233,6 +240,30 @@ index 51bec03..0acb8bc 100644
 +    if (state == null || !Path.is_absolute (state))
 +      state = Path.build_filename (Environment.get_home_dir (), ".local", "state");
 +    return Path.build_filename (state, "fp6-bluetooth", "last-connected.ini");
++  }
++
++  /* Icon for a type of the shared vocabulary (null = unknown type). */
++  public static string? icon_for_type (string type)
++  {
++    switch (type)
++      {
++        case "car":        return "audio-carkit-symbolic";
++        case "speaker":
++        case "hifi":
++        case "portable":   return "audio-speakers-symbolic";
++        case "headphones": return "audio-headphones-symbolic";
++        case "earbuds":    return "fp6-audio-earbuds-symbolic";
++        case "headset":    return "audio-headset-symbolic";
++        case "watch":      return "smartwatch-symbolic";
++        case "keyboard":   return "input-keyboard-symbolic";
++        case "mouse":      return "input-mouse-symbolic";
++        case "gamepad":    return "input-gaming-symbolic";
++        case "phone":      return "phone-smartphone-symbolic";
++        case "computer":   return "computer-symbolic";
++        case "tv":         return "video-display-symbolic";
++        case "other":      return "bluetooth-active";
++      }
++    return null;
 +  }
 +
 +  public Fp6Store ()
@@ -270,15 +301,39 @@ index 51bec03..0acb8bc 100644
 +    catch (Error e) { }
 +  }
 +
-+  /* The user's icon for this device, or null. */
++  /* The user's icon for this device (from type=, else icon=), or null. */
 +  public string? icon_for (string? address)
 +  {
 +    if (address == null)
 +      return null;
 +    try
 +      {
++        var type = devices.get_string (key_for (address), "type");
++        var icon = icon_for_type (type);
++        if (icon != null)
++          return icon;
++      }
++    catch (Error e) { }
++    try
++      {
 +        var icon = devices.get_string (key_for (address), "icon");
 +        return (icon != null && icon != "") ? icon : null;
++      }
++    catch (Error e)
++      {
++        return null;
++      }
++  }
++
++  /* The name chosen in Settings, or null (BlueZ Alias is used then). */
++  public string? name_for (string? address)
++  {
++    if (address == null)
++      return null;
++    try
++      {
++        var name = devices.get_string (key_for (address), "name").strip ();
++        return name != "" ? name : null;
 +      }
 +    catch (Error e)
 +      {
@@ -297,7 +352,9 @@ index 51bec03..0acb8bc 100644
 +    try
 +      {
 +        DirUtils.create_with_parents (Path.get_dirname (path), 0700);
-+        FileUtils.set_contents (path, kf.to_data ());
++        FileUtils.set_contents_full (path, kf.to_data (), -1,
++                                     FileSetContentsFlags.CONSISTENT, 0600);
++        FileUtils.chmod (path, 0600);
 +      }
 +    catch (Error e)
 +      {

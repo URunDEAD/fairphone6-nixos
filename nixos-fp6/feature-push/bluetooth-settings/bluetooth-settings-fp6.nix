@@ -17,9 +17,10 @@
 #  * Status bar: ayatana-indicator-bluetooth with indicator-bluetooth-fp6.patch
 #    (phone profile: paired devices as connect switches with type icon and
 #    "Connected · battery N %"), replaced through the overlay (leaf package).
-#  * Device type/icon per device (car, speaker, earbuds, ...): per-user file
-#    $XDG_CONFIG_HOME/fp6-bluetooth/devices.ini keyed by SHA-256 of the
-#    address, read by the indicator and documented for the sound UI.
+#  * Chosen name/type per device (car, speaker, earbuds, ...): per-user
+#    $XDG_CONFIG_HOME/fp6-bluetooth/devices.ini, one [AA:BB:..] group with
+#    name=/type= (the format the sound UI reads; 0600 in a 0700 dir), read by
+#    the indicator too. Type list and icons: the results README.
 { config, lib, pkgs, ... }:
 let
   cfg = config.hardware.fairphone6.bluetoothSettings;
