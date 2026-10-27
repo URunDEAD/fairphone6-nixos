@@ -1,0 +1,3 @@
+module Biometryd
+singleton Biometryd 0.0 Biometryd.qml
+Observer 0.0 Observer.qml

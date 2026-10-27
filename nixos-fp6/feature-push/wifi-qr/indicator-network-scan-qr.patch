@@ -1,0 +1,41 @@
+--- a/src/indicator/sections/wifi-section.cpp
++++ b/src/indicator/sections/wifi-section.cpp
+@@ -49,6 +49,8 @@
+ 
+     WifiLinkItem::Ptr m_wifiLink;
+     TextItem::Ptr m_openWifiSettings;
++    // FP6: "Scan QR code to connect" opens the Wi-Fi QR scanner app.
++    TextItem::Ptr m_scanQrCode;
+ 
+     Private(Manager::Ptr manager, SwitchItem::Ptr wifiSwitch)
+         : m_manager{manager}, m_switch{wifiSwitch}
+@@ -61,9 +63,14 @@
+         connect(m_openWifiSettings.get(), &TextItem::activated, this, &Private::openWiFiSettings);
+         m_actionGroupMerger->add(m_openWifiSettings->actionGroup());
+ 
++        m_scanQrCode = std::make_shared<TextItem>(_("Scan QR code to connect…"), "wifi", "scan-qr");
++        connect(m_scanQrCode.get(), &TextItem::activated, this, &Private::openQrScanner);
++        m_actionGroupMerger->add(m_scanQrCode->actionGroup());
++
+         const char* user = g_get_user_name();
+         if (!user || std::string(user) != "lightdm") {
+             m_menu->append(m_openWifiSettings->menuItem());
++            m_menu->append(m_scanQrCode->menuItem());
+         }
+ 
+         showOrHideWifiSwitch();
+@@ -83,6 +90,14 @@
+             if (!success)
+                 std::cerr << "URL Dispatcher failed on " << url << std::endl;
+         });
++    }
++
++    void openQrScanner()
++    {
++        UrlDispatcher::send("application:///fp6-wifi-qr-scan.desktop", [](std::string url, bool success){
++            if (!success)
++                std::cerr << "URL Dispatcher failed on " << url << std::endl;
++        });
+     }
+ 
+     void updateLinks()

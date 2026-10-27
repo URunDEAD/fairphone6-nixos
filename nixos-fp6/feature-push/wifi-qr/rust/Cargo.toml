@@ -1,0 +1,27 @@
+[package]
+name = "fp6-wifi-qr"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Wi-Fi QR code payloads (ZXing WIFI: format), QR encode/decode for the FP6 Lomiri port"
+
+[lib]
+name = "fp6_wifi_qr"
+# staticlib: linked into the System Settings QML plugin and the scanner app.
+crate-type = ["staticlib", "rlib"]
+
+[[bin]]
+name = "fp6-wifi-qr"
+path = "src/bin/cli.rs"
+
+[dependencies]
+qrcode = { version = "0.14", default-features = false }
+rqrr = { version = "0.11", default-features = false }
+# CLI only (test images); not referenced by the library.
+png = "0.18"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

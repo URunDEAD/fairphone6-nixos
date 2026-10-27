@@ -1,0 +1,37 @@
+# Wi-Fi QR scanner (fp6-wifi-qr-scan). Complain by default like the
+# Magnifier (wifi-qr-fp6.nix option apparmor). Camera rules follow the
+# Magnifier's (sensor-apps/fp6-magnifier.apparmor); it saves nothing. The
+# NetworkManager calls go over the system bus (fp6-gui: dbus-broker here
+# does no AppArmor D-Bus mediation).
+abi <abi/5.0>,
+include <tunables/global>
+
+profile fp6-wifi-qr-scan /nix/store/*-fp6-wifi-qr-scan-*/bin/{.fp6-wifi-qr-scan-wrapped,fp6-wifi-qr-scan} flags=(attach_disconnected, mediate_deleted) {
+  include <abstractions/fp6-gui>
+
+  /nix/store/*-fp6-wifi-qr-scan-*/bin/* mrix,
+  /nix/store/*-gstreamer-*/libexec/gstreamer-1.0/gst-plugin-scanner mrix,
+
+  # Camera + ISP nodes (CAMSS, sensor subdevs), DMA heaps.
+  /dev/ r,
+  /dev/video* rw,
+  /dev/media* rw,
+  /dev/v4l-subdev* rw,
+  /dev/dma_heap/* rw,
+  @{sys}/class/video4linux/{,**} r,
+  @{sys}/devices/platform/**/video4linux/** r,
+  @{sys}/devices/platform/**/media*/** r,
+  @{sys}/bus/media/{,**} r,
+  @{run}/udev/data/c81:* r,
+  @{run}/udev/data/c2[0-9][0-9]:* r,
+  /etc/fp6-camera/camera.conf r,
+  owner @{HOME}/.config/fp6-camera/{,**} r,
+
+  # GStreamer registry cache, UITK/Qt caches
+  owner @{HOME}/.cache/gstreamer-1.0/{,**} rwk,
+  owner @{HOME}/.cache/fp6-wifi-qr-scan/{,**} rwk,
+  owner @{HOME}/.config/fp6-wifi-qr-scan/{,**} rwk,
+  owner /tmp/** rwk,
+
+  include if exists <local/fp6-wifi-qr-scan>
+}

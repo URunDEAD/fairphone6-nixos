@@ -62,6 +62,10 @@ let
       # Nothing runs or is deleted until confirmed on a page.
       # results/feature-push-20261024/storage-backup/README.md
       ({ ... }: { imports = [ ./storage-backup/storage-backup-fp6.nix ]; hardware.fairphone6.storageBackup.enable = true; })
+      # Wi-Fi QR codes: "Share (QR code)" after passcode/fingerprint, "Scan QR
+      # code to connect" (Settings > Wi-Fi and the network menu).
+      # results/feature-push-20261024/wifi-qr/README.md
+      ({ ... }: { imports = [ ./wifi-qr/wifi-qr-fp6.nix ]; hardware.fairphone6.wifiQr.enable = true; })
       ({ lib, options, ... }: {
         # fp6-lomiri-powerd replaces the manual-only brightness bridge.
         # lomiri-gpu-fp6.nix restates it at mkOverride 10.

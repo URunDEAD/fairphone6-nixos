@@ -1,0 +1,85 @@
+--- a/PageComponent.qml
++++ b/PageComponent.qml
+@@ -134,6 +134,9 @@
+                 }
+             }
+ 
++            // FP6: scan a Wi-Fi QR code (fp6-wifi-qr-scan)
++            Fp6WifiScanItem {}
++
+             SettingsListItems.StandardProgression {
+                 objectName: "previousNetwork"
+                 text: i18n.tr("Previous networks")
+--- a/NetworkDetailsBrief.qml
++++ b/NetworkDetailsBrief.qml
+@@ -56,29 +56,10 @@
+                 value: networkName
+             }
+ 
+-            SettingsListItems.Standard {
+-                id: passwordLabel
+-                text: i18n.tr("Password")
+-                visible: networkProperties.password.length !== 0
+-
+-                TextInput {
+-                    id: passwordField
+-                    color: theme.palette.normal.foregroundText
+-                    readOnly: true
+-                    text: networkProperties.password
+-                    echoMode: passwordVisibleSwitch.checked ?
+-                        TextInput.Normal : TextInput.Password
+-                }
+-            }
+-
+-            SettingsListItems.Standard {
+-                id: passwordVisible
+-                text: i18n.tr("Show password")
+-                visible: networkProperties.password.length !== 0
+-
+-                Switch {
+-                    id: passwordVisibleSwitch
+-                }
++            // FP6: password behind the passcode/fingerprint + Share (QR code)
++            Fp6WifiDetailsExtras {
++                networkName: root.networkName
++                page: root
+             }
+ 
+             Repeater {
+--- a/NetworkDetails.qml
++++ b/NetworkDetails.qml
+@@ -67,29 +67,11 @@
+                     networkDetails.lastUsed : i18n.tr("Never")
+             }
+ 
+-            SettingsListItems.Standard {
+-                id: passwordLabel
+-                text: i18n.tr("Password")
+-                visible: networkDetails.password.length !== 0
+-
+-                TextInput {
+-                    id: passwordField
+-                    color: theme.palette.normal.foregroundText
+-                    readOnly: true
+-                    text: networkDetails.password
+-                    echoMode: passwordVisibleSwitch.checked ?
+-                        TextInput.Normal : TextInput.Password
+-                }
+-            }
+-
+-            SettingsListItems.Standard {
+-                id: passwordVisible
+-                text: i18n.tr("Show password")
+-                visible: networkDetails.password.length !== 0
+-
+-                Switch {
+-                    id: passwordVisibleSwitch
+-                }
++            // FP6: password behind the passcode/fingerprint + Share (QR code)
++            Fp6WifiDetailsExtras {
++                networkName: networkDetails.networkName
++                connectionPath: networkDetails.dbusPath
++                page: networkDetails
+             }
+ 
+             SettingsListItems.SingleControl {
