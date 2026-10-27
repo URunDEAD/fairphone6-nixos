@@ -1,0 +1,37 @@
+From 5fcde4d65d8ff9a3a9d8a92d6a5a01f162308dde Mon Sep 17 00:00:00 2001
+From: Danylo Piliaiev <dpiliaiev@igalia.com>
+Date: Wed, 29 Apr 2026 17:27:59 +0200
+Subject: [PATCH] freedreno: Fix CP_CCHE_INVALIDATE not being applied at the
+ right point
+
+Apparently CP_CCHE_INVALIDATE is just a plain register write underneath,
+so it needs WFI before it, in order to invalidate at the right point.
+
+Signed-off-by: Danylo Piliaiev <dpiliaiev@igalia.com>
+Part-of: <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/41266>
+---
+ src/gallium/drivers/freedreno/a6xx/fd6_barrier.cc | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/freedreno/a6xx/fd6_barrier.cc b/src/gallium/drivers/freedreno/a6xx/fd6_barrier.cc
+index 8dd70d0b8f3a..a0419f03ce71 100644
+--- a/src/gallium/drivers/freedreno/a6xx/fd6_barrier.cc
++++ b/src/gallium/drivers/freedreno/a6xx/fd6_barrier.cc
+@@ -38,8 +38,13 @@ fd6_emit_flushes(struct fd_context *ctx, fd_cs &cs, unsigned flushes)
+    if ((CHIP >= A7XX) && (flushes & FD6_BLIT_CLEAN_CACHE))
+       fd6_event_write<CHIP>(ctx, cs, FD_CCU_CLEAN_BLIT_CACHE);
+ 
+-   if ((CHIP >= A7XX) && (flushes & FD6_INVALIDATE_CCHE))
++   if ((CHIP >= A7XX) && (flushes & FD6_INVALIDATE_CCHE)) {
++      /* CP_CCHE_INVALIDATE is just a plain register write underneath, so
++       * it needs WFI before it, in order to invalidate at the right point.
++       */
++      fd_pkt7(cs, CP_WAIT_FOR_IDLE, 0);
+       fd_pkt7(cs, CP_CCHE_INVALIDATE, 0);
++   }
+ 
+    if (flushes & FD6_WAIT_MEM_WRITES)
+       fd_pkt7(cs, CP_WAIT_MEM_WRITES, 0);
+-- 
+GitLab
+
