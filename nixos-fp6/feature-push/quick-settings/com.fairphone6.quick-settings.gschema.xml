@@ -4,9 +4,9 @@
 <schemalist>
   <schema id="com.fairphone6.quick-settings" path="/com/fairphone6/quick-settings/">
     <key name="tiles" type="as">
-      <default>['wifi', 'bluetooth', 'mobile-data', 'flashlight', 'dnd', 'rotation-lock', 'airplane', 'location', 'battery-saver', 'night-light', 'hotspot', 'screen-record', 'dark-theme', 'silent', 'screenshot']</default>
+      <default>['wifi', 'bluetooth', 'mobile-data', 'flashlight', 'dnd', 'rotation-lock', 'airplane', 'location', 'battery-saver', 'night-light', 'hotspot', 'screen-record', 'dark-theme', 'silent', 'screenshot', 'battery', 'sound', 'time-date', 'messages', 'system', 'privacy', 'usb-drive', 'keyboard']</default>
       <summary>Tiles in the control centre, in order</summary>
-      <description>Tile ids: wifi, bluetooth, mobile-data, flashlight, dnd, rotation-lock, airplane, location, battery-saver, night-light, hotspot, screen-record, dark-theme, silent, screenshot, bedtime, stay-awake, greyscale, scan-qr. Tiles not listed are in the editor's tray. Tiles whose backend is missing are not shown.</description>
+      <description>Tile ids: wifi, bluetooth, mobile-data, flashlight, dnd, rotation-lock, airplane, location, battery-saver, night-light, hotspot, screen-record, dark-theme, silent, screenshot, bedtime, stay-awake, greyscale, scan-qr, and the indicator-page tiles battery, sound, time-date, messages, system, privacy, usb-drive, keyboard. Tap switches, hold opens the details. Tiles not listed are in the editor's tray. Tiles whose backend is missing are not shown.</description>
     </key>
     <key name="wide-tiles" type="as">
       <default>['wifi', 'bluetooth']</default>

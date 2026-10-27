@@ -39,6 +39,7 @@ Item {
     function restricted(identifier) { return lockedRestricted.indexOf(identifier) >= 0; }
     function tap(def) {
         if (!def || !def.available) return;
+        if (def.pageOnly) { detail(def); return; }
         if (locked && def.lockPolicy === "unlock") { unlockRequested(); return; }
         def.toggle();
     }

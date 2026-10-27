@@ -29,7 +29,8 @@ Item {
     }
     readonly property var defaultTiles: ["wifi", "bluetooth", "mobile-data", "flashlight", "dnd",
         "rotation-lock", "airplane", "location", "battery-saver", "night-light", "hotspot",
-        "screen-record", "dark-theme", "silent", "screenshot"]
+        "screen-record", "dark-theme", "silent", "screenshot", "battery", "sound", "time-date",
+        "messages", "system", "privacy", "usb-drive", "keyboard"]
     readonly property var tiles: qsSettings.tiles !== undefined ? QsLayout.toList(qsSettings.tiles) : defaultTiles
     readonly property var wideTiles: qsSettings.wideTiles !== undefined ? QsLayout.toList(qsSettings.wideTiles) : ["wifi", "bluetooth"]
     readonly property int columns: Math.max(4, Math.min(6, qsSettings.columns || 4))
@@ -167,12 +168,24 @@ Item {
         actionPattern: "device-[0-9]+-connected$"
     }
 
+    // live icon / label of an indicator (its status-bar item), for the page tiles
+    function liveIcon(info) {
+        var it = info && info.item;
+        return it && it.icons && it.icons.length ? String(it.icons[0]) : "";
+    }
+    function liveLabel(info) {
+        var it = info && info.item;
+        return it ? (it.rightLabel || it.leftLabel || "") : "";
+    }
+    function pageInfo(identifier) { return indicatorsRevision >= 0 ? findIndicator(identifier) : null; }
+
     function onOff(b) { return b ? i18n.tr("On") : i18n.tr("Off"); }
 
     // ---- the catalogue (order = order of the tray in the editor)
     readonly property var catalogue: [wifi, bluetooth, mobileData, flashlight, dnd, rotationLock,
         airplane, location, batterySaver, nightLight, hotspot, screenRecord, darkTheme, silent,
-        screenshot, bedtime, stayAwake, greyscale, scanQr]
+        screenshot, batteryPage, soundPage, timeDatePage, messagesPage, systemPage, privacyPage,
+        usbDrivePage, keyboardPage, bedtime, stayAwake, greyscale, scanQr]
     function tile(id) {
         for (var i = 0; i < catalogue.length; i++) if (catalogue[i].tileId === id) return catalogue[i];
         return null;
@@ -371,5 +384,95 @@ Item {
         available: backend.valid(net.scanQr)
         lockPolicy: "unlock"
         toggle: function() { if (backend.valid(net.scanQr)) net.scanQr.activate(); }
+    }
+
+    // ---- page tiles: the indicator pages that have no switch tile of their own
+    QsTileDef {
+        id: batteryPage
+        readonly property var info: backend.pageInfo("ayatana-indicator-power")
+        tileId: "battery"; label: i18n.tr("Battery")
+        iconOn: "battery-full-symbolic"
+        pageOnly: true; toggleable: false
+        available: !!info
+        iconSource: backend.liveIcon(info)
+        subtitle: backend.liveLabel(info)
+        indicator: "ayatana-indicator-power"
+    }
+    QsTileDef {
+        id: soundPage
+        readonly property var info: backend.pageInfo("ayatana-indicator-sound")
+        tileId: "sound"; label: i18n.tr("Sound")
+        iconOn: "audio-volume-high"
+        pageOnly: true; toggleable: false
+        available: !!info
+        iconSource: backend.liveIcon(info)
+        subtitle: backend.liveLabel(info)
+        indicator: "ayatana-indicator-sound"
+    }
+    QsTileDef {
+        id: timeDatePage
+        readonly property var info: backend.pageInfo("ayatana-indicator-datetime")
+        tileId: "time-date"; label: i18n.tr("Time and date")
+        iconOn: "preferences-system-time-symbolic"
+        pageOnly: true; toggleable: false
+        available: !!info
+        
+        subtitle: backend.liveLabel(info)
+        indicator: "ayatana-indicator-datetime"
+    }
+    QsTileDef {
+        id: messagesPage
+        readonly property var info: backend.pageInfo("ayatana-indicator-messages")
+        tileId: "messages"; label: i18n.tr("Messages")
+        iconOn: "notification"
+        pageOnly: true; toggleable: false
+        available: !!info
+        iconSource: backend.liveIcon(info)
+        subtitle: backend.liveLabel(info)
+        indicator: "ayatana-indicator-messages"
+    }
+    QsTileDef {
+        id: systemPage
+        readonly property var info: backend.pageInfo("ayatana-indicator-session")
+        tileId: "system"; label: i18n.tr("System")
+        iconOn: "system-shutdown"
+        pageOnly: true; toggleable: false
+        available: !!info
+        
+        subtitle: backend.liveLabel(info)
+        indicator: "ayatana-indicator-session"
+    }
+    QsTileDef {
+        id: privacyPage
+        readonly property var info: backend.pageInfo("fp6-privacy-indicator")
+        tileId: "privacy"; label: i18n.tr("Privacy")
+        iconOn: "preferences-system-privacy-symbolic"
+        pageOnly: true; toggleable: false
+        available: !!info
+        iconSource: backend.liveIcon(info)
+        subtitle: backend.liveLabel(info)
+        indicator: "fp6-privacy-indicator"
+    }
+    QsTileDef {
+        id: usbDrivePage
+        readonly property var info: backend.pageInfo("fp6-usb-drive-indicator")
+        tileId: "usb-drive"; label: i18n.tr("USB drive")
+        iconOn: "save-to"
+        pageOnly: true; toggleable: false
+        available: !!info
+        
+        subtitle: backend.liveLabel(info)
+        indicator: "fp6-usb-drive-indicator"
+    }
+    QsTileDef {
+        id: keyboardPage
+        readonly property var info: backend.pageInfo("ayatana-indicator-keyboard")
+        tileId: "keyboard"; label: i18n.tr("Keyboard")
+        iconOn: "preferences-desktop-keyboard-shortcuts-symbolic"
+        pageOnly: true; toggleable: false
+        available: !!info
+        
+        subtitle: backend.liveLabel(info)
+        indicator: "ayatana-indicator-keyboard"
     }
 }

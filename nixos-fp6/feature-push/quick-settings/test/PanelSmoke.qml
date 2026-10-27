@@ -56,11 +56,13 @@ Item {
                 save("01-collapsed", function() { ind.show(); t.restart(); });
                 break;
             case 1:
-                log("overlay shown=" + ind.fp6OverlayShown + " item=" + !!ind.fp6OverlayItem + " visible=" + (ind.fp6OverlayItem && ind.fp6OverlayItem.visible));
+                log("overlay shown=" + ind.fp6OverlayShown + " item=" + !!ind.fp6OverlayItem + " visible=" + (ind.fp6OverlayItem && ind.fp6OverlayItem.visible)
+                    + " ccMode=" + ind.fp6CcMode + " bar expanded (tabs)=" + ind.expanded);
                 save("02-control-centre", function() { ind.fp6OpenIndicator("fake-indicator-sound"); t.restart(); });
                 break;
             case 2:
-                log("after open sound page: overlay shown=" + ind.fp6OverlayShown + " current=" + ind.fp6CurrentIdentifier);
+                log("after open sound page: overlay shown=" + ind.fp6OverlayShown + " current=" + ind.fp6CurrentIdentifier
+                    + " bar expanded (tabs)=" + ind.expanded);
                 save("03-indicator-page", function() { panel.fp6Locked = true; ind.fp6OpenIndicator("fake-indicator-network"); t.restart(); });
                 break;
             case 3:

@@ -59,7 +59,6 @@ Item {
             Behavior on y { enabled: grid.visible; LomiriNumberAnimation { duration: LomiriAnimation.FastDuration } }
             onTapped: grid.tileTapped(def)
             onHeld: grid.tileDetail(def)
-            onDetailRequested: grid.tileDetail(def)
         }
     }
 }

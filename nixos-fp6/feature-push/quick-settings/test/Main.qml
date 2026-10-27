@@ -60,7 +60,7 @@ Item {
             locked: root.locked
             notificationsModel: shade
             hideNotificationContent: root.locked
-            lockedRestricted: ["indicator-network", "ayatana-indicator-bluetooth"]
+            lockedRestricted: ["indicator-network", "ayatana-indicator-bluetooth", "fp6-privacy-indicator"]
             bottomInset: units.gu(2)
             indicatorExists: function(i) { return true; }
             onOpenIndicator: console.log("openIndicator " + identifier)
@@ -158,6 +158,9 @@ Item {
                 cc.detail(backend.tile("wifi"));
                 cc.detail(backend.tile("dnd"));
                 check("locked detail: wifi asks unlock, dnd page opens", unlocks === 3 && pages.length === 1 && pages[0] === "fp6-notifyd");
+                cc.tap(backend.tile("privacy"));
+                check("locked: privacy page asks unlock", unlocks === 4);
+                check("locked: wifi still shows its network (Android)", backend.tile("wifi").subtitle === "Home-Network");
             } else {
                 check("wifi toggled off", backend.tile("wifi").active === false);
                 check("flashlight activate(true)", FakeActions.log.indexOf("activate org.ayatana.indicator.power/flashlight(true)") >= 0);
@@ -167,6 +170,9 @@ Item {
                 cc.detail(backend.tile("night-light"));
                 check("detail: wifi page, night light settings", pages[0] === "indicator-network" && urls[0] === "settings:///system/display-comfort");
                 check("subtitle wifi off", backend.tile("wifi").subtitle === "Off");
+                cc.tap(backend.tile("battery"));
+                cc.tap(backend.tile("system"));
+                check("page tiles open their indicator on tap: " + pages, pages[1] === "ayatana-indicator-power" && pages[2] === "ayatana-indicator-session");
             }
             console.log(ok ? "TOGGLETEST OK" : "TOGGLETEST FAILED");
         }
@@ -187,7 +193,7 @@ Item {
             check("drag to front: " + backend.tiles.slice(0, 3), backend.tiles[0] === "flashlight");
             // hotspot: drag down into the tray
             e.beginDrag("hotspot", Qt.point(0, 0));
-            e.moveDrag(Qt.point(units.gu(10), units.gu(2) + e.cellHeight * 6 + units.gu(8)));
+            e.moveDrag(Qt.point(units.gu(10), (e.activeLay.rows + 1) * e.cellHeight + units.gu(12)));
             e.endDrag();
             check("drag into tray removes", backend.tiles.indexOf("hotspot") < 0 && e.trayIds.indexOf("hotspot") >= 0);
             e.add("bedtime");
@@ -203,7 +209,7 @@ Item {
             backend.settings.columns = 6;
             check("columns 6", backend.columns === 6);
             backend.resetLayout();
-            check("reset", backend.tiles.length === 15 && backend.columns === 4 && backend.sliders.length === 3);
+            check("reset", backend.tiles.length === 23 && backend.columns === 4 && backend.sliders.length === 3);
             console.log(ok ? "DRAGTEST OK" : "DRAGTEST FAILED");
             shoot.start();
         }

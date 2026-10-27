@@ -41,11 +41,20 @@ ItemPage {
         "bedtime": [i18n.tr("Bedtime"), "alarm-clock", true],
         "stay-awake": [i18n.tr("Stay awake"), "display-brightness-max", false],
         "greyscale": [i18n.tr("Greyscale"), "preferences-color-symbolic", false],
-        "scan-qr": [i18n.tr("Scan QR code"), "camera-grid", false]
+        "scan-qr": [i18n.tr("Scan QR code"), "camera-grid", false],
+        "battery": [i18n.tr("Battery"), "battery-full-symbolic", true],
+        "sound": [i18n.tr("Sound"), "audio-volume-high", true],
+        "time-date": [i18n.tr("Time and date"), "preferences-system-time-symbolic", true],
+        "messages": [i18n.tr("Messages"), "notification", true],
+        "system": [i18n.tr("System"), "system-shutdown", true],
+        "privacy": [i18n.tr("Privacy"), "preferences-system-privacy-symbolic", true],
+        "usb-drive": [i18n.tr("USB drive"), "save-to", true],
+        "keyboard": [i18n.tr("Keyboard"), "preferences-desktop-keyboard-shortcuts-symbolic", true]
     })
     readonly property var order: ["wifi", "bluetooth", "mobile-data", "flashlight", "dnd", "rotation-lock",
         "airplane", "location", "battery-saver", "night-light", "hotspot", "screen-record", "dark-theme",
-        "silent", "screenshot", "bedtime", "stay-awake", "greyscale", "scan-qr"]
+        "silent", "screenshot", "battery", "sound", "time-date", "messages", "system", "privacy",
+        "usb-drive", "keyboard", "bedtime", "stay-awake", "greyscale", "scan-qr"]
 
     function list(v) { var o = []; if (v) for (var i = 0; i < v.length; i++) o.push(String(v[i])); return o; }
     readonly property var tiles: list(gs.tiles)
@@ -98,7 +107,7 @@ ItemPage {
                 anchors { left: parent.left; right: parent.right; margins: units.gu(2) }
                 wrapMode: Text.WordWrap
                 fontSize: "small"
-                text: i18n.tr("Pull the status bar down to open quick settings. Tap a tile to switch it, hold it (or tap the arrow of a wide tile) for its details. The pencil button in the panel edits the tiles by dragging.")
+                text: i18n.tr("Pull the status bar down to open quick settings. Tap a tile to switch it, hold it for its details (the indicator menu or the Settings page). The pencil button in the panel edits the tiles by dragging.")
             }
 
             SettingsItemTitle { text: i18n.tr("Pulling down opens") }

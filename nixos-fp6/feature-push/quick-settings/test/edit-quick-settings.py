@@ -84,8 +84,13 @@ sub("qml/Panel/PanelMenu.qml",
     function fp6FindIndicator(identifier) {
         var item = bar.fp6ItemFor(identifier);
         return item ? { busName: item.busName, actionsObjectPath: item.actionsObjectPath,
-                        menuObjectPath: item.menuObjectPath } : null;
+                        menuObjectPath: item.menuObjectPath, item: item } : null;
     }
+    // Control-centre mode: the bar keeps its collapsed status-bar look while the
+    // menu is open (no row of indicator tabs, no sideways switching between
+    // pages); indicator pages are opened from the tiles (hold) and left with
+    // the back strip.
+    readonly property bool fp6CcMode: fp6Overlay !== null && fp6OverlayDefault
 """)
 sub("qml/Panel/PanelMenu.qml",
 """        MenuContent {
@@ -120,14 +125,10 @@ sub("qml/Panel/PanelMenu.qml",
                     anchors.verticalCenter: parent.verticalCenter
                     color: theme.palette.normal.backgroundText
                 }
-                Icon {
-                    name: "view-grid-symbolic"
-                    width: units.gu(2); height: width
-                    anchors.verticalCenter: parent.verticalCenter
-                    color: theme.palette.normal.backgroundText
-                }
                 Label {
-                    text: i18n.tr("Quick settings")
+                    text: root.fp6CcMode && bar.fp6CurrentItem && bar.fp6CurrentItem.title
+                          ? bar.fp6CurrentItem.title : i18n.tr("Quick settings")
+                    font.weight: Font.Medium
                     anchors.verticalCenter: parent.verticalCenter
                     color: theme.palette.normal.backgroundText
                 }
@@ -218,10 +219,29 @@ sub("qml/Panel/PanelMenu.qml",
 sub("qml/Panel/PanelMenu.qml",
 """                enableLateralChanges: d.activeDragHandle &&
                                       !yVelocityCalculator.velocityAboveThreshold""",
-"""                // FP6: no sideways indicator switching while the control centre opens
+"""                // FP6: no sideways indicator switching in control-centre mode
                 enableLateralChanges: d.activeDragHandle &&
                                       !yVelocityCalculator.velocityAboveThreshold &&
-                                      !(root.fp6OverlayShown && root.fp6Overlay !== null)""")
+                                      !root.fp6CcMode""")
+sub("qml/Panel/PanelMenu.qml",
+"""            PropertyChanges {
+                target: bar
+                expanded: true
+                // changes to lateral touch position effect which indicator is selected""",
+"""            PropertyChanges {
+                target: bar
+                expanded: !root.fp6CcMode // FP6: control centre keeps the status-bar look
+                // changes to lateral touch position effect which indicator is selected""")
+sub("qml/Panel/PanelMenu.qml",
+"""            PropertyChanges { target: bar; expanded: true }""",
+"""            PropertyChanges { target: bar; expanded: !root.fp6CcMode } // FP6""")
+sub("qml/Panel/PanelMenu.qml",
+"""    Keys.onPressed: {
+        if (event.key === Qt.Key_Left) {""",
+"""    Keys.onPressed: {
+        if (root.fp6CcMode && (event.key === Qt.Key_Left || event.key === Qt.Key_Right)) {
+            event.accepted = true; // FP6: no page flipping in control-centre mode
+        } else if (event.key === Qt.Key_Left) {""")
 
 sub("qml/Panel/PanelMenu.qml",
 """    onUnitProgressChanged: d.updateState()

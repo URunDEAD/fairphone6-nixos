@@ -9,6 +9,10 @@ QtObject {
     property string label
     property string iconOn
     property string iconOff: iconOn
+    // a live icon (an indicator's own status icon), used instead of iconOn/iconOff
+    property url iconSource: ""
+    // no switch of its own: tap and hold both open the indicator page
+    property bool pageOnly: false
     // the backend exists (indicator running, schema installed, hardware present)
     property bool available: true
     // false: a button (screenshot, scan QR) instead of an on/off switch

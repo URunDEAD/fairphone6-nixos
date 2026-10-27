@@ -22,7 +22,6 @@ Item {
 
     signal tapped()
     signal held()
-    signal detailRequested()
 
     readonly property color offColor: lightMode ? "#E3E3E3" : "#333333"
     readonly property color onColor: theme.palette.normal.focus
@@ -46,7 +45,8 @@ Item {
 
         Icon {
             id: icon
-            name: tile.def ? (tile.on || !tile.def.toggleable ? tile.def.iconOn : tile.def.iconOff) : ""
+            source: tile.def && tile.def.iconSource != "" ? tile.def.iconSource : ""
+            name: tile.def && tile.def.iconSource == "" ? (tile.on || !tile.def.toggleable ? tile.def.iconOn : tile.def.iconOff) : ""
             width: units.gu(2.75); height: width
             color: tile.on ? tile.onText : tile.fgColor
             anchors.verticalCenter: parent.verticalCenter
@@ -69,8 +69,8 @@ Item {
             }
             Label {
                 width: parent.width
+                // Android: the state (network name, device) is shown on the lock screen too
                 text: !tile.def ? "" : (!tile.usable ? i18n.tr("Not available")
-                      : tile.needsUnlock ? i18n.tr("Unlock to change")
                       : (tile.def.subtitle || (tile.def.toggleable ? (tile.def.active ? i18n.tr("On") : i18n.tr("Off")) : "")))
                 textSize: Label.XSmall
                 elide: Text.ElideRight
@@ -78,10 +78,11 @@ Item {
                 opacity: 0.85
             }
         }
+        // a hint that holding opens more (the lock when the passcode is needed)
         Icon {
             id: chevron
             visible: tile.wide && !tile.editMode
-            name: "go-next"
+            name: tile.needsUnlock ? "system-lock-screen" : "go-next"
             width: tile.wide ? units.gu(1.75) : 0; height: units.gu(1.75)
             color: tile.on ? tile.onText : tile.fg2Color
             anchors { right: parent.right; rightMargin: units.gu(1.5); verticalCenter: parent.verticalCenter }
@@ -115,10 +116,8 @@ Item {
         id: mouse
         anchors.fill: shape
         enabled: !tile.editMode
-        onClicked: {
-            if (tile.wide && mouse.x > shape.width - units.gu(5)) tile.detailRequested();
-            else tile.tapped();
-        }
+        // tap = switch (or the tile's action), hold = details (indicator page / Settings)
+        onClicked: tile.tapped()
         onPressAndHold: tile.held()
     }
 }
