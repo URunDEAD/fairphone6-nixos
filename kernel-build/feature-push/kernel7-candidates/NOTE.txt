@@ -69,3 +69,18 @@ kernel7 candidates (staged 2026-10-26; NOT in kernel6, whose pinned drv is uncha
     dmesg | grep -E "eswin|gesture lp"   -> "gesture lp entered", no
     "No response type: 255" after it; double tap still wakes; touch works
     after wake; a failing gesture_wakeup write now returns an error.
+
+0004-drm-msm-a8xx-invalidate-cche-on-pagetable-switch.patch
+  (white-boxes investigation, 2026-10-27; UNVERIFIED candidate, not upstream)
+  a6xx_set_pagetable() ends a context switch with CACHE_INVALIDATE only. On
+  gen8 Mesa and turnip emit CP_CCHE_INVALIDATE in addition to that event,
+  which suggests the event does not cover the CCHE. The patch adds
+  WFI + CP_CCHE_INVALIDATE after it on a8xx, so no context samples lines
+  cached under the previous pagetable. Target symptom: glyph atlases in the
+  shell and several apps turning into solid boxes at once (memory fine, no GPU
+  fault logged, logout cures it). Two extra dwords per context switch.
+  Touches only drivers/gpu/drm/msm/adreno/a6xx_gpu.c; applies to the 7.2
+  tree (patch --dry-run). Not compile-checked (needs an in-tree msm build).
+  Test plan: only after the Mesa backport
+  (nixos-fp6/feature-push/white-boxes) and msm.enable_preemption=0 have
+  been tried, because this needs a full kernel7 build and module re-pinning.

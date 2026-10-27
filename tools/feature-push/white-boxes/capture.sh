@@ -5,6 +5,12 @@
 #
 #   bash capture.sh [--where shell|apps|both|unknown] [--note "free text"]
 #                   [--since "10 min ago"] [--shot /path/to/drm-screenshot.py]
+#                   [--gpu-state]
+#
+# --gpu-state also reads /sys/kernel/debug/dri/*/gpu (msm GPU state snapshot:
+# registers, ringbuffers, IFPC/preemption state). Reading it is read-only for
+# the GPU but runs the CP crash dumper and briefly holds the GPU lock, so it
+# is off by default; use it only once the boxes are already on screen.
 #
 # From the laptop (USB or Wi-Fi ssh):
 #   tools/phone-ssh 'bash -s -- --where shell' < tools/feature-push/white-boxes/capture.sh
@@ -20,13 +26,15 @@ WHERE=unknown
 NOTE=""
 SINCE="15 min ago"
 SHOT=""
+GPUSTATE=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --where) WHERE=${2:-unknown}; shift 2 ;;
         --note) NOTE=${2:-}; shift 2 ;;
         --since) SINCE=${2:-15 min ago}; shift 2 ;;
         --shot) SHOT=${2:-}; shift 2 ;;
-        -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+        --gpu-state) GPUSTATE=1; shift ;;
+        -h|--help) sed -n '2,26p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -143,13 +151,39 @@ for d in /sys/class/devcoredump/devcd*; do
     [ -e "$d/data" ] || continue
     rootcat "$d/data" 8388608 > "$OUT/$(basename "$d")-data.txt"
 done
-# msm GEM object list (read-only debugfs file; may be large)
-for g in /sys/kernel/debug/dri/*/gem; do
-    [ -n "$SUDO" ] || break
-    $SUDO test -e "$g" || continue
-    n=$(basename "$(dirname "$g")")
-    rootcat "$g" 4194304 > "$OUT/debugfs-dri$n-gem.txt"
-done
+# msm debugfs (read-only files only; never "shrink", "reset" or the
+# hangcheck/devfreq knobs). "gem" walks every GEM object under obj_lock and
+# ends with Total/Active/Resident/Purgeable/Purged counts; it can take a
+# moment with many BOs.
+if [ -n "$SUDO" ]; then
+    for d in $($SUDO sh -c 'ls -d /sys/kernel/debug/dri/* 2>/dev/null'); do
+        n=$(basename "$d")
+        $SUDO test -e "$d/gem" || continue   # GPU-capable minor only
+        rootcat "$d/gem" 8388608 > "$OUT/debugfs-dri$n-gem.txt"
+        {
+            sec "dri/$n name";    rootcat "$d/name"
+            sec "dri/$n clients"; rootcat "$d/clients"
+            sec "dri/$n hangcheck_period_ms"; rootcat "$d/hangcheck_period_ms"
+            sec "dri/$n gem summary (tail of gem)"
+            tail -n 12 "$OUT/debugfs-dri$n-gem.txt"
+            sec "dri/$n gem: purged / purgeable / evicted objects"
+            grep -cE ' purged' "$OUT/debugfs-dri$n-gem.txt" | sed 's/^/purged_lines=/'
+            grep -cE ' purgeable' "$OUT/debugfs-dri$n-gem.txt" | sed 's/^/purgeable_lines=/'
+        } > "$OUT/debugfs-dri$n.txt" 2>&1
+        if [ "$GPUSTATE" = 1 ] && $SUDO test -e "$d/gpu"; then
+            rootcat "$d/gpu" 33554432 > "$OUT/debugfs-dri$n-gpu-state.txt"
+        fi
+    done
+fi
+{
+    sec "transparent hugepages (msm-next enables THP for GEM; here: system setting)"
+    cat /sys/kernel/mm/transparent_hugepage/enabled /sys/kernel/mm/transparent_hugepage/shmem_enabled 2>&1
+    grep -E '^thp_' /proc/vmstat | head -20
+    sec "msm tracepoints available (for an armed trace run; not enabled here)"
+    if [ -n "$SUDO" ]; then $SUDO sh -c 'ls /sys/kernel/tracing/events/msm 2>/dev/null || ls /sys/kernel/debug/tracing/events/msm 2>/dev/null' | tr '\n' ' '; echo; fi
+    sec "kernel lines: preemption / IFPC / GMU / UBWC / smmu"
+    grep -iE 'preempt|ifpc|gmu|ubwc|smmu|arm-smmu|context fault|msm_dpu.*underrun' "$OUT/kernel-boot.txt" | tail -n 80
+} >> "$OUT/gpu.txt" 2>&1
 
 # ---------------------------------------------------------------- memory
 {
@@ -234,6 +268,8 @@ done
     echo "psi_memory=$(head -1 /proc/pressure/memory 2>/dev/null)"
     echo "oom_kills_this_boot=$(awk '/^oom_kill /{print $2}' /proc/vmstat)"
     echo "stopped_processes=$(ps -eo stat= | grep -c '^[Tt]')"
+    echo "msm_enable_preemption=$(cat /sys/module/msm/parameters/enable_preemption 2>/dev/null) msm_enable_eviction=$(cat /sys/module/msm/parameters/enable_eviction 2>/dev/null)"
+    for f in "$OUT"/debugfs-dri*-gem.txt; do [ -s "$f" ] && echo "$(basename "$f"): $(tail -n 6 "$f" | tr -s ' \n' ' ')"; done
 } >> "$OUT/summary.txt"
 
 cat "$OUT/summary.txt"

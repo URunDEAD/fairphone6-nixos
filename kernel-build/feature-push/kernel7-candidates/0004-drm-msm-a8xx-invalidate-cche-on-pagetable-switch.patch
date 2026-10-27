@@ -1,0 +1,37 @@
+From: Paul Schuldesz <paulschuldesz@gmail.com>
+Subject: [PATCH] drm/msm/a8xx: invalidate CCHE on pagetable switch (FP6 candidate)
+
+The pagetable switch in a6xx_set_pagetable() ends with a CACHE_INVALIDATE
+event ("be sure there isn't anything lingering in that part of the GPU").
+On gen8 userspace (Mesa freedreno and turnip) emits a separate
+CP_CCHE_INVALIDATE next to CACHE_INVALIDATE, which suggests the event does
+not cover the CCHE there. Emit it (after a WFI, see Mesa commit
+5fcde4d65d8f "freedreno: Fix CP_CCHE_INVALIDATE not being applied at the
+right point") on a8xx so that no context can sample lines cached under the
+previous context's pagetable.
+
+Unverified candidate for the FP6 "text turns into boxes" bug, which hits
+the shell and several apps at once. Not upstream.
+
+---
+--- a/drivers/gpu/drm/msm/adreno/a6xx_gpu.c
++++ b/drivers/gpu/drm/msm/adreno/a6xx_gpu.c
+@@ -327,6 +327,18 @@
+ 	OUT_PKT7(ring, CP_EVENT_WRITE, 1);
+ 	OUT_RING(ring, CACHE_INVALIDATE);
+ 
++	/*
++	 * FP6 candidate: on a8xx the CCHE is not covered by the CACHE_INVALIDATE
++	 * event (userspace emits CP_CCHE_INVALIDATE separately on gen8), so lines
++	 * cached under the previous context's pagetable could survive the switch.
++	 * CP_CCHE_INVALIDATE is a plain register write underneath; WFI first so
++	 * it applies after the previous context's work (mesa 5fcde4d65d8f).
++	 */
++	if (adreno_is_a8xx(adreno_gpu)) {
++		OUT_PKT7(ring, CP_WAIT_FOR_IDLE, 0);
++		OUT_PKT7(ring, CP_CCHE_INVALIDATE, 0);
++	}
++
+ 	if (!sysprof) {
+ 		u32 reg_status = adreno_is_a8xx(adreno_gpu) ?
+ 			REG_A8XX_RBBM_PERFCTR_SRAM_INIT_STATUS :
