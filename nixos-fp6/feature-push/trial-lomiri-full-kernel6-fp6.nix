@@ -31,6 +31,12 @@ let
       # apps: xdg-desktop-portal FileChooser backend.
       # results/feature-push-20261024/file-picker/README.md
       ({ ... }: { imports = [ ./file-picker/file-picker-fp6.nix ]; hardware.fairphone6.filePickerPortal.enable = true; })
+      # Quick Share (Android nearby sharing over Wi-Fi), built by a Codex worker:
+      # nixos-fp6/feature-push/quick-share/README.md
+      ({ ... }: { imports = [ ./quick-share/module.nix ]; hardware.fairphone6.quickShare.enable = true; })
+      # Share via link/QR (any device on the same Wi-Fi or hotspot), built by a Codex worker:
+      # nixos-fp6/feature-push/webshare/README.md
+      ({ ... }: { imports = [ ./webshare/module.nix ]; hardware.fairphone6.webshare.enable = true; })
       # USB preferences: System Settings > USB (USB network / file transfer /
       # USB drive / ADB toggles, power role), "Charging via USB" notification.
       # Developer build: usb0 (172.16.42.1) is always kept for SSH over USB.

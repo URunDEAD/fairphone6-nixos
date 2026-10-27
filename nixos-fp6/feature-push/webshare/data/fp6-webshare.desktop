@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Share via link
+Comment=Share files with any browser on trusted Wi-Fi or your phone hotspot
+Exec=@out@/bin/fp6-webshare gui %F
+Icon=fp6-webshare
+Terminal=false
+Categories=Network;FileTransfer;
+X-Lomiri-Touch=true
+X-Ubuntu-Touch=true

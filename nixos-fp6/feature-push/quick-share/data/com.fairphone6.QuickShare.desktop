@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Quick Share
+Comment=Share files with Android phones on Wi-Fi
+Exec=fp6-quickshare-app %U
+Icon=fp6-quickshare
+Terminal=false
+Categories=Network;FileTransfer;
+MimeType=application/octet-stream;text/plain;text/uri-list;
+X-Lomiri-Touch=true
+X-Lomiri-ContentHub-Share=true
+X-Lomiri-ContentHub-Hint=com.fairphone6.QuickShare

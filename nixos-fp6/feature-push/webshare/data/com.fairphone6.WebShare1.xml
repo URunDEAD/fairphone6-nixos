@@ -1,0 +1,12 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN" "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<node name="/com/fairphone6/WebShare1">
+  <interface name="com.fairphone6.WebShare1">
+    <method name="Start"><arg name="options_json" type="s" direction="in"/><arg name="status_json" type="s" direction="out"/></method>
+    <method name="Stop"/>
+    <method name="Status"><arg name="status_json" type="s" direction="out"/></method>
+    <method name="Interfaces"><arg name="interfaces_json" type="s" direction="out"/></method>
+    <method name="Approve"><arg name="id" type="s" direction="in"/><arg name="saved_path" type="s" direction="out"/></method>
+    <method name="Reject"><arg name="id" type="s" direction="in"/></method>
+    <method name="TakeText"><arg name="text" type="s" direction="out"/></method>
+  </interface>
+</node>

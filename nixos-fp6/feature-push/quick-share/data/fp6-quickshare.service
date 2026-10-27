@@ -1,0 +1,16 @@
+[Unit]
+Description=Fairphone 6 Quick Share LAN service
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=dbus
+BusName=com.fairphone6.QuickShare1
+ExecStart=fp6-quickshare-daemon
+Restart=on-failure
+UMask=0077
+NoNewPrivileges=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+
+[Install]
+WantedBy=graphical-session.target

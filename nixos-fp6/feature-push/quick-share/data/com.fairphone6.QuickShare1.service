@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=com.fairphone6.QuickShare1
+Exec=fp6-quickshare-daemon
+SystemdService=fp6-quickshare.service

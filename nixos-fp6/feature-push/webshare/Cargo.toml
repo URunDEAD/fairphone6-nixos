@@ -1,0 +1,36 @@
+[package]
+name = "fp6-webshare"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Temporary, consent-based LAN sharing for Lomiri"
+
+[dependencies]
+anyhow = "1"
+async-stream = "0.3"
+axum = "0.8"
+base64 = "0.22"
+clap = { version = "4", features = ["derive"] }
+futures-util = "0.3"
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "service"] }
+libc = "0.2"
+if-addrs = "0.14"
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+percent-encoding = "2"
+rand = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+socket2 = { version = "0.6", features = ["all"] }
+subtle = "2"
+tempfile = "3"
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io", "rt"] }
+tower = { version = "0.5", features = ["util", "limit"] }
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+
+[dev-dependencies]
+http-body-util = "0.1"
+
+[lints.rust]
+unsafe_code = "forbid"
