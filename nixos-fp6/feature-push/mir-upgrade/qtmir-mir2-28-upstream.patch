@@ -1,0 +1,351 @@
+FP6 mir-upgrade: upstream qtmir fixes needed for Mir 2.22..2.28, rebased onto
+the FP6 patch stack (nixpkgs' qtmir is debian-upstream 57d9e976, which stops
+at the Mir 2.20 platform API):
+  personal/sunweaver/debian-upstream:
+    63587f07 surfacemanager, windowmodel: guard against null GLRenderingProvider
+    d088473d mirserver: do not use internal miroil::DisplayListenerWrapper
+    c7aa6b49 mirserver: Mir 2.28.0 (and later) already provide org_kde_kwin_server_decoration
+  main:
+    4f5b18a8 mirserver: update for Mir 2.22 (DisplayInfo instead of raw EDID)
+    d9119395 demos: drop usage of deprecated `Descriptor`s
+Applied only with hardware.fairphone6.mirUpgrade.enable (after
+qtmir-privileged-wayland-extensions.patch).
+diff --git a/demos/qtmir-demo-shell/main.cpp b/demos/qtmir-demo-shell/main.cpp
+index 2a5a6a3..d6ea623 100644
+--- a/demos/qtmir-demo-shell/main.cpp
++++ b/demos/qtmir-demo-shell/main.cpp
+@@ -43,9 +43,11 @@ inline QString stringFromEdid(const miroil::Edid& edid)
+     str += QString::fromStdString(edid.vendor);
+     str += QString("%1%2").arg(edid.product_code).arg(edid.serial_number);
+ 
++#if MIR_SERVER_VERSION < MIR_VERSION_NUMBER(2, 0, 0)
+     for (int i = 0; i < 4; i++) {
+         str += QString::fromStdString(edid.descriptors[i].string_value());
+     }
++#endif
+     return str;
+ }
+ 
+diff --git a/src/modules/QtMir/Application/surfacemanager.cpp b/src/modules/QtMir/Application/surfacemanager.cpp
+index 52d67b3..62a7fa7 100644
+--- a/src/modules/QtMir/Application/surfacemanager.cpp
++++ b/src/modules/QtMir/Application/surfacemanager.cpp
+@@ -189,6 +189,13 @@ void SurfaceManager::onWindowAdded(const NewWindow &window)
+ 
+     const auto parentSurface = surfaceFor(windowInfo.parent());
+ #if MIR_SERVER_VERSION >= MIR_VERSION_NUMBER(2, 20, 0)
++    if (!m_glProvider) {
++        m_glProvider = gl_provider_from_native_interface(QGuiApplication::platformNativeInterface());
++    }
++    if (!m_glProvider) {
++        qWarning("SurfaceManager: GLRenderingProvider not yet available, dropping window");
++        return;
++    }
+     const auto surface = new MirSurface(window, m_windowController, *m_glProvider, session, parentSurface);
+ #else
+     const auto surface = new MirSurface(window, m_windowController, session, parentSurface);
+diff --git a/src/modules/QtMir/Application/surfacemanager.h b/src/modules/QtMir/Application/surfacemanager.h
+index 456fc29..b2721c6 100644
+--- a/src/modules/QtMir/Application/surfacemanager.h
++++ b/src/modules/QtMir/Application/surfacemanager.h
+@@ -87,7 +87,7 @@ private:
+     WorkspaceControllerInterface *m_workspaceController;
+     SessionMapInterface *m_sessionMap;
+ #if MIR_SERVER_VERSION >= MIR_VERSION_NUMBER(2, 19, 0)
+-    mir::graphics::GLRenderingProvider* const m_glProvider;
++    mir::graphics::GLRenderingProvider* m_glProvider;
+ #endif
+ 
+     friend class Workspace;
+diff --git a/src/modules/QtMir/Application/windowmodel.cpp b/src/modules/QtMir/Application/windowmodel.cpp
+index 0d65d7f..ed907e4 100644
+--- a/src/modules/QtMir/Application/windowmodel.cpp
++++ b/src/modules/QtMir/Application/windowmodel.cpp
+@@ -81,6 +81,15 @@ void WindowModel::onWindowAdded(const NewWindow &window)
+     beginInsertRows(QModelIndex(), index, index);
+ 
+ #if MIR_SERVER_VERSION >= MIR_VERSION_NUMBER(2, 20, 0)
++    if (!m_glProvider) {
++        m_glProvider = static_cast<mir::graphics::GLRenderingProvider*>(
++            QGuiApplication::platformNativeInterface()->nativeResourceForIntegration("GLRenderingProvider"));
++    }
++    if (!m_glProvider) {
++        qWarning("WindowModel: GLRenderingProvider not yet available, dropping window");
++        endInsertRows();
++        return;
++    }
+     m_windowModel.append(new MirSurface(window, m_windowController, *m_glProvider));
+ #else
+     m_windowModel.append(new MirSurface(window, m_windowController));
+@@ -116,6 +125,14 @@ void WindowModel::addInputMethodWindow(const NewWindow &window)
+         delete m_inputMethodSurface;
+     }
+ #if MIR_SERVER_VERSION >= MIR_VERSION_NUMBER(2, 20, 0)
++    if (!m_glProvider) {
++        m_glProvider = static_cast<mir::graphics::GLRenderingProvider*>(
++            QGuiApplication::platformNativeInterface()->nativeResourceForIntegration("GLRenderingProvider"));
++    }
++    if (!m_glProvider) {
++        qWarning("WindowModel: GLRenderingProvider not yet available, dropping input method window");
++        return;
++    }
+     m_inputMethodSurface = new MirSurface(window, m_windowController, *m_glProvider);
+ #else
+     m_inputMethodSurface = new MirSurface(window, m_windowController);
+diff --git a/src/platforms/mirserver/miroil/include/miroil/display_listener_wrapper.h b/src/platforms/mirserver/miroil/include/miroil/display_listener_wrapper.h
+deleted file mode 100644
+index 85c2f5d..0000000
+--- a/src/platforms/mirserver/miroil/include/miroil/display_listener_wrapper.h
++++ /dev/null
+@@ -1,44 +0,0 @@
+-/*
+- * Copyright (C) 2021 Canonical Ltd.
+- *
+- * This program is free software: you can redistribute it and/or modify it under
+- * the terms of the GNU Lesser General Public License version 3, as published by
+- * the Free Software Foundation.
+- *
+- * This program is distributed in the hope that it will be useful, but WITHOUT
+- * ANY WARRANTY; without even the implied warranties of MERCHANTABILITY,
+- * SATISFACTORY QUALITY, or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+- * Lesser General Public License for more details.
+- *
+- * You should have received a copy of the GNU Lesser General Public License
+- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+- */
+-
+-#ifndef MIROIL_DISPLAY_LISTENER_WRAPPER_H
+-#define MIROIL_DISPLAY_LISTENER_WRAPPER_H
+-#include <memory>
+-
+-namespace mir { 
+-    namespace geometry { struct Rectangle; } 
+-    namespace compositor { class DisplayListener; }
+-}
+-
+-namespace miroil
+-{
+-    
+-class DisplayListenerWrapper
+-{
+-public:
+-    DisplayListenerWrapper(std::shared_ptr<mir::compositor::DisplayListener> const& display_listener);
+-    ~DisplayListenerWrapper();
+-
+-    virtual void add_display(mir::geometry::Rectangle const& area);
+-    virtual void remove_display(mir::geometry::Rectangle const& area);
+-
+-private:
+-    std::shared_ptr<mir::compositor::DisplayListener> const& display_listener;     
+-};
+-
+-}
+-
+-#endif /* MIROIL_DISPLAY_LISTENER_WRAPPER_H */
+diff --git a/src/platforms/mirserver/miroil/src/CMakeLists.txt b/src/platforms/mirserver/miroil/src/CMakeLists.txt
+index fb6b5e2..857b27b 100644
+--- a/src/platforms/mirserver/miroil/src/CMakeLists.txt
++++ b/src/platforms/mirserver/miroil/src/CMakeLists.txt
+@@ -4,7 +4,6 @@ set(MIROIL_SRC
+     persist_display_config.cpp ${MIROIL_INCLUDE_DIRS}/miroil/persist_display_config.h
+     display_configuration_policy.cpp ${qtmir_include}/miroil/display_configuration_policy.h
+     display_configuration_controller_wrapper.cpp ${MIROIL_INCLUDE_DIRS}/miroil/display_configuration_controller_wrapper.h
+-    display_listener_wrapper.cpp ${MIROIL_INCLUDE_DIRS}/miroil/display_listener_wrapper.h
+     eventdispatch.cpp ${MIROIL_INCLUDE_DIRS}/miroil/eventdispatch.h
+     event_builder.cpp ${MIROIL_INCLUDE_DIRS}/miroil/event_builder.h
+     input_device.cpp ${MIROIL_INCLUDE_DIRS}/miroil/input_device.h
+diff --git a/src/platforms/mirserver/miroil/src/display_listener_wrapper.cpp b/src/platforms/mirserver/miroil/src/display_listener_wrapper.cpp
+deleted file mode 100644
+index e5aba1f..0000000
+--- a/src/platforms/mirserver/miroil/src/display_listener_wrapper.cpp
++++ /dev/null
+@@ -1,41 +0,0 @@
+-/*
+- * Copyright (C) 2021 Canonical Ltd.
+- *
+- * This program is free software: you can redistribute it and/or modify it under
+- * the terms of the GNU Lesser General Public License version 3, as published by
+- * the Free Software Foundation.
+- *
+- * This program is distributed in the hope that it will be useful, but WITHOUT
+- * ANY WARRANTY; without even the implied warranties of MERCHANTABILITY,
+- * SATISFACTORY QUALITY, or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+- * Lesser General Public License for more details.
+- *
+- * You should have received a copy of the GNU Lesser General Public License
+- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+- */
+-#include "miroil/display_listener_wrapper.h"
+-#include "mir/compositor/display_listener.h"
+-
+-namespace miroil
+-{
+-    
+-DisplayListenerWrapper::DisplayListenerWrapper(std::shared_ptr<mir::compositor::DisplayListener> const & display_listener)
+- : display_listener(display_listener)
+-{
+-}
+-
+-DisplayListenerWrapper::~DisplayListenerWrapper()
+-{
+-}
+-
+-void DisplayListenerWrapper::add_display(mir::geometry::Rectangle const& area)
+-{
+-    display_listener->add_display(area);
+-}
+-
+-void DisplayListenerWrapper::remove_display(mir::geometry::Rectangle const& area)
+-{
+-    display_listener->remove_display(area);
+-}
+-
+-}
+diff --git a/src/platforms/mirserver/platformscreen.cpp b/src/platforms/mirserver/platformscreen.cpp
+index eb73aa0..ff3bdcc 100644
+--- a/src/platforms/mirserver/platformscreen.cpp
++++ b/src/platforms/mirserver/platformscreen.cpp
+@@ -260,11 +260,19 @@ void PlatformScreen::setMirDisplayConfiguration(const mir::graphics::DisplayConf
+ 
+     // Output data - each output has a unique id and corresponding type. Can be multiple cards.
+     m_displayId.output_id = screen.id;
++
++#if MIR_SERVER_VERSION < MIR_VERSION_NUMBER(2, 22, 0)
+     try {
+         m_displayId.edid.parse_data(reinterpret_cast<std::vector<uint8_t> const&>(screen.edid));
+     } catch (std::runtime_error const& e) {
+         printf("Failed to parse EDID - %s\n", e.what());
+     }
++#else
++    m_displayId.edid.vendor = screen.display_info.vendor.value_or("");
++    m_displayId.edid.product_code = screen.display_info.product_code.value_or(0);
++    m_displayId.edid.serial_number = screen.display_info.serial_number.value_or(0);
++    m_displayId.edid.size = {screen.physical_size_mm.width.as_int(), screen.physical_size_mm.height.as_int()};
++#endif
+ 
+     auto type = static_cast<qtmir::OutputTypes>(screen.type); //FIXME: need compile time check these are equivalent
+     if (m_type != type) {
+diff --git a/src/platforms/mirserver/qmirserver_p.cpp b/src/platforms/mirserver/qmirserver_p.cpp
+index 8816061..ddc1ec9 100644
+--- a/src/platforms/mirserver/qmirserver_p.cpp
++++ b/src/platforms/mirserver/qmirserver_p.cpp
+@@ -241,7 +241,9 @@ void QMirServerPrivate::run(const std::function<void()> &startCallback)
+     miral::WaylandExtensions waylandExtensions{};
+     fp6RestrictPrivilegedExtensions(waylandExtensions);
+     waylandExtensions.add_extension(qtmir::qtWindowmanagerExtension());
++#if MIR_SERVER_VERSION < MIR_VERSION_NUMBER(2, 28, 0)
+     waylandExtensions.add_extension(qtmir::qtKwinServerDecorationManagerExtension(m_windowModelNotifier));
++#endif
+ 
+     runner.set_exception_handler([]
+     {
+diff --git a/src/platforms/mirserver/screensmodel.cpp b/src/platforms/mirserver/screensmodel.cpp
+index 4c666f4..cc7b067 100644
+--- a/src/platforms/mirserver/screensmodel.cpp
++++ b/src/platforms/mirserver/screensmodel.cpp
+@@ -62,7 +62,7 @@ void ScreensModel::init(
+     std::function<void(std::shared_ptr<mir::graphics::GLRenderingProvider>)> callback,
+ #endif
+     const std::shared_ptr<QtCompositor>& compositor,
+-    const std::shared_ptr<miroil::DisplayListenerWrapper>& displayListener)
++    std::shared_ptr<miroil::DisplayListenerWrapper> displayListener)
+ {
+     m_display = display;
+ #if MIR_SERVER_VERSION >= MIR_VERSION_NUMBER(2, 20, 0)
+diff --git a/src/platforms/mirserver/screensmodel.h b/src/platforms/mirserver/screensmodel.h
+index b4d1a2a..999daac 100644
+--- a/src/platforms/mirserver/screensmodel.h
++++ b/src/platforms/mirserver/screensmodel.h
+@@ -91,7 +91,7 @@ public:
+         std::function<void(std::shared_ptr<mir::graphics::GLRenderingProvider>)> callback,
+ #endif
+         const std::shared_ptr<QtCompositor>& compositor,
+-        const std::shared_ptr<miroil::DisplayListenerWrapper> & displayListener);
++        std::shared_ptr<miroil::DisplayListenerWrapper> displayListener);
+     void terminate();
+ 
+     // override for testing purposes
+diff --git a/src/platforms/mirserver/wayland-generated/server-decoration_wrapper.cpp b/src/platforms/mirserver/wayland-generated/server-decoration_wrapper.cpp
+index 0e692c6..4f62ce5 100644
+--- a/src/platforms/mirserver/wayland-generated/server-decoration_wrapper.cpp
++++ b/src/platforms/mirserver/wayland-generated/server-decoration_wrapper.cpp
+@@ -4,6 +4,10 @@
+  * This file is generated from server-decoration.xml by mir_wayland_generator
+  */
+ 
++#include <mir/version.h>
++
++#if MIR_SERVER_VERSION < MIR_VERSION_NUMBER(2, 28, 0)
++
+ #include "server-decoration_wrapper.h"
+ 
+ #include <boost/exception/diagnostic_information.hpp>
+@@ -294,3 +298,5 @@ struct wl_interface const org_kde_kwin_server_decoration_interface_data {
+ 
+ }
+ }
++
++#endif
+diff --git a/src/platforms/mirserver/wayland-generated/server-decoration_wrapper.h b/src/platforms/mirserver/wayland-generated/server-decoration_wrapper.h
+index 87a42d4..e57e3c5 100644
+--- a/src/platforms/mirserver/wayland-generated/server-decoration_wrapper.h
++++ b/src/platforms/mirserver/wayland-generated/server-decoration_wrapper.h
+@@ -4,6 +4,10 @@
+  * This file is generated from server-decoration.xml by mir_wayland_generator
+  */
+ 
++#include <mir/version.h>
++
++#if MIR_SERVER_VERSION < MIR_VERSION_NUMBER(2, 28, 0)
++
+ #ifndef MIR_FRONTEND_WAYLAND_SERVER_DECORATION_XML_WRAPPER
+ #define MIR_FRONTEND_WAYLAND_SERVER_DECORATION_XML_WRAPPER
+ 
+@@ -105,3 +109,5 @@ private:
+ }
+ 
+ #endif // MIR_FRONTEND_WAYLAND_SERVER_DECORATION_XML_WRAPPER
++
++#endif
+diff --git a/src/platforms/mirserver/wayland/kwinserverdecoration.cpp b/src/platforms/mirserver/wayland/kwinserverdecoration.cpp
+index f480f3c..04f07b2 100644
+--- a/src/platforms/mirserver/wayland/kwinserverdecoration.cpp
++++ b/src/platforms/mirserver/wayland/kwinserverdecoration.cpp
+@@ -14,6 +14,10 @@
+  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+  */
+ 
++#include <mir/version.h>
++
++#if MIR_SERVER_VERSION < MIR_VERSION_NUMBER(2, 28, 0)
++
+ #include "kwinserverdecoration.h"
+ #include "services.h"
+ 
+@@ -105,3 +109,5 @@ auto qtmir::qtKwinServerDecorationManagerExtension(qtmir::WindowModelNotifier &w
+         }
+     };
+ }
++
++#endif
+diff --git a/src/platforms/mirserver/wayland/kwinserverdecoration.h b/src/platforms/mirserver/wayland/kwinserverdecoration.h
+index c751302..5f07390 100644
+--- a/src/platforms/mirserver/wayland/kwinserverdecoration.h
++++ b/src/platforms/mirserver/wayland/kwinserverdecoration.h
+@@ -14,6 +14,10 @@
+  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+  */
+ 
++#include <mir/version.h>
++
++#if MIR_SERVER_VERSION < MIR_VERSION_NUMBER(2, 28, 0)
++
+ #pragma once
+ 
+ // Provides the qt-windowmanager Wayland extension, which provides support for
+@@ -32,3 +36,5 @@ namespace qtmir
+ // the Wayland spec
+ auto qtKwinServerDecorationManagerExtension(qtmir::WindowModelNotifier &windowModel) -> miral::WaylandExtensions::Builder;
+ }
++
++#endif

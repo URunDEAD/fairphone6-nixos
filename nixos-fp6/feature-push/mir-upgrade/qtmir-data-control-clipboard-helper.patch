@@ -1,0 +1,69 @@
+FP6 privacy-lock clipboard on Mir 2.28: ext_data_control_manager_v1 for
+fp6-privacy-clipboard only (real path of the system-profile binary and the
+fp6-privacy-clipboard.service cgroup), nobody else. Applied after
+qtmir-mir2-28-fp6.patch, only with privacyLock.clipboard (needs mirUpgrade).
+diff --git a/src/platforms/mirserver/qmirserver_p.cpp b/src/platforms/mirserver/qmirserver_p.cpp
+index 51057de..6c61d73 100644
+--- a/src/platforms/mirserver/qmirserver_p.cpp
++++ b/src/platforms/mirserver/qmirserver_p.cpp
+@@ -55,6 +55,8 @@
+ 
+ // Qt
+ #include <QCoreApplication>
++#include <QFile>
++#include <QFileInfo>
+ #include <QDBusConnection>
+ #include <QDBusInterface>
+ #include <QMap>
+@@ -239,6 +241,41 @@ miral::SessionLockListener fp6SessionLockLog()
+         [] { qCWarning(QTMIR_MIR_MESSAGES) << "Mir session locked (logind Lock); Lomiri's greeter stays the lock screen"; },
+         [] { qCInfo(QTMIR_MIR_MESSAGES) << "Mir session unlocked (logind Unlock)"; }};
+ }
++
++// FP6 privacy-lock clipboard: ext-data-control reads and replaces the
++// selection at any time, without focus. It is offered to one client only,
++// fp6-privacy-clipboard: /proc/<pid>/exe must be the real path of the system
++// profile's /run/current-system/sw/bin/fp6-privacy-clipboard (root-owned) and
++// the process must run in the fp6-privacy-clipboard.service unit. Every other
++// client, including anything added with MIR_SERVER_ADD_WAYLAND_EXTENSIONS,
++// gets no data-control global.
++bool fp6IsClipboardHelper(pid_t pid)
++{
++    QString const expected = QFileInfo(QStringLiteral("/run/current-system/sw/bin/fp6-privacy-clipboard")).canonicalFilePath();
++    if (expected.isEmpty() || pid <= 0)
++        return false;
++    if (QFileInfo(QStringLiteral("/proc/%1/exe").arg(pid)).symLinkTarget() != expected)
++        return false;
++    QFile cgroup(QStringLiteral("/proc/%1/cgroup").arg(pid));
++    if (!cgroup.open(QIODevice::ReadOnly))
++        return false;
++    for (QByteArray const& line : cgroup.readAll().split('\n')) {
++        if (line.startsWith("0::") && line.endsWith("/fp6-privacy-clipboard.service"))
++            return true;
++    }
++    return false;
++}
++
++void fp6EnableDataControlForClipboardHelper(miral::WaylandExtensions& extensions)
++{
++    extensions.conditionally_enable(miral::WaylandExtensions::ext_data_control_manager_v1,
++                                    [](miral::WaylandExtensions::EnableInfo const& info) {
++        pid_t const pid = miral::pid_of(info.app());
++        bool const helper = fp6IsClipboardHelper(pid);
++        qCInfo(QTMIR_MIR_MESSAGES) << info.name() << (helper ? "offered to" : "not offered to") << "pid" << pid;
++        return helper;
++    });
++}
+ } // namespace
+ #endif
+ 
+@@ -268,6 +305,9 @@ void QMirServerPrivate::run(const std::function<void()> &startCallback)
+ 
+     miral::WaylandExtensions waylandExtensions{};
+     fp6RestrictPrivilegedExtensions(waylandExtensions);
++#if MIR_SERVER_VERSION >= MIR_VERSION_NUMBER(2, 28, 0)
++    fp6EnableDataControlForClipboardHelper(waylandExtensions);
++#endif
+     waylandExtensions.add_extension(qtmir::qtWindowmanagerExtension());
+ #if MIR_SERVER_VERSION < MIR_VERSION_NUMBER(2, 28, 0)
+     waylandExtensions.add_extension(qtmir::qtKwinServerDecorationManagerExtension(m_windowModelNotifier));

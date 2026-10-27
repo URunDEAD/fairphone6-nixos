@@ -1,0 +1,17 @@
+FP6 mir-upgrade (only applied with Mir 2.28): Mir >= 2.22 miroil::Edid has no descriptors (vendor,
+product code, serial and size only), so the display-config file name is
+built from those. Applied only with hardware.fairphone6.mirUpgrade.enable.
+--- a/src/DisplayConfigurationStorage.cpp	2026-10-27 08:33:44.608885881 +0200
++++ b/src/DisplayConfigurationStorage.cpp	2026-10-27 08:33:44.628483133 +0200
+@@ -33,9 +33,11 @@
+     str += QString::fromStdString(edid.vendor);
+     str += QString("%1%2").arg(edid.product_code).arg(edid.serial_number);
+ 
++#ifndef WITH_MIR2
+     for (int i = 0; i < 4; i++) {
+         str += QString::fromStdString(edid.descriptors[i].string_value());
+     }
++#endif
+     return str;
+ }
+ 

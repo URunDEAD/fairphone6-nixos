@@ -1,0 +1,125 @@
+FP6 mir-upgrade (Mir 2.28); the source changes are version-guarded:
+ * miroil::SurfaceObserver::mirror_mode_set_to (new pure virtual): no-op.
+ * tests/framework/fake_mirsurface.h (FP6 native lifecycle test): no
+   override on the frame-dropper/buffer-count methods Mir >= 2.20 dropped.
+ * The privacy-lock restriction also covers the privileged globals Mir 2.28
+   adds (ext-foreign-toplevel-list, ext-image-copy-capture,
+   ext-output-image-capture-source, ext-session-lock): offered to nobody
+   unless FP6_WAYLAND_PRIVILEGED_ALLOW_ALL=1.
+ * Mir's own session lock (Mir 2.28 follows logind Lock/Unlock) is logged.
+Applied after qtmir-mir2-28-upstream.patch.
+diff --git a/src/modules/QtMir/Application/mirsurface.cpp b/src/modules/QtMir/Application/mirsurface.cpp
+index cbf5421..842cbbb 100644
+--- a/src/modules/QtMir/Application/mirsurface.cpp
++++ b/src/modules/QtMir/Application/mirsurface.cpp
+@@ -135,6 +135,11 @@ public:
+     void application_id_set_to(mir::scene::Surface const* /* surf */, std::string const& /* application_id */) override {};
+ #endif
+ 
++#if MIR_SERVER_VERSION >= MIR_VERSION_NUMBER(2, 28, 0)
++    // FP6 mir-upgrade: new in miroil's SurfaceObserver (Mir 2.28); qtmir does not mirror surfaces.
++    void mirror_mode_set_to(mir::scene::Surface const*, MirMirrorMode) override {}
++#endif
++
+ #else
+     void attrib_changed(MirWindowAttrib, int) override;
+     void resized_to(mir::geometry::Size const&) override;
+diff --git a/src/platforms/mirserver/qmirserver_p.cpp b/src/platforms/mirserver/qmirserver_p.cpp
+index ddc1ec9..51057de 100644
+--- a/src/platforms/mirserver/qmirserver_p.cpp
++++ b/src/platforms/mirserver/qmirserver_p.cpp
+@@ -47,6 +47,9 @@
+ #include <miral/keymap.h>
+ #include <miral/wayland_extensions.h>
+ #include <miral/application.h>
++#if MIR_SERVER_VERSION >= MIR_VERSION_NUMBER(2, 28, 0)
++#include <miral/session_lock_listener.h>
++#endif
+ 
+ #include <miral/lambda_as_function.h>
+ 
+@@ -204,7 +207,16 @@ void fp6RestrictPrivilegedExtensions(miral::WaylandExtensions& extensions)
+                              miral::WaylandExtensions::zwlr_virtual_pointer_manager_v1,
+                              miral::WaylandExtensions::zwlr_foreign_toplevel_manager_v1,
+                              miral::WaylandExtensions::zwlr_screencopy_manager_v1,
+-                             miral::WaylandExtensions::zwp_input_method_manager_v2}) {
++                             miral::WaylandExtensions::zwp_input_method_manager_v2,
++#if MIR_SERVER_VERSION >= MIR_VERSION_NUMBER(2, 28, 0)
++                             // FP6 Mir 2.28: the newer privileged globals (window list,
++                             // screen capture, a second lock screen) get the same rule.
++                             miral::WaylandExtensions::ext_foreign_toplevel_list_v1,
++                             miral::WaylandExtensions::ext_image_copy_capture_manager_v1,
++                             miral::WaylandExtensions::ext_output_image_capture_source_manager_v1,
++                             miral::WaylandExtensions::ext_session_lock_manager_v1,
++#endif
++                             }) {
+         extensions.conditionally_enable(name, [](miral::WaylandExtensions::EnableInfo const& info) {
+             qCInfo(QTMIR_MIR_MESSAGES) << info.name() << (allowAll ? "offered to" : "not offered to")
+                                        << "pid" << miral::pid_of(info.app());
+@@ -214,6 +226,22 @@ void fp6RestrictPrivilegedExtensions(miral::WaylandExtensions& extensions)
+ }
+ } // namespace
+ 
++#if MIR_SERVER_VERSION >= MIR_VERSION_NUMBER(2, 28, 0)
++namespace {
++// FP6 Mir 2.28: Mir now follows logind's Lock/Unlock signals (loginctl
++// lock-session) with its own session lock, which drops keyboard focus and
++// hides surfaces that are not ext-session-lock surfaces. Lomiri's greeter
++// is the lock screen and does not use ext-session-lock; log the transitions
++// so a stuck Mir lock is visible in the journal.
++miral::SessionLockListener fp6SessionLockLog()
++{
++    return miral::SessionLockListener{
++        [] { qCWarning(QTMIR_MIR_MESSAGES) << "Mir session locked (logind Lock); Lomiri's greeter stays the lock screen"; },
++        [] { qCInfo(QTMIR_MIR_MESSAGES) << "Mir session unlocked (logind Unlock)"; }};
++}
++} // namespace
++#endif
++
+ void QMirServerPrivate::run(const std::function<void()> &startCallback)
+ {
+     m_mirServerHooks.create_prompt_session_listener(std::dynamic_pointer_cast<miroil::PromptSessionListener>(std::make_shared<qtmir::PromptSessionListener>()));
+@@ -280,6 +308,9 @@ void QMirServerPrivate::run(const std::function<void()> &startCallback)
+     auto displayStorageBuilder = m_displayConfigurationStorage.builder();
+ 
+     miral::Keymap config_keymap;
++#if MIR_SERVER_VERSION >= MIR_VERSION_NUMBER(2, 28, 0)
++    auto const sessionLockLog = fp6SessionLockLog();
++#endif
+ 
+     runner.run_with(
+         {
+@@ -330,6 +361,9 @@ void QMirServerPrivate::run(const std::function<void()> &startCallback)
+             ),
+             setTerminator,
+             config_keymap,
++#if MIR_SERVER_VERSION >= MIR_VERSION_NUMBER(2, 28, 0)
++            sessionLockLog,
++#endif
+             miroil::PersistDisplayConfig{displayStorageBuilder(),
+                                         m_displayConfigurationPolicy},
+         });
+diff --git a/tests/framework/fake_mirsurface.h b/tests/framework/fake_mirsurface.h
+index f56b20a..dd80735 100644
+--- a/tests/framework/fake_mirsurface.h
++++ b/tests/framework/fake_mirsurface.h
+@@ -101,8 +101,8 @@ public:
+     void setRequestedPosition(const QPoint &) override;
+ 
+     bool isReady() const override;
+-    void stopFrameDropper() override;
+-    void startFrameDropper() override;
++    void stopFrameDropper(); // FP6 mir-upgrade: gone from the interface on Mir >= 2.20
++    void startFrameDropper();
+     void setLive(bool value) override;
+     void setViewExposure(qintptr viewId, bool visible) override;
+     bool isBeingDisplayed() const override;
+@@ -115,7 +115,7 @@ public:
+     std::vector<SubSurfaceTexture> updateTexture(qintptr) override;
+     QMutex* textureMutex() override { return &m_textureMutex; }
+     unsigned int currentFrameNumber(qintptr) const override;
+-    bool numBuffersReadyForCompositor(qintptr) override;
++    bool numBuffersReadyForCompositor(qintptr);
+     // end of methods called from the rendering (scene graph) thread
+ 
+     void setFocused(bool focus) override;

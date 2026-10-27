@@ -1,0 +1,20 @@
+FP6 mir-upgrade + privacy-lock clipboard: list the Clipboard page in
+Security & Privacy (applied after lss-security-privacy.patch, only with
+hardware.fairphone6.privacyLock.clipboard, which needs mirUpgrade).
+diff -u a/PageComponent.qml b/PageComponent.qml
+--- a/PageComponent.qml
++++ b/PageComponent.qml
+@@ -1,7 +1,11 @@
+             }
+ 
+-            // (Clipboard page: settings-page/Clipboard.qml, listed here once
+-            // Lomiri's Mir offers ext-data-control; see privacy-lock README.)
++            SettingsListItems.SingleValueProgression {
++                objectName: "fp6Clipboard"
++                text: i18n.tr("Clipboard")
++                value: (fp6Privacy.clipboardClearMinutes || 0) > 0 || fp6Privacy.clipboardReadNotify === true ? i18n.tr("On") : i18n.tr("Off")
++                onClicked: pageStack.addPageToNextColumn(root, Qt.resolvedUrl("../fp6-privacy/Clipboard.qml"), { settings: fp6Privacy })
++            }
+ 
+             SettingsListItems.SingleValueProgression {
+                 objectName: "fp6WifiMac"

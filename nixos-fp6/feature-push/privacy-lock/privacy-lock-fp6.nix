@@ -82,6 +82,9 @@ let
     X-Lomiri-Splash-Color=#eeecea
   '';
 in {
+  # Declares hardware.fairphone6.mirUpgrade (default off) for the clipboard.
+  imports = [ ../mir-upgrade/mir-upgrade-fp6.nix ];
+
   options.hardware.fairphone6.privacyLock = {
     enable = lib.mkEnableOption ''
       privacy & lock features: idle/grace auto-lock options, lock-screen
@@ -109,13 +112,17 @@ in {
     };
     clipboard = lib.mkOption {
       type = lib.types.bool;
-      # Lomiri's Mir 2.15 has no ext-data-control (Mir >= 2.2x has): nothing
-      # to run against yet. See README "5. Clipboard".
-      default = false;
+      # Lomiri's Mir 2.15 has no ext-data-control (Mir >= 2.2x has). On with
+      # the Mir 2.28 prototype (hardware.fairphone6.mirUpgrade, default off),
+      # whose qtmir offers ext_data_control to fp6-privacy-clipboard only.
+      # See README "5. Clipboard" and ../mir-upgrade.
+      default = config.hardware.fairphone6.mirUpgrade.enable;
+      defaultText = lib.literalExpression "config.hardware.fairphone6.mirUpgrade.enable";
       description = ''
         fp6-privacy-clipboard: clipboard auto-clear and paste notifications
-        over Wayland ext-data-control. Needs a Mir with ext_data_control
-        offered to that helper only (not Lomiri's Mir 2.15).'';
+        over Wayland ext-data-control. Requires hardware.fairphone6.mirUpgrade
+        (Mir 2.28, ext_data_control offered to that helper only; Lomiri's
+        Mir 2.15 has none).'';
     };
     wifiMac = lib.mkOption {
       type = lib.types.bool;
@@ -130,6 +137,9 @@ in {
     assertions = [{
       assertion = config.services.fp6LomiriSensors.enable or false;
       message = "privacy-lock needs fp6-lomiri-powerd (services.fp6LomiriSensors) for idle display-off and the power key.";
+    } {
+      assertion = cfg.clipboard -> config.hardware.fairphone6.mirUpgrade.enable;
+      message = "privacyLock.clipboard needs hardware.fairphone6.mirUpgrade.enable (ext-data-control, Mir 2.28); Lomiri's Mir 2.15 has none.";
     }];
 
     nixpkgs.overlays = lib.mkOrder 2800 [ (_final: prev: {
