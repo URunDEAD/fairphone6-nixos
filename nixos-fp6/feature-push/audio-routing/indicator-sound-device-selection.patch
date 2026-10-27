@@ -35,10 +35,10 @@ index 4c57477..2d6b7ce 100644
      options
 diff --git a/src/audio-device-selector.vala b/src/audio-device-selector.vala
 new file mode 100644
-index 0000000..95ee316
+index 0000000..d0761c2
 --- /dev/null
 +++ b/src/audio-device-selector.vala
-@@ -0,0 +1,1193 @@
+@@ -0,0 +1,1189 @@
 +/*
 + * Copyright 2026 Paul Schuldesz
 + *
@@ -808,51 +808,47 @@ index 0000000..95ee316
 +    /* Switching to new devices */
 +
 +    private bool first_snapshot = true;
-+    private Gee.HashSet<string> cards_with_outputs = new Gee.HashSet<string> ();
-+    private Gee.HashSet<string> cards_with_inputs = new Gee.HashSet<string> ();
++    private Gee.HashSet<string> known_cards = new Gee.HashSet<string> ();
++    /* Cards that appeared after startup and have not got their first node yet */
++    private Gee.HashMap<string, int64?> appeared_cards = new Gee.HashMap<string, int64?> ();
 +
 +    private void switch_to_new_devices ()
 +    {
-+        var outs = new Gee.HashSet<string> ();
-+        var ins = new Gee.HashSet<string> ();
-+        Node? new_out = null, new_in = null;
-+
-+        foreach (var n in this.nodes) {
-+            if (n.is_monitor || n.card == PulseAudio.INVALID_INDEX)
-+                continue;
-+            Card? card = null;
-+            foreach (var c in this.cards)
-+                if (c.index == n.card)
-+                    card = c;
-+            if (card == null || !(card.is_bluetooth () || card.is_usb ()))
-+                continue;
-+            if (n.output) {
-+                outs.add (card.name);
-+                if (!this.cards_with_outputs.contains (card.name) && new_out == null)
-+                    new_out = n;
-+            } else {
-+                ins.add (card.name);
-+                /* A Bluetooth microphone only exists on the headset profile:
-+                 * following it would drag music onto HFP. USB mics are fine. */
-+                if (!this.cards_with_inputs.contains (card.name) && new_in == null && card.is_usb ())
-+                    new_in = n;
-+            }
++        int64 now = GLib.get_monotonic_time ();
++        var present = new Gee.HashSet<string> ();
++        foreach (var c in this.cards) {
++            present.add (c.name);
++            /* A card is new when it appears, not when a profile switch
++             * (A2DP <-> headset, call profiles) recreates its nodes. */
++            if (!this.first_snapshot && !this.known_cards.contains (c.name) && (c.is_bluetooth () || c.is_usb ()))
++                this.appeared_cards[c.name] = now + 10 * TimeSpan.SECOND;
 +        }
-+
-+        if (!this.first_snapshot && this.auto_switch && !this.in_call && !this.read_only) {
-+            if (new_out != null) {
-+                debug ("audio devices: new output %s", new_out.name);
-+                this.apply_node (new_out, null);
-+            }
-+            if (new_in != null) {
-+                debug ("audio devices: new input %s", new_in.name);
-+                this.apply_node (new_in, null);
-+            }
-+        }
-+
-+        this.cards_with_outputs = outs;
-+        this.cards_with_inputs = ins;
++        this.known_cards = present;
 +        this.first_snapshot = false;
++
++        var done = new Gee.ArrayList<string> ();
++        foreach (var name in this.appeared_cards.keys) {
++            Card? card = this.card_by_name (name);
++            if (card == null || now > this.appeared_cards[name]) {
++                done.add (name);
++                continue;
++            }
++            Node? out_node = this.node_on_card (card.index, true, null);
++            if (out_node == null)
++                continue;
++            done.add (name);
++            if (!this.auto_switch || this.in_call || this.read_only)
++                continue;
++            debug ("audio devices: new output %s", out_node.name);
++            this.apply_node (out_node, null);
++            /* A Bluetooth microphone only exists on the headset profile:
++             * following it would drag music onto HFP. USB mics are fine. */
++            Node? in_node = card.is_usb () ? this.node_on_card (card.index, false, null) : null;
++            if (in_node != null)
++                this.apply_node (in_node, null);
++        }
++        foreach (var name in done)
++            this.appeared_cards.unset (name);
 +    }
 +
 +    /* Per-app routing */
@@ -1333,7 +1329,7 @@ index fdc27fd..d25b54c 100644
          return export_to_accounts_service;
      }
 diff --git a/src/sound-menu.vala b/src/sound-menu.vala
-index 574e849..4468e6c 100644
+index 574e849..904b358 100644
 --- a/src/sound-menu.vala
 +++ b/src/sound-menu.vala
 @@ -29,7 +29,8 @@ public class SoundMenu: Object
@@ -1398,6 +1394,16 @@ index 574e849..4468e6c 100644
      bool mic_volume_shown;
      bool settings_shown = false;
      bool high_volume_warning_shown = false;
+@@ -316,7 +352,8 @@ public class SoundMenu: Object
+         int n = this.menu.get_n_items ();
+         for (int i = 0; i < n; i++) {
+             var section = this.menu.get_item_link (i, Menu.LINK_SECTION);
+-            if (section == null) continue;
++            /* The Output/Input sections are empty until the sound server answers */
++            if (section == null || section.get_n_items () == 0) continue;
+ 
+             string action;
+             section.get_item_attribute (0, "action", "s", out action);
 diff --git a/vapi/fp6-pulse-ports.vapi b/vapi/fp6-pulse-ports.vapi
 new file mode 100644
 index 0000000..4b7e531
