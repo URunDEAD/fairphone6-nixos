@@ -39,7 +39,7 @@ ItemPage {
     // Mirrors fp6-updated's url.rs (the daemon checks again).
     function serverProblem(u) {
         var m = /^(https?):\/\/(\[[0-9a-fA-F:]+\]|[A-Za-z0-9.-]+)(?::([0-9]{1,5}))?(\/[^?#\s]*)?$/i.exec(u.trim())
-        if (!m) return i18n.tr("Enter an address like https://host/path or http://192.168.1.10:8742")
+        if (!m) return i18n.tr("Enter the update server address (https://…, or http:// on your local or private network)")
         if (m[3] !== undefined && (Number(m[3]) < 1 || Number(m[3]) > 65535)) return i18n.tr("Bad port")
         if (m[4] !== undefined && m[4].split("/").indexOf("..") >= 0) return i18n.tr("No .. in the path")
         if (m[1].toLowerCase() === "https") return ""
@@ -50,7 +50,7 @@ ItemPage {
         if (v4 && (o[0] === 10 || o[0] === 127 || (o[0] === 172 && o[1] >= 16 && o[1] <= 31) || (o[0] === 192 && o[1] === 168)
                    || (o[0] === 169 && o[1] === 254) || (o[0] === 100 && o[1] >= 64 && o[1] <= 127)))
             return ""
-        return i18n.tr("Plain http:// only to a LAN, NetBird or local address; use https:// for anything else.")
+        return i18n.tr("Plain http:// is only allowed on your local or private network; use https:// for anything else.")
     }
 
     function act(method, args) {
@@ -459,7 +459,7 @@ ItemPage {
                 id: serverField
                 objectName: "fp6UpdateServerField"
                 anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
-                placeholderText: "https://… / http://192.168.x.x:8742"
+                placeholderText: "https://… / http://…:8742"
                 inputMethodHints: Qt.ImhUrlCharactersOnly | Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText
                 property bool edited: false
                 onTextChanged: { edited = true; root.serverTest = null }
@@ -528,7 +528,7 @@ ItemPage {
                 wrapMode: Text.WordWrap
                 fontSize: "x-small"
                 color: theme.palette.normal.backgroundTertiaryText
-                text: i18n.tr("Use https://, or http:// to a LAN, NetBird (100.64-127.x) or local address. Channel %1. Updates are only accepted when signed with the release key %2, whatever the server; changing the server never changes that key.")
+                text: i18n.tr("Enter the update server address (https://…, or http:// on your local or private network). Channel %1. Updates are only accepted when signed with the release key %2, whatever the server; changing the server never changes that key.")
                       .arg(st ? st.channel : "").arg(st ? st.keyId : "")
             }
         }

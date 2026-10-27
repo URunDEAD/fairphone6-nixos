@@ -110,7 +110,7 @@ pub fn check(s: &str, allow_file: bool) -> Result<String, String> {
     match u.scheme.as_str() {
         "https" => Ok(u.to_string()),
         "http" if private_host(&u.host) => Ok(u.to_string()),
-        "http" => Err("plain http:// is only allowed to a private, NetBird (100.64-127.x) or local address; use https:// for anything else".into()),
+        "http" => Err("plain http:// is only allowed on your local or private network; use https:// for anything else".into()),
         "file" if allow_file => Ok(u.to_string()),
         _ => Err("file:// addresses are not allowed on the phone".into()),
     }

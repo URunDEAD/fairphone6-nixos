@@ -122,12 +122,12 @@ pub fn evaluate(f: &Facts, baseline: Option<&Baseline>, time: i64) -> Report {
         None => add("modem", None, false, "ofono not reachable or no modem".into()),
     }
     match f.netbird_active {
-        None => add("netbird", None, false, "not configured".into()),
+        None => add("vpn", None, false, "not configured".into()),
         Some(a) => {
-            let crit = was_ok("netbird");
-            add("netbird", Some(a), crit, if a { "netbird.service active".into() } else { "netbird.service is not active".into() });
-            let crit = was_ok("netbird-connected");
-            add("netbird-connected", f.netbird_connected, crit,
+            let crit = was_ok("vpn");
+            add("vpn", Some(a), crit, if a { "VPN service active".into() } else { "VPN service is not running".into() });
+            let crit = was_ok("vpn-connected");
+            add("vpn-connected", f.netbird_connected, crit,
                 match f.netbird_connected { Some(true) => "connected".into(), Some(false) => "not connected".into(), None => "unknown".into() });
         }
     }
@@ -216,8 +216,8 @@ mod tests {
     fn healthy_passes_and_noncritical_failures_are_ignored() {
         let r = evaluate(&healthy(), None, 1);
         assert!(r.passed, "{:?}", r.failures());
-        assert_eq!(r.checks.iter().find(|c| c.name == "netbird-connected").unwrap().status, Status::Fail);
-        assert!(!r.checks.iter().find(|c| c.name == "netbird-connected").unwrap().critical);
+        assert_eq!(r.checks.iter().find(|c| c.name == "vpn-connected").unwrap().status, Status::Fail);
+        assert!(!r.checks.iter().find(|c| c.name == "vpn-connected").unwrap().critical);
     }
 
     #[test]
@@ -255,9 +255,9 @@ mod tests {
         assert!(r.failures()[0].starts_with("modem-online"));
         // NetBird connected on the last good boot
         let r = evaluate(&healthy(), Some(&b), 2);
-        assert!(!r.passed && r.failures()[0].starts_with("netbird-connected"), "{:?}", r.failures());
+        assert!(!r.passed && r.failures()[0].starts_with("vpn-connected"), "{:?}", r.failures());
         // NetBird not configured
-        assert!(evaluate(&Facts { netbird_active: None, netbird_connected: None, ..healthy() }, Some(&b), 2).checks.iter().all(|c| c.name != "netbird-connected"));
+        assert!(evaluate(&Facts { netbird_active: None, netbird_connected: None, ..healthy() }, Some(&b), 2).checks.iter().all(|c| c.name != "vpn-connected"));
     }
 
     fn pending(mode: &str) -> Pending {
