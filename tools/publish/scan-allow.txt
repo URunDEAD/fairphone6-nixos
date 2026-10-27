@@ -35,3 +35,6 @@ passphrase: Option<&str>
 MIN_PASSPHRASE: usize = [0-9]+;
 passphrase: (pass|page\.passphrase) \|\| null
 passphrase = pass \|\| ""
+# ota: synthetic /proc/net/tcp and tcp6 tables (all-zero addresses, port 22) in a parser test
+let t = "  sl  local_address rem_address   st tx_queue
+let t6 = "  sl  local_address                         remote_address
