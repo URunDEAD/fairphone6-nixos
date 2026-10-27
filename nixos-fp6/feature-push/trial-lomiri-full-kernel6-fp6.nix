@@ -38,6 +38,10 @@ let
       # rewrite the running boot partition with a backup, no automatic rollback.
       # results/feature-push-20261024/ota/README.md
       ({ ... }: { imports = [ ./ota/ota-fp6.nix ]; hardware.fairphone6.ota.enable = true; hardware.fairphone6.ota.allowSlotSwitch = false; })
+      # App switcher: close all apps (drag right past the first app, or Clear all);
+      # Settings > Gesture Shortcuts > App switcher.
+      # results/feature-push-20261024/spread-close-all/README.md
+      ({ ... }: { imports = [ ./spread-close-all/spread-close-all-fp6.nix ]; hardware.fairphone6.spreadCloseAll.enable = true; })
       # State across reboots: VPNs reconnect at startup (Settings > VPN >
       # Reconnect at startup: restore last state / always on / off).
       # results/feature-push-20261024/persistence/README.md

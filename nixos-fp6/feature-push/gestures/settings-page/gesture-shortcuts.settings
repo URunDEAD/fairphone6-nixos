@@ -29,7 +29,12 @@
         "back",
         "volume",
         "track",
-        "music"
+        "music",
+        "app switcher",
+        "spread",
+        "close all",
+        "clear all",
+        "apps"
     ],
     "has-dynamic-keywords": false,
     "has-dynamic-visibility": false,

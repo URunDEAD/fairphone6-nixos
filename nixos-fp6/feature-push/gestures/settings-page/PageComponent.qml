@@ -50,6 +50,63 @@ ItemPage {
             anchors.right: parent.right
             spacing: units.gu(1)
 
+            // App switcher close all (nixos-fp6/feature-push/spread-close-all):
+            // com.fairphone6.app-switcher, read live by Lomiri. Hidden when that
+            // module (and its schema) is not installed.
+            Column {
+                objectName: "appSwitcherSection"
+                visible: appSwitcher.schema.isValid
+                anchors { left: parent.left; right: parent.right }
+                spacing: units.gu(1)
+
+                GSettings {
+                    id: appSwitcher
+                    schema.id: "com.fairphone6.app-switcher"
+                }
+
+                SettingsItemTitle { text: i18n.tr("App switcher") }
+
+                SettingsListItems.Standard {
+                    text: i18n.tr("Swipe right at the first app to close all apps")
+                    Switch {
+                        objectName: "closeAllGestureSwitch"
+                        property bool serverChecked: appSwitcher.closeAllGesture !== false
+                        onServerCheckedChanged: checked = serverChecked
+                        Component.onCompleted: checked = serverChecked
+                        onTriggered: appSwitcher.closeAllGesture = checked
+                    }
+                    showDivider: false
+                }
+                Label {
+                    anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
+                    wrapMode: Text.WordWrap
+                    fontSize: "small"
+                    text: i18n.tr("In the app switcher, with the list at its first app, drag from left to right and keep going: \"Release to close all apps\" appears with a short vibration; let go to close them, or go back to cancel. A drag that starts further along the list only scrolls. The Clear all button at the bottom does the same.")
+                }
+
+                SettingsListItems.Standard {
+                    text: i18n.tr("Keep 'ready' apps when closing all")
+                    Switch {
+                        objectName: "closeAllKeepReadySwitch"
+                        property bool serverChecked: appSwitcher.closeAllKeepReady !== false
+                        onServerCheckedChanged: checked = serverChecked
+                        Component.onCompleted: checked = serverChecked
+                        onTriggered: appSwitcher.closeAllKeepReady = checked
+                    }
+                    showDivider: false
+                }
+                Label {
+                    anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
+                    wrapMode: Text.WordWrap
+                    fontSize: "small"
+                    text: appSwitcher.closeAllKeepReady !== false
+                        ? i18n.tr("Apps you keep ready or start at login (App Launch) stay open, like pinned apps. The dialer is never closed during a call.")
+                        : i18n.tr("Close all also closes the apps you keep ready (App Launch); they start again normally next time. The dialer is never closed during a call.")
+                }
+
+                ListItem.ThinDivider {}
+            }
+
             SettingsItemTitle { text: i18n.tr("Shake") }
 
             SettingsListItems.Standard {

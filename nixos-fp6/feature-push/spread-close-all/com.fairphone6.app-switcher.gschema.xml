@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- FP6 app switcher (Lomiri spread): close all apps. Read live by Lomiri's
+     Stage (qml/Stage/Spread/Fp6CloseAll.qml); written by System Settings >
+     Gesture Shortcuts > App switcher. Only b/s/as keys. -->
+<schemalist gettext-domain="lomiri-system-settings">
+  <schema id="com.fairphone6.app-switcher" path="/com/fairphone6/app-switcher/">
+    <key name="close-all-gesture" type="b">
+      <default>true</default>
+      <summary>Swipe right at the start of the app switcher to close all apps</summary>
+      <description>With the app switcher at its first app, drag from left to right past the threshold and release. A drag that starts further along the list only scrolls. The Clear all button is always there.</description>
+    </key>
+    <key name="close-all-keep-ready" type="b">
+      <default>true</default>
+      <summary>Keep 'ready' apps when closing all</summary>
+      <description>On: apps kept ready or started at login (Settings > App Launch) stay open when closing all, like pinned apps on Android. Off: close all closes them too. The dialer is never closed during a call.</description>
+    </key>
+  </schema>
+</schemalist>
