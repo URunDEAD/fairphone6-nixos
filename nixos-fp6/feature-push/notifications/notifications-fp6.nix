@@ -6,7 +6,9 @@
 #    com.fairphone6.notifications, written as dnd-active / bedtime-active /
 #    wallpaper-dim); com.fairphone6.Dnd.ShouldAlert for the telephony daemons
 #    (calls/SMS from everyone / contacts / favourites / nobody, repeated
-#    callers within 15 min, allowed numbers); the status-bar indicator
+#    callers within 15 min, kept across restarts in
+#    $XDG_STATE_HOME/fp6-notifyd/calls.json (0600, TTL 15 min), allowed
+#    numbers); the status-bar indicator
 #    com.lomiri.indicator.dnd ("Do Not Disturb" and "Bedtime mode" switches,
 #    moon icon while on); bedtime greyscale through the display-comfort key;
 #    the notification history (bus monitor on Notify; off by default, text
@@ -21,7 +23,9 @@
 #    hook; cellular/telephony-service-fp6.nix overrides this package, so the
 #    fp6-daemons build inherits it): approver and SMS indicator ask
 #    ShouldAlert (400 ms, falls back to ringing) and skip ringtone/vibration
-#    and mark the bubble x-fp6-dnd=silenced|allowed. Cell broadcasts untouched.
+#    and mark the bubble x-fp6-dnd=silenced|allowed. Also USSD, flash SMS and
+#    "you joined a group" (kinds ussd/flash/group: silenced unless messages
+#    from everyone / an allowed number). Cell broadcasts untouched.
 #  * System Settings > Do Not Disturb (settings-page/, QML).
 #
 # Defaults: DND off, schedules present but off, calls and messages from

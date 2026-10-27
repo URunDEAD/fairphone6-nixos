@@ -52,7 +52,7 @@ fn private_dir(p: &Path) {
     }
 }
 
-fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
     private_dir(path);
     let tmp = path.with_extension("tmp");
     {

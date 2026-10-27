@@ -1,5 +1,5 @@
 diff --git a/approver/approver.cpp b/approver/approver.cpp
-index 557626d..d7dcc31 100644
+index 2ba3891..a2f241d 100644
 --- a/approver/approver.cpp
 +++ b/approver/approver.cpp
 @@ -35,6 +35,7 @@
@@ -10,7 +10,7 @@ index 557626d..d7dcc31 100644
  #include "telepathyhelper.h"
  #include "accountentry.h"
  
-@@ -594,6 +595,10 @@ bool Approver::showSnapDecision(const Tp::ChannelDispatchOperationPtr dispatchOp
+@@ -571,6 +572,10 @@ bool Approver::showSnapDecision(const Tp::ChannelDispatchOperationPtr dispatchOp
          }
      }
  
@@ -21,7 +21,7 @@ index 557626d..d7dcc31 100644
      mPendingSnapDecision = notification;
  
      GError *error = NULL;
-@@ -606,12 +611,12 @@ bool Approver::showSnapDecision(const Tp::ChannelDispatchOperationPtr dispatchOp
+@@ -583,12 +588,12 @@ bool Approver::showSnapDecision(const Tp::ChannelDispatchOperationPtr dispatchOp
  
      if (hasCalls) {
          ToneGenerator::instance()->playWaitingTone();
@@ -37,7 +37,7 @@ index 557626d..d7dcc31 100644
          mVibrateEffect.start();
          mVibrateTimer.start();
 diff --git a/indicator/textchannelobserver.cpp b/indicator/textchannelobserver.cpp
-index 0db3afd..e8925d8 100644
+index 0db3afd..b3f3b1f 100644
 --- a/indicator/textchannelobserver.cpp
 +++ b/indicator/textchannelobserver.cpp
 @@ -31,6 +31,7 @@
@@ -48,7 +48,63 @@ index 0db3afd..e8925d8 100644
  #include "telepathyhelper.h"
  #include "phoneutils.h"
  #include "accountentry.h"
-@@ -616,10 +617,15 @@ void TextChannelObserver::showNotificationForMessage(const Tp::TextChannelPtr ch
+@@ -328,13 +329,19 @@ void TextChannelObserver::showNotificationForNewGroup(const History::Thread &thr
+                                     NULL);
+     g_signal_connect(notification, "closed", G_CALLBACK(notification_closed), &mNotifications);
+ 
++    // FP6 Do Not Disturb: "joined group" has no sender to match an exception against.
++    const bool fp6Alert = Fp6Dnd::shouldAlert(QStringLiteral("group"), QString(), QContact());
++    notify_notification_set_hint_string(notification, "x-fp6-dnd", Fp6Dnd::hint(fp6Alert));
++
+     GError *error = NULL;
+     if (!notify_notification_show(notification, &error)) {
+         qWarning() << "Failed to show message notification:" << error->message;
+         g_error_free (error);
+     }
+ 
+-    Ringtone::instance()->playIncomingMessageSound();
++    if (fp6Alert) {
++        Ringtone::instance()->playIncomingMessageSound();
++    }
+ }
+ 
+ void TextChannelObserver::showNotificationForFlashMessage(const Tp::ReceivedMessage &message, const QString &accountId)
+@@ -380,6 +387,11 @@ void TextChannelObserver::showNotificationForFlashMessage(const Tp::ReceivedMess
+                                         "x-lomiri-private-affirmative-tint",
+                                         "true");
+ 
++    // FP6 Do Not Disturb: flash (class 0) SMS follow the message rules; the
++    // sender is not looked up in the address book here (allowed numbers and
++    // "everyone" still apply). Silenced: the snap decision shows, no sound/wake.
++    const bool fp6Alert = Fp6Dnd::shouldAlert(QStringLiteral("flash"), contact ? contact->id() : QString(), QContact());
++    notify_notification_set_hint_string(notification, "x-fp6-dnd", Fp6Dnd::hint(fp6Alert));
+ 
+     GError *error = NULL;
+     if (!notify_notification_show(notification, &error)) {
+@@ -387,7 +399,9 @@ void TextChannelObserver::showNotificationForFlashMessage(const Tp::ReceivedMess
+         g_error_free (error);
+     }
+ 
+-    Ringtone::instance()->playIncomingMessageSound();
++    if (fp6Alert) {
++        Ringtone::instance()->playIncomingMessageSound();
++    }
+ }
+ 
+ void TextChannelObserver::triggerNotificationForMessage(const Tp::TextChannelPtr channel, const Tp::ReceivedMessage &message, const QString &accountId, const QStringList &participantIds)
+@@ -399,7 +413,10 @@ void TextChannelObserver::triggerNotificationForMessage(const Tp::TextChannelPtr
+ 
+     QByteArray token(message.messageToken().toUtf8());
+     if (!mUnreadMessages.contains(token)) {
+-        Ringtone::instance()->playIncomingMessageSound();
++        // FP6 Do Not Disturb (already-read message, no contact lookup on this path).
++        if (Fp6Dnd::shouldAlert(QStringLiteral("message"), contact->id(), QContact())) {
++            Ringtone::instance()->playIncomingMessageSound();
++        }
+         return;
+     }
+ 
+@@ -616,10 +633,15 @@ void TextChannelObserver::showNotificationForMessage(const Tp::TextChannelPtr ch
      // add the message to the messaging menu (use hex format to avoid invalid characters)
      QByteArray token(message.messageToken().toUtf8());
  
@@ -65,7 +121,7 @@ index 0db3afd..e8925d8 100644
          return;
      }
  
-@@ -715,6 +721,7 @@ void TextChannelObserver::showNotificationForMessage(const Tp::TextChannelPtr ch
+@@ -715,6 +737,7 @@ void TextChannelObserver::showNotificationForMessage(const Tp::TextChannelPtr ch
      notify_notification_set_hint_string(notification,
                                          "x-lomiri-switch-to-application",
                                          "true");
@@ -73,7 +129,7 @@ index 0db3afd..e8925d8 100644
  
      g_signal_connect(notification, "closed", G_CALLBACK(notification_closed), &mNotifications);
  
-@@ -724,7 +731,9 @@ void TextChannelObserver::showNotificationForMessage(const Tp::TextChannelPtr ch
+@@ -724,7 +747,9 @@ void TextChannelObserver::showNotificationForMessage(const Tp::TextChannelPtr ch
          g_error_free (error);
      }
  
@@ -84,6 +140,41 @@ index 0db3afd..e8925d8 100644
  }
  
  void TextChannelObserver::updateNotifications(const QContact &contact)
+diff --git a/indicator/ussdindicator.cpp b/indicator/ussdindicator.cpp
+index d7f8ee5..ac502bc 100644
+--- a/indicator/ussdindicator.cpp
++++ b/indicator/ussdindicator.cpp
+@@ -23,6 +23,7 @@
+ #include <libintl.h>
+ #include <libnotify/notify.h>
+ #include "ringtone.h"
++#include "fp6dnd.h"
+ #include "ussdindicator.h"
+ #include "ofonoaccountentry.h"
+ #include "telepathyhelper.h"
+@@ -132,6 +133,11 @@ void USSDIndicator::showUSSDNotification(const QString &message, bool replyRequi
+ 
+     notificationHints["x-lomiri-private-menu-model"] = menuModelPaths;
+ 
++    // FP6 Do Not Disturb: USSD replies / network USSD ring only if messages
++    // from everyone are allowed; silenced, the snap decision still shows.
++    const bool fp6Alert = Fp6Dnd::shouldAlert(QStringLiteral("ussd"), QString(), QtContacts::QContact());
++    notificationHints["x-fp6-dnd"] = QString::fromLatin1(Fp6Dnd::hint(fp6Alert));
++
+     m_notificationId = m_notifications.Notify("lomiri-indicator-telephony-service",
+                         0, "",
+                         "", message,
+@@ -139,7 +145,9 @@ void USSDIndicator::showUSSDNotification(const QString &message, bool replyRequi
+                                         << gettext("Cancel"), notificationHints, 0);
+     mUSSDRequests[m_notificationId] = ussdManager;
+ 
+-    Ringtone::instance()->playIncomingMessageSound();
++    if (fp6Alert) {
++        Ringtone::instance()->playIncomingMessageSound();
++    }
+ }
+ 
+ void USSDIndicator::actionInvoked(uint id, const QString &actionKey) 
 diff --git a/liblomiritelephonyservice/fp6dnd.h b/liblomiritelephonyservice/fp6dnd.h
 new file mode 100644
 index 0000000..73c7633

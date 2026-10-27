@@ -169,7 +169,8 @@ pub struct Dnd(pub Arc<Shared>);
 
 #[interface(name = "com.fairphone6.Dnd")]
 impl Dnd {
-    /// kind: "call" or "message"; id: phone number / sender id.
+    /// kind: "call", "message", "flash" (class 0 SMS), "ussd" or "group"
+    /// (joined a group chat); id: phone number / sender id ("" if none).
     /// true = ring/vibrate/wake as usual.
     fn should_alert(&self, kind: &str, id: &str, is_contact: bool, is_favourite: bool) -> bool {
         let cfg = self.0.cfg.lock().unwrap().clone();

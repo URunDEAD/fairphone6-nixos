@@ -305,7 +305,8 @@ fn main() {
     let sh = Arc::new(Shared {
         cfg: Mutex::new(Config::default()),
         eff: Mutex::new(policy::compute(&Config::default(), now())),
-        calls: Mutex::new(CallLog::default()),
+        // Repeated callers across restarts (15 min TTL, 0600; see policy::CallLog).
+        calls: Mutex::new(CallLog::open(state.join("fp6-notifyd/calls.json"), now())),
         history: Mutex::new(history),
         conn: OnceLock::new(),
         status_path: runtime.join("fp6-notifyd/status.json"),

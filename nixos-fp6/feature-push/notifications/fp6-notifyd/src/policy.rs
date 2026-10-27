@@ -2,6 +2,7 @@
 //! Do Not Disturb / bedtime state and the call/message exception policy.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use crate::schedule::{first_active, local, parse_list, Local, Window};
 
@@ -169,20 +170,63 @@ pub fn number_key(n: &str) -> String {
 }
 
 /// Recent incoming calls by number (for the repeated-callers exception).
+///
+/// With a path, the log survives fp6-notifyd restarts: it is kept in a 0600
+/// file (directory 0700) holding only the last digits of numbers that called
+/// within the repeat window; entries older than that are dropped on load and
+/// on every save, and the file is removed when nothing is left.
 #[derive(Default)]
 pub struct CallLog {
     last: HashMap<String, i64>,
+    path: Option<PathBuf>,
 }
 
 impl CallLog {
+    /// Loads the log from `path` (missing / unreadable / malformed: empty).
+    pub fn open(path: PathBuf, now: i64) -> CallLog {
+        let mut last: HashMap<String, i64> = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+        // Future timestamps (clock went back) are dropped too.
+        last.retain(|_, t| *t <= now && now - *t < REPEAT_WINDOW_S);
+        let log = CallLog { last, path: Some(path) };
+        log.save();
+        log
+    }
+
+    fn save(&self) {
+        let Some(p) = &self.path else { return };
+        if self.last.is_empty() {
+            let _ = std::fs::remove_file(p);
+            return;
+        }
+        let data = serde_json::to_string(&self.last).unwrap_or_default();
+        if let Err(e) = crate::history::write_private(p, data.as_bytes()) {
+            eprintln!("fp6-notifyd: call log save: {e}");
+        }
+    }
+
     /// Records a call; returns true if the same number called within the repeat window.
     pub fn record(&mut self, number: &str, now: i64) -> bool {
-        self.last.retain(|_, t| now - *t < REPEAT_WINDOW_S);
+        let before = self.last.len();
+        self.last.retain(|_, t| *t <= now && now - *t < REPEAT_WINDOW_S);
+        let pruned = self.last.len() != before;
         let key = number_key(number);
         if key.len() < 3 {
+            if pruned {
+                self.save();
+            }
             return false; // private / unknown numbers never count as repeated
         }
-        self.last.insert(key, now).is_some()
+        let repeated = self.last.insert(key, now).is_some();
+        self.save();
+        repeated
+    }
+
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.last.len()
     }
 }
 
@@ -212,7 +256,13 @@ pub fn should_alert(
             }
             cfg.calls_from
         }
-        "message" => cfg.messages_from,
+        // Flash (class 0) SMS: the sender is not looked up (is_contact false).
+        "message" | "flash" => cfg.messages_from,
+        // USSD and "you joined a group": no sender to match, only "everyone".
+        "ussd" | "group" => match cfg.messages_from {
+            From::Everyone => From::Everyone,
+            _ => From::Nobody,
+        },
         _ => From::Nobody,
     };
     match from {
@@ -310,5 +360,82 @@ mod tests {
         // Private numbers are never "repeated".
         let mut log = CallLog::default();
         assert!(!log.record("x-ofono-private", now) && !log.record("x-ofono-private", now + 1));
+    }
+
+    #[test]
+    fn ussd_flash_and_group_follow_dnd() {
+        let mut cfg = Config::default();
+        let now = 1_800_000_000;
+        let off = compute(&cfg, now);
+        let mut log = CallLog::default();
+        for k in ["ussd", "flash", "group"] {
+            assert!(should_alert(&cfg, &off, &mut log, k, "", false, false, now), "{k} rings with DND off");
+        }
+        cfg.manual = Manual::On;
+        cfg.manual_since = now;
+        let on = compute(&cfg, now);
+        for k in ["ussd", "flash", "group"] {
+            assert!(!should_alert(&cfg, &on, &mut log, k, "", false, false, now), "{k} silenced");
+        }
+        // Flash SMS: allowed numbers and the message rule apply.
+        cfg.allowed_numbers = vec!["+999 555 000 111".into()];
+        assert!(should_alert(&cfg, &on, &mut log, "flash", "+999555000111", false, false, now));
+        assert!(!should_alert(&cfg, &on, &mut log, "flash", "+999555000112", false, false, now));
+        // Contacts only: USSD / group stay silent (no sender), "everyone" lets them ring.
+        cfg.messages_from = From::Contacts;
+        assert!(!should_alert(&cfg, &on, &mut log, "ussd", "", false, false, now));
+        cfg.messages_from = From::Everyone;
+        for k in ["ussd", "flash", "group"] {
+            assert!(should_alert(&cfg, &on, &mut log, k, "", false, false, now));
+        }
+        // These never count as calls for the repeated-callers memory.
+        assert_eq!(log.len(), 0);
+    }
+
+    fn tmp(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("fp6-notifyd-calls-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        d.join("fp6-notifyd/calls.json")
+    }
+
+    #[test]
+    fn repeated_callers_survive_restart() {
+        use std::os::unix::fs::PermissionsExt;
+        let p = tmp("restart");
+        let now = 1_800_000_000;
+        let mut log = CallLog::open(p.clone(), now);
+        assert!(!p.exists());
+        assert!(!log.record("+999123456789", now));
+        let mode = std::fs::metadata(&p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        let dmode = std::fs::metadata(p.parent().unwrap()).unwrap().permissions().mode() & 0o777;
+        assert_eq!(dmode, 0o700);
+        drop(log);
+        // "Restart": a second call 10 min later is still a repeated call.
+        let mut log = CallLog::open(p.clone(), now + 600);
+        assert_eq!(log.len(), 1);
+        assert!(log.record("0123 456 789", now + 600));
+        drop(log);
+        // After the TTL the entry is gone on load and the file removed.
+        let log = CallLog::open(p.clone(), now + 600 + REPEAT_WINDOW_S);
+        assert_eq!(log.len(), 0);
+        assert!(!p.exists());
+    }
+
+    #[test]
+    fn call_log_ignores_junk_and_future_entries() {
+        let p = tmp("junk");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, "not json").unwrap();
+        assert_eq!(CallLog::open(p.clone(), 1000).len(), 0);
+        assert!(!p.exists());
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, r#"{"123456789": 5000, "999000111": 900}"#).unwrap();
+        let mut log = CallLog::open(p.clone(), 1000);
+        assert_eq!(log.len(), 1); // the future one (clock went back) is dropped
+        assert!(log.record("+999 999 000 111", 1001));
+        // Private numbers do not create a file entry.
+        assert!(!log.record("x-ofono-private", 1002));
+        assert_eq!(log.len(), 1);
     }
 }
