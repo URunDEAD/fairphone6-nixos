@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Name=KDE Connect
+Comment=Connect your phone and devices privately over Wi-Fi
+Exec=lomiri-kdeconnect
+Icon=smartphone
+Terminal=false
+Categories=Network;Utility;
+X-Lomiri-Touch=true
+X-Lomiri-Default-Department-ID=accessories
+X-Lomiri-ContentHub-Hint=com.fairphone6.KdeConnect
+Actions=Share;
+
+[Desktop Action Share]
+Name=Send a file or link
+Exec=lomiri-kdeconnect --share %u

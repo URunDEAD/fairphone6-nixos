@@ -43,6 +43,9 @@ let
       # Bug report (privacy-redacted diagnostics bundle), built by a Codex worker:
       # nixos-fp6/feature-push/bugreport/README.md
       ({ ... }: { imports = [ ./bugreport/module.nix ]; hardware.fairphone6.bugreport.enable = true; })
+      # KDE Connect (desktop/Android integration), built by a Codex worker:
+      # nixos-fp6/feature-push/kdeconnect/README.md
+      ({ ... }: { imports = [ ./kdeconnect/module.nix ]; hardware.fairphone6.kdeconnect.enable = true; hardware.fairphone6.kdeconnect.user = "user"; })
       # USB preferences: System Settings > USB (USB network / file transfer /
       # USB drive / ADB toggles, power role), "Charging via USB" notification.
       # Developer build: usb0 (172.16.42.1) is always kept for SSH over USB.
