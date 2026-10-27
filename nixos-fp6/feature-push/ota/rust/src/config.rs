@@ -65,8 +65,6 @@ pub struct Config {
     pub health_timeout: u64,
     pub health_stable: u64,
     pub idle_exit: i64,
-    /// Allow plain http:// only to these host prefixes (NetBird, loopback).
-    pub http_allowed_prefixes: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -125,7 +123,6 @@ impl Default for Config {
             health_timeout: 300,
             health_stable: 30,
             idle_exit: 120,
-            http_allowed_prefixes: ["http://100.", "http://127.", "http://localhost", "http://[::1]"].map(String::from).to_vec(),
         }
     }
 }
@@ -140,11 +137,10 @@ impl Config {
         format!("{}/channels/{}/manifest.json", server.trim_end_matches('/'), self.channel)
     }
 
-    /// file://, https:// anywhere; http:// only to NetBird/loopback
-    /// prefixes (everything is signed, but this keeps manifests private).
+    /// See url.rs: https anywhere, http only to private/NetBird/local IP
+    /// literals, file:// only on the dry run's fake phone.
     pub fn url_allowed(&self, url: &str) -> bool {
-        url.starts_with("https://") || url.starts_with("file:///")
-            || (url.starts_with("http://") && self.http_allowed_prefixes.iter().any(|p| url.starts_with(p.as_str())))
+        crate::url::check(url, self.fake.is_some()).is_ok()
     }
 }
 
@@ -163,6 +159,6 @@ mod tests {
         assert!(c.url_allowed("https://example.org/x"));
         assert!(!c.url_allowed("http://example.org/x"));
         assert!(!c.url_allowed("ftp://x"));
-        assert!(c.url_allowed("file:///srv/ota/x"));
+        assert!(!c.url_allowed("file:///srv/ota/x"), "file:// only on the fake phone");
     }
 }

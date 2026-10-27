@@ -13,7 +13,8 @@
 //! com.fairphone6.update.manage) and root. Methods: status, check,
 //! download, cancel, install {when: now|tonight, confirm: true},
 //! cancelTonight, rollback {confirm: true}, reboot {confirm: true},
-//! setSettings {...}, setServer {server}, scheduled.
+//! setSettings {...}, setServer {server} ("" = back to the configured one),
+//! testServer {server} (fetch + verify the manifest, store nothing), scheduled.
 
 use fp6_ota::config::Config;
 use fp6_ota::engine::Engine;
@@ -110,13 +111,17 @@ impl Service {
                 if let Some(v) = a["chargingOnly"].as_bool() { st.charging_only = v }
             })?,
             "setServer" => {
-                let s = a["server"].as_str().map(str::to_string).filter(|s| !s.is_empty());
-                if let Some(url) = &s {
-                    if !e.cfg.url_allowed(&format!("{url}/")) {
-                        return Err("only https://, file:// or http:// over NetBird/loopback".into());
-                    }
-                }
-                e.store.update(|st| st.server = s)?;
+                let s = match a["server"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
+                    Some(url) => Some(fp6_ota::url::check(url, e.cfg.fake.is_some())?),
+                    None => None,
+                };
+                e.store.update(|st| st.server = s.clone())?;
+                util::log(format!("fp6-updated: update server set to {s:?} by uid {uid}"));
+            }
+            "testServer" => {
+                let s = a["server"].as_str().map(str::to_string).or_else(|| e.store.read().server.clone()).or_else(|| e.cfg.server.clone())
+                    .ok_or("no server to test")?;
+                return Ok(e.test_server(&s));
             }
             "scheduled" => e.spawn_job("scheduled", |e| e.scheduled())?,
             m => return Err(format!("unknown method {m}")),
@@ -134,8 +139,45 @@ impl Service {
         if method != "status" {
             util::log(format!("fp6-updated: {method} {a} by uid {uid}"));
         }
-        self.dispatch(&method, &a, uid).map(|v| v.to_string()).map_err(zbus::fdo::Error::Failed)
+        // Off the executor: testServer and check-like calls may wait on the network.
+        let me = Service { e: self.e.clone(), last_call: self.last_call.clone() };
+        let r = unblock(move || me.dispatch(&method, &a, uid)).await;
+        r.map(|v| v.to_string()).map_err(zbus::fdo::Error::Failed)
     }
+}
+
+/// Minimal unblock: run on a thread, await the result.
+async fn unblock<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::Mutex;
+    use std::task::{Context, Poll, Waker};
+    struct Slot<T> { v: Option<T>, w: Option<Waker> }
+    struct Rx<T>(Arc<Mutex<Slot<T>>>);
+    impl<T> Future for Rx<T> {
+        type Output = T;
+        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<T> {
+            let mut s = self.0.lock().unwrap();
+            match s.v.take() {
+                Some(v) => Poll::Ready(v),
+                None => {
+                    s.w = Some(cx.waker().clone());
+                    Poll::Pending
+                }
+            }
+        }
+    }
+    let slot = Arc::new(Mutex::new(Slot { v: None, w: None }));
+    let tx = slot.clone();
+    std::thread::spawn(move || {
+        let v = f();
+        let mut s = tx.lock().unwrap();
+        s.v = Some(v);
+        if let Some(w) = s.w.take() {
+            w.wake();
+        }
+    });
+    Rx(slot).await
 }
 
 static TERM: AtomicBool = AtomicBool::new(false);

@@ -144,15 +144,7 @@ impl Engine {
         let r = (|| -> Result<(String, Option<Available>), String> {
             policy::allowed(&st.settings, &cond, purpose, system::local_hour(&self.cfg)).map_err(|w| w.join("; "))?;
             let server = self.server(&st).ok_or("No update server is configured")?;
-            let url = self.cfg.manifest_url(&server);
-            if !self.cfg.url_allowed(&url) {
-                return Err(format!("{url}: only https://, file:// or http:// over NetBird/loopback are allowed"));
-            }
-            let key = PublicKey::parse(&self.cfg.manifest_public_key).map_err(|e| format!("No trusted release key: {e}"))?;
-            self.progress("fetching the manifest", 0, 0);
-            let bytes = nixops::fetch(&url, MAX_MANIFEST)?;
-            let sig = String::from_utf8(nixops::fetch(&format!("{url}.minisig"), MAX_SIG)?).map_err(|_| "signature is not text")?;
-            let m = manifest::verify(&bytes, &sig, &key, &self.cfg.device, &self.cfg.channel, now())?;
+            let (url, m) = self.fetch_manifest(&server)?;
             let running = read_release(&self.cfg.booted_release)?;
             match manifest::compare(&m, &running) {
                 Offer::Same => return Ok((format!("Up to date (release {})", running.release), None)),
@@ -197,6 +189,31 @@ impl Engine {
             }
         })?;
         r.map(|(m, a)| json!({"message": m, "available": a.map(|a| a.manifest.release)}))
+    }
+
+    /// Fetches and verifies `<server>/channels/<channel>/manifest.json`
+    /// with the key fixed in the configuration (a server change never
+    /// changes which key is trusted).
+    pub fn fetch_manifest(&self, server: &str) -> Result<(String, manifest::Manifest), String> {
+        let server = crate::url::check(server, self.cfg.fake.is_some())?;
+        let url = self.cfg.manifest_url(&server);
+        let key = PublicKey::parse(&self.cfg.manifest_public_key).map_err(|e| format!("No trusted release key: {e}"))?;
+        self.progress("fetching the manifest", 0, 0);
+        let bytes = nixops::fetch(&url, MAX_MANIFEST)?;
+        let sig = String::from_utf8(nixops::fetch(&format!("{url}.minisig"), MAX_SIG)?).map_err(|_| "signature is not text")?;
+        let m = manifest::verify(&bytes, &sig, &key, &self.cfg.device, &self.cfg.channel, now())?;
+        Ok((url, m))
+    }
+
+    /// "Test connection": fetch + verify only; nothing is stored.
+    pub fn test_server(&self, server: &str) -> Value {
+        let running = read_release(&self.cfg.booted_release).ok();
+        match self.fetch_manifest(server) {
+            Ok((url, m)) => json!({"ok": true, "url": url, "release": m.release, "version": m.version, "date": m.date,
+                                   "keyId": crate::minisig::key_id_hex(&PublicKey::parse(&self.cfg.manifest_public_key).map(|k| k.key_id).unwrap_or_default()),
+                                   "newer": running.is_some_and(|r| m.release > r.release)}),
+            Err(e) => json!({"ok": false, "error": e}),
+        }
     }
 
     // ---------------------------------------------------------- download
@@ -683,6 +700,7 @@ impl Engine {
             "server": self.server(&st),
             "serverFromConfig": self.cfg.server,
             "channel": self.cfg.channel,
+            "keyId": PublicKey::parse(&self.cfg.manifest_public_key).map(|k| crate::minisig::key_id_hex(&k.key_id)).unwrap_or_default(),
             "settings": st.settings,
             "lastCheck": st.last_check,
             "available": st.available.as_ref().map(|a| json!({

@@ -14,4 +14,5 @@ pub mod policy;
 pub mod qbootctl;
 pub mod state;
 pub mod system;
+pub mod url;
 pub mod util;

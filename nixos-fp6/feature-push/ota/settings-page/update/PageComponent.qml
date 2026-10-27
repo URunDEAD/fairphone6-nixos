@@ -31,6 +31,27 @@ ItemPage {
     readonly property bool jobRunning: !!(job && job.state === "running")
     readonly property var lastInstall: st && st.history && st.history.length > 0 ? st.history[0] : null
     property string message: ""
+    property var serverTest: null
+    property bool serverTesting: false
+
+    // The field's text, else the saved server (Test connection works on both).
+    function serverCandidate() { return serverField.text !== "" ? serverField.text : (st && st.server ? st.server : "") }
+    // Mirrors fp6-updated's url.rs (the daemon checks again).
+    function serverProblem(u) {
+        var m = /^(https?):\/\/(\[[0-9a-fA-F:]+\]|[A-Za-z0-9.-]+)(?::([0-9]{1,5}))?(\/[^?#\s]*)?$/i.exec(u.trim())
+        if (!m) return i18n.tr("Enter an address like https://host/path or http://192.168.1.10:8742")
+        if (m[3] !== undefined && (Number(m[3]) < 1 || Number(m[3]) > 65535)) return i18n.tr("Bad port")
+        if (m[4] !== undefined && m[4].split("/").indexOf("..") >= 0) return i18n.tr("No .. in the path")
+        if (m[1].toLowerCase() === "https") return ""
+        var h = m[2].toLowerCase()
+        if (h === "localhost" || h === "[::1]" || /^\[f[cd]/.test(h) || /^\[fe[89ab]/.test(h)) return ""
+        var o = h.split(".").map(Number)
+        var v4 = o.length === 4 && o.every(function(x) { return x >= 0 && x <= 255 && !isNaN(x) })
+        if (v4 && (o[0] === 10 || o[0] === 127 || (o[0] === 172 && o[1] >= 16 && o[1] <= 31) || (o[0] === 192 && o[1] === 168)
+                   || (o[0] === 169 && o[1] === 254) || (o[0] === 100 && o[1] >= 64 && o[1] <= 127)))
+            return ""
+        return i18n.tr("Plain http:// only to a LAN, NetBird or local address; use https:// for anything else.")
+    }
 
     function act(method, args) {
         root.message = ""
@@ -135,7 +156,7 @@ ItemPage {
             Label {
                 objectName: "fp6UpdateVersion"
                 anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
-                wrapMode: Text.WrapAnywhere
+                wrapMode: Text.Wrap
                 text: run ? run.version : i18n.tr("Unknown version")
             }
             Label {
@@ -261,7 +282,7 @@ ItemPage {
                 Label {
                     objectName: "fp6UpdateAvailable"
                     anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
-                    wrapMode: Text.WrapAnywhere
+                    wrapMode: Text.Wrap
                     text: av ? i18n.tr("Release %1: %2").arg(av.release).arg(av.version) : ""
                 }
                 Label {
@@ -393,7 +414,7 @@ ItemPage {
             Label {
                 objectName: "fp6UpdatePrevious"
                 anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
-                wrapMode: Text.WrapAnywhere
+                wrapMode: Text.Wrap
                 fontSize: "small"
                 text: !st ? "" : ab ? (st.otherSlotSystem ? i18n.tr("Slot %1: %2").arg(st.slot === "_a" ? "B" : "A").arg(st.otherSlotSystem.replace(/^\/nix\/store\/[a-z0-9]+-/, ""))
                                                           : i18n.tr("The other slot holds no NixOS system."))
@@ -424,13 +445,91 @@ ItemPage {
                        : i18n.tr("Failed at %1: %2").arg(um.when(st.lastHealth.time))
                              .arg(st.lastHealth.checks.filter(function(c) { return c.critical && c.status === "fail" }).map(function(c) { return c.detail }).join("; ")))
             }
+            ListItem.ThinDivider {}
+
+            // ------------------------------------------------ server
+            SettingsItemTitle { text: i18n.tr("Update server") }
+            Label {
+                objectName: "fp6UpdateServerCurrent"
+                anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
+                wrapMode: Text.Wrap
+                text: !st ? "" : st.server ? st.server : i18n.tr("Not set")
+            }
+            TextField {
+                id: serverField
+                objectName: "fp6UpdateServerField"
+                anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
+                placeholderText: "https://… / http://192.168.x.x:8742"
+                inputMethodHints: Qt.ImhUrlCharactersOnly | Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText
+                property bool edited: false
+                onTextChanged: { edited = true; root.serverTest = null }
+                Component.onCompleted: { text = ""; edited = false }
+            }
+            Label {
+                objectName: "fp6UpdateServerError"
+                anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
+                visible: serverField.text !== "" && root.serverProblem(serverField.text) !== ""
+                wrapMode: Text.WordWrap
+                fontSize: "small"
+                color: theme.palette.normal.negative
+                text: root.serverProblem(serverField.text)
+            }
+            Flow {
+                anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
+                spacing: units.gu(1)
+                Button {
+                    objectName: "fp6UpdateServerTest"
+                    text: root.serverTesting ? i18n.tr("Testing…") : i18n.tr("Test connection")
+                    enabled: !root.serverTesting && root.serverCandidate() !== "" && root.serverProblem(root.serverCandidate()) === ""
+                    onClicked: {
+                        root.serverTesting = true
+                        root.serverTest = null
+                        um.call("testServer", { server: root.serverCandidate() }, function(err, v) {
+                            root.serverTesting = false
+                            root.serverTest = err ? { ok: false, error: err } : v
+                        })
+                    }
+                }
+                Button {
+                    objectName: "fp6UpdateServerSave"
+                    text: i18n.tr("Save")
+                    color: theme.palette.normal.positive
+                    enabled: serverField.text !== "" && root.serverProblem(serverField.text) === "" && !um.busy
+                    onClicked: um.call("setServer", { server: serverField.text }, function(err) {
+                        if (err) { root.message = err; return }
+                        root.message = ""
+                        serverField.text = ""
+                        serverField.edited = false
+                        um.refresh()
+                    })
+                }
+                Button {
+                    objectName: "fp6UpdateServerDefault"
+                    visible: !!st && !!st.server && st.server !== st.serverFromConfig
+                    text: st && st.serverFromConfig ? i18n.tr("Use the built-in server") : i18n.tr("Clear")
+                    enabled: !um.busy
+                    onClicked: um.call("setServer", { server: "" }, function(err) { root.message = err || ""; um.refresh() })
+                }
+            }
+            Label {
+                objectName: "fp6UpdateServerResult"
+                anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
+                visible: !!root.serverTest
+                wrapMode: Text.WordWrap
+                fontSize: "small"
+                color: root.serverTest && root.serverTest.ok ? theme.palette.normal.positive : theme.palette.normal.negative
+                text: !root.serverTest ? "" : root.serverTest.ok
+                    ? i18n.tr("Connected. Release %1 (%2), signature verified with key %3.").arg(root.serverTest.release).arg(root.serverTest.version).arg(root.serverTest.keyId)
+                      + (root.serverTest.newer ? " " + i18n.tr("It is newer than this phone's release.") : "")
+                    : i18n.tr("Failed: %1").arg(root.serverTest.error)
+            }
             Label {
                 anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
-                wrapMode: Text.WrapAnywhere
+                wrapMode: Text.WordWrap
                 fontSize: "x-small"
                 color: theme.palette.normal.backgroundTertiaryText
-                text: !st ? "" : st.server ? i18n.tr("Update server: %1 (channel %2)").arg(st.server).arg(st.channel)
-                                           : i18n.tr("No update server is configured.")
+                text: i18n.tr("Use https://, or http:// to a LAN, NetBird (100.64-127.x) or local address. Channel %1. Updates are only accepted when signed with the release key %2, whatever the server; changing the server never changes that key.")
+                      .arg(st ? st.channel : "").arg(st ? st.keyId : "")
             }
         }
     }

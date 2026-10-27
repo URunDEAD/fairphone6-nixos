@@ -302,34 +302,63 @@ fn verify(a: &Args) {
     println!("valid: release {} ({}), {} paths", m.release, m.version, m.closure.paths);
 }
 
+/// Static GET/HEAD server for the release root (binary cache + channels).
+/// Several `--listen` addresses (comma separated); at most 64 connections at
+/// once (503 beyond); read/write timeouts; only plain file names (no dot
+/// files, no ..); manifests are sent with Cache-Control: no-cache.
 fn serve(a: &Args) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
     let root = fs::canonicalize(a.need("root")).unwrap_or_else(|e| die(e.to_string()));
-    let listen = a.get("listen").unwrap_or("127.0.0.1:8742");
-    let l = std::net::TcpListener::bind(listen).unwrap_or_else(|e| die(format!("{listen}: {e}")));
-    eprintln!("fp6-release: serving {} on http://{listen}/", root.display());
-    for s in l.incoming().flatten() {
-        let root = root.clone();
-        std::thread::spawn(move || {
-            let _ = handle(s, &root);
-        });
+    if !root.join("cache/nix-cache-info").exists() {
+        eprintln!("fp6-release: note: {} has no cache/nix-cache-info yet (nothing published)", root.display());
+    }
+    let active = Arc::new(AtomicUsize::new(0));
+    let listens: Vec<String> = a.get("listen").unwrap_or("127.0.0.1:8742").split(',').map(|s| s.trim().to_string()).collect();
+    let mut threads = vec![];
+    for listen in listens {
+        let l = std::net::TcpListener::bind(&listen).unwrap_or_else(|e| die(format!("{listen}: {e}")));
+        eprintln!("fp6-release: serving {} on http://{listen}/", root.display());
+        let (root, active) = (root.clone(), active.clone());
+        threads.push(std::thread::spawn(move || {
+            for s in l.incoming() {
+                let Ok(mut s) = s else { continue };
+                if active.load(Ordering::SeqCst) >= 64 {
+                    let _ = s.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nRetry-After: 5\r\nConnection: close\r\n\r\n");
+                    continue;
+                }
+                active.fetch_add(1, Ordering::SeqCst);
+                let (root, active) = (root.clone(), active.clone());
+                std::thread::spawn(move || {
+                    if let Err(e) = handle(s, &root) {
+                        eprintln!("fp6-release: connection: {e}");
+                    }
+                    active.fetch_sub(1, Ordering::SeqCst);
+                });
+            }
+        }));
+    }
+    for t in threads {
+        let _ = t.join();
     }
 }
 
 fn handle(mut s: std::net::TcpStream, root: &Path) -> std::io::Result<()> {
     s.set_read_timeout(Some(std::time::Duration::from_secs(30)))?;
+    s.set_write_timeout(Some(std::time::Duration::from_secs(120)))?;
     let mut r = BufReader::new(s.try_clone()?);
     let mut line = String::new();
-    r.read_line(&mut line)?;
-    loop {
+    r.by_ref().take(8192).read_line(&mut line)?;
+    for _ in 0..100 {
         let mut h = String::new();
-        if r.read_line(&mut h)? == 0 || h == "\r\n" || h == "\n" {
+        if r.by_ref().take(8192).read_line(&mut h)? == 0 || h == "\r\n" || h == "\n" {
             break;
         }
     }
     let parts: Vec<&str> = line.split_whitespace().collect();
     let (method, target) = (parts.first().copied().unwrap_or(""), parts.get(1).copied().unwrap_or("/"));
     let path = target.split('?').next().unwrap_or("/");
-    let ok_path = path.starts_with('/') && !path.split('/').any(|c| c == ".." || c.starts_with('.') && !c.is_empty())
+    let ok_path = path.starts_with('/') && !path.split('/').any(|c| c == ".." || (c.starts_with('.') && !c.is_empty()))
         && path.chars().all(|c| c.is_ascii_alphanumeric() || "/-_.+".contains(c));
     let file = root.join(path.trim_start_matches('/'));
     let peer = s.peer_addr().map(|a| a.to_string()).unwrap_or_default();
@@ -344,18 +373,13 @@ fn handle(mut s: std::net::TcpStream, root: &Path) -> std::io::Result<()> {
             return reply(&mut s, "404 Not Found");
         }
     };
-    let ct = if path.ends_with(".narinfo") { "text/x-nix-narinfo" } else if path.ends_with(".json") { "application/json" } else { "application/octet-stream" };
-    s.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: {ct}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", md.len()).as_bytes())?;
+    let ct = if path.ends_with(".narinfo") { "text/x-nix-narinfo" } else if path.ends_with(".json") { "application/json" }
+        else if path.ends_with("nix-cache-info") || path.ends_with(".minisig") { "text/plain" } else { "application/octet-stream" };
+    let cache = if path.contains("/channels/") || path.ends_with(".narinfo") || path.ends_with("nix-cache-info") { "no-cache" } else { "max-age=31536000, immutable" };
+    s.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: {ct}\r\nContent-Length: {}\r\nCache-Control: {cache}\r\nConnection: close\r\n\r\n", md.len()).as_bytes())?;
     if method == "GET" {
         let mut f = fs::File::open(&file)?;
-        let mut buf = vec![0u8; 1 << 16];
-        loop {
-            let n = f.read(&mut buf)?;
-            if n == 0 {
-                break;
-            }
-            s.write_all(&buf[..n])?;
-        }
+        std::io::copy(&mut f, &mut s)?;
     }
     eprintln!("{peer} {method} {path} 200 {}", md.len());
     Ok(())

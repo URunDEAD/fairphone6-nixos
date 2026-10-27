@@ -157,7 +157,15 @@ with open(f"{T}/bus.conf", "w") as f:
 procs.append(subprocess.Popen(["dbus-daemon", "--config-file", f"{T}/bus.conf", "--nofork"], env=env))
 port = 18742 + os.getpid() % 1000
 os.makedirs(SRV, exist_ok=True)
-procs.append(subprocess.Popen([REL, "serve", "--root", SRV, "--listen", f"127.0.0.1:{port}"], env=env, stderr=open(f"{T}/server.log", "w")))
+def iface_ip(name):
+    r = subprocess.run(["ip", "-4", "-o", "addr", "show", name], capture_output=True, text=True)
+    f = r.stdout.split()
+    return f[3].split("/")[0] if len(f) > 3 else None
+
+# The laptop's own NetBird address (detected, never written down), else none.
+nb_ip = iface_ip("wt0")
+listen = f"127.0.0.1:{port}" + (f",{nb_ip}:{port}" if nb_ip else "")
+procs.append(subprocess.Popen([REL, "serve", "--root", SRV, "--listen", listen], env=env, stderr=open(f"{T}/server.log", "w")))
 time.sleep(0.5)
 daemon = None
 
@@ -246,6 +254,7 @@ MainView {
     function el(name) { var r = find(mv, name); if (!r) console.log("HARNESS: no " + name); return r }
     function top() { return pageStack.primaryPage }
     function scroll(name, y) { var p = el(name); if (p && p.flickable) p.flickable.contentY = y }
+    function scrollEnd(name) { var p = el(name); if (p && p.flickable) p.flickable.contentY = Math.max(0, p.flickable.contentHeight - p.flickable.height) }
     property var steps: [ %STEPS% ]
     property int step: 0
     Timer {
@@ -289,9 +298,33 @@ try:
     shot("01-no-server")
     j = job("check")
     check(j["state"] == "failed" and "No update server" in j["error"], "check without a server says so")
-    call("setServer", {"server": f"http://127.0.0.1:{port}"})
-    check("error" in call("setServer", {"server": "http://example.org"}, ok=False), "plain http to a public host refused")
+    # the server is set through the page: type, Save
+    shot("01b-server-invalid", ["el('fp6UpdateServerField').text = 'http://8.8.8.8:8742'", "scrollEnd('fp6UpdatePage')"], delay=1000)
+    shot("01c-server-saved", [f"el('fp6UpdateServerField').text = 'http://127.0.0.1:{port}/'", "el('fp6UpdateServerSave').clicked()",
+                              "0", "scrollEnd('fp6UpdatePage')"], delay=1200)
+    if not only:
+        check(call("status")["server"] == f"http://127.0.0.1:{port}", "server saved from the page (normalised, no trailing slash)")
+    else:
+        call("setServer", {"server": f"http://127.0.0.1:{port}"})
+    for bad in ["http://example.org", "http://8.8.8.8:8742", "ftp://10.0.0.1", "http://user:pw@10.0.0.1", "http://10.0.0.1/?x"]:
+        check("error" in call("setServer", {"server": bad}, ok=False), f"setServer refuses {bad}")
+    check(call("status")["server"] == f"http://127.0.0.1:{port}", "a refused URL leaves the saved server unchanged")
+    t = call("testServer", {"server": f"http://127.0.0.1:{port + 1}"})
+    check(not t["ok"], f"Test connection to a dead port fails: {t['error'][:80]}")
     publish(1, "First release.")
+    t = call("testServer", {"server": f"http://127.0.0.1:{port}"})
+    check(t["ok"] and t["release"] == 1 and not t["newer"] and t["keyId"], f"Test connection verifies the manifest (key {t.get('keyId')})")
+    if nb_ip:
+        nb = f"http://{nb_ip}:{port}"
+        shot("02b-server-test", [f"el('fp6UpdateServerField').text = '{nb}'", "el('fp6UpdateServerTest').clicked()", "0", "0",
+                                 "scrollEnd('fp6UpdatePage')"], delay=1200)
+        call("setServer", {"server": nb})
+        check(call("status")["server"] == nb, "server switched to the laptop's NetBird address")
+        t = call("testServer", {})
+        check(t["ok"] and t["release"] == 1, "Test connection over NetBird (saved server)")
+    else:
+        print("note: no wt0 address; NetBird part skipped")
+    keys_before = json.load(open(f"{FP}/config.json"))["manifestPublicKey"]
     j = job("check")
     check(j["state"] == "done" and "Up to date" in j["result"]["message"], f"release 1 published: {j['result']['message'] if j['state']=='done' else j['error']}")
     shot("02-up-to-date")
@@ -335,6 +368,26 @@ try:
     r = sh("nix", "--extra-experimental-features", "nix-command", "copy", "--from", f"file://{T}/unsigned-cache", "--to", f"{T}/other-store",
            "--option", "trusted-public-keys", nix_pub, systems[2][0], ok=False)
     check(r.returncode != 0 and "signature" in r.stderr.lower(), "nix copy from an unsigned cache fails (no valid signature)")
+
+    # the same over HTTP: a cache whose narinfos lost their signatures is refused
+    shutil.copytree(SRV, f"{T}/srv-nosig")
+    for f in os.listdir(f"{T}/srv-nosig/cache"):
+        if f.endswith(".narinfo"):
+            p = f"{T}/srv-nosig/cache/{f}"
+            kept = "".join(l for l in open(p) if not l.startswith("Sig:"))
+            open(p, "w").write(kept)
+    port2 = port + 2
+    procs.append(subprocess.Popen([REL, "serve", "--root", f"{T}/srv-nosig", "--listen", f"127.0.0.1:{port2}"], env=env,
+                                  stderr=open(f"{T}/server-nosig.log", "w")))
+    time.sleep(0.5)
+    r = sh("nix", "--extra-experimental-features", "nix-command", "copy", "--from", f"http://127.0.0.1:{port2}/cache", "--to", f"{T}/other-store2",
+           "--option", "trusted-public-keys", nix_pub, systems[2][0], ok=False)
+    check(r.returncode != 0 and "signature" in r.stderr.lower(), "nix copy --from http:// with stripped signatures fails")
+    r = sh("nix", "--extra-experimental-features", "nix-command", "copy", "--from", f"http://127.0.0.1:{port}/cache", "--to", f"{T}/other-store3",
+           "--option", "trusted-public-keys", nix_pub, systems[2][0], ok=False)
+    check(r.returncode == 0, "nix copy --from http:// of the signed cache works with only the release key trusted")
+    check(json.load(open(f"{FP}/config.json"))["manifestPublicKey"] == keys_before and call("status")["keyId"],
+          "server changes never touched the trusted key")
 
     conditions(network="cellular")
     j = job("download")
@@ -414,7 +467,7 @@ try:
     # ================================================= A/B (allowSlotSwitch = true, fake slots)
     fresh_phone(ab=True)
     start_daemon()
-    call("setServer", {"server": f"http://127.0.0.1:{port}"})
+    call("setServer", {"server": f"http://{nb_ip or '127.0.0.1'}:{port}"})
     publish(3, "Release 3 (A/B test).")
     j = job("check")
     check(call("status")["available"]["release"] == 3, "release 3 offered")
