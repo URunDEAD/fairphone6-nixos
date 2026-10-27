@@ -322,6 +322,162 @@ check(core.screen_on, "Peek then touch input: display stays on")
 check(core.peek(10) is False, "Peek with the display already on does nothing")
 m.GLib.source_remove = real_source_remove
 
+# stay on while held (com.fairphone6.Gestures SetHoldCheck/HoldResult) -------
+clock = [2000.0]
+real_monotonic = m.time.monotonic
+m.time.monotonic = lambda: clock[0]
+core = object.__new__(m.Core)
+core.lock, core.screen_power, core.screen_on = threading.RLock(), True, True
+core.off_reasons, core.prox_clients, core.notification_woke = set(), set(), False
+core.backlight, core.auto, core.user_value, core.ramp_id, core.ramp_target = FakeBacklight(), False, 200, 0, None
+core.display_on_requests, core.listeners = None, []
+idle_timers.clear()
+core._schedule = idle_schedule
+core._idle_cancel = lambda: (idle_timers.pop(core.idle_timer, None), setattr(core, "idle_timer", None))
+offs = []
+core._apply_screen = idle_apply
+asks = []
+core.hold_listeners = [lambda token, left: asks.append((token, left))]
+def at(now):
+    clock[0] = now
+    fire(now)
+def due():
+    return idle_timers[core.idle_timer][0]
+core.set_inactivity_timeouts(60, 45)
+check(due() == 45 and not asks, "hold check off: first point is the dim point, no HoldCheck")
+core.set_hold_check(True)
+check(abs(due() - (45 - m.HOLD_LEAD)) < 1e-6, f"hold check on: armed {m.HOLD_LEAD} s before the dim point")
+at(2042.0)
+check(len(asks) == 1 and asks[0][1] == 3 and not core.idle_dimmed, f"HoldCheck sent before dimming {asks}")
+check(abs(due() - 3.0) < 1e-6, "after the check the timer goes on to the dim point")
+clock[0] = 2043.5
+check(core.hold_result(asks[0][0] + 1, True) is False, "HoldResult with a stale token is ignored")
+check(core.hold_result(asks[0][0], True) is True, "held: idle extended")
+check(core.hold_at == 2043.5 and core.last_activity == 2000.0, "held moves the idle reference, not the input stamp (peeks)")
+check(abs(due() - (45 - m.HOLD_LEAD)) < 1e-6, "next check one dim period after the hold answer")
+at(2043.5 + 42.0)
+check(len(asks) == 2, "asked again in the next period")
+clock[0] = 2087.0
+check(core.hold_result(asks[1][0], False) is False, "not held: no extension")
+at(2043.5 + 45.0)
+check(core.idle_dimmed and len(asks) == 2, "not held: dims on time, no second question in the same period")
+at(2043.5 + 60.0)
+check(offs == [m.REASON_INACTIVITY] and not core.screen_on, "not held: display off on time (Lomiri locks after its grace)")
+check(core.hold_result(asks[1][0], True) is False, "an answer with the display off does nothing")
+# late "held" while dimmed undims
+clock[0] = 3000.0; del asks[:]
+core.off_reasons.clear(); idle_apply(m.REASON_POWERKEY)
+at(3042.0); at(3045.0)
+check(core.idle_dimmed and len(asks) == 1, "answer still pending at the dim point: dimmed")
+clock[0] = 3045.5
+check(core.hold_result(asks[0][0], True) and not core.idle_dimmed and core.backlight.value == 200,
+      "late held answer undims")
+# upper bound past the last real input
+clock[0] = 4000.0; core.idle_activity(); del asks[:]
+core.hold_at = 4000.0 + m.HOLD_MAX_EXTENSION - 10
+clock[0] = core.hold_at; core._idle_cancel(); core._idle_arm()
+at(core.hold_at + 42.0)
+check(len(asks) == 1, "asked near the limit")
+clock[0] = 4000.0 + m.HOLD_MAX_EXTENSION + 1
+check(core.hold_result(asks[0][0], True) is False, f"no extension beyond {m.HOLD_MAX_EXTENSION:.0f} s after the last input")
+# no dim configured: asked before display-off
+clock[0] = 5000.0; core.hold_at = 0.0; del asks[:]
+core.set_inactivity_timeouts(30, 0)
+check(abs(due() - (30 - m.HOLD_LEAD)) < 1e-6, "without dim: asked before display-off")
+# blocked states: no question
+core.pocket = True; core._idle_cancel(); core._idle_arm()
+check(abs(due() - 30) < 1e-6, "in a pocket: no HoldCheck point")
+core.pocket = False
+core.prox_clients.add("call"); core._idle_rearm()
+check(core.idle_timer is None, "in a call: no idle timer, no HoldCheck")
+core.prox_clients.clear(); core._idle_rearm()
+core.set_hold_check(False)
+check(abs(due() - 30) < 1e-6, "hold check off again: plain idle timer")
+at(5030.0)
+check(not asks and not core.screen_on, "hold check off: no signal, display off on time")
+m.time.monotonic = real_monotonic
+
+# edge flash (org.gtk.Actions /com/fairphone6/EdgeFlash) ------------------------
+class FlashBacklight:
+    cap = 255
+    def __init__(self):
+        self.value, self.writes = 0, []
+    def read(self):
+        return self.value
+    def write(self, value):
+        self.value = min(int(value), self.cap)
+        self.writes.append(self.value)
+        return self.value
+    def blank(self):
+        self.value = 0
+        self.writes.append(0)
+core = object.__new__(m.Core)
+core.lock, core.screen_power = threading.RLock(), True
+core.screen_on, core.off_reasons, core.notification_woke = False, {"user"}, False
+core.prox_clients, core.dt2w, core.display_on_requests = set(), True, None
+core.backlight, core.auto, core.user_value, core.ramp_id, core.ramp_target = FlashBacklight(), False, 180, 0, None
+core.listeners, core.last_activity, core.use_sensors, core.prox_claimed = [], 0.0, False, False
+core.iio_root = Path(tempfile.mkdtemp())     # no proximity sensor: unknown
+core._update_light_claim = lambda: None
+lp = []
+core._touch_lp = lambda enabled: lp.append(enabled)
+display_events = []
+core.listeners.append(lambda st, r: display_events.append((st, r)))
+edge_timers = {}
+def edge_schedule(seconds, callback):
+    key = len(edge_timers) + 900
+    edge_timers[key] = (seconds, callback)
+    return key
+core._schedule = edge_schedule
+m.GLib.source_remove = lambda key: edge_timers.pop(key, None)
+flashes = []
+core.edge_listeners = [flashes.append]
+check(core.edge_flash(2500, 20) is True, "flash with the display off")
+check(core.backlight.value == 20 and not core.screen_on and core.off_reasons == {"user"},
+      "flash: backlight at the low level, display stays logically off")
+check(flashes == [True] and not display_events and not lp, "flash: state signal only, no DisplayPowerStateChange, touch LP untouched")
+(key, (sec, cb)), = edge_timers.items()
+del edge_timers[key]
+check(sec == 2.5, "flash timer = duration")
+cb()
+check(core.backlight.value == 0 and flashes == [True, False] and not core.edge_flashing, "flash expires: blank again")
+core.edge_flash(100, 500)
+check(core.backlight.value == m.EDGE_MAX_LEVEL and list(edge_timers.values())[-1][0] == m.EDGE_MIN_MS / 1000,
+      "flash level and duration are clamped")
+core.edge_stop()
+check(core.backlight.value == 0 and not edge_timers, "stop: blank, timer cancelled")
+core.backlight.cap = 10
+core.edge_flash(2000, 30)
+check(core.backlight.value == 10, "battery-saver cap also limits the flash")
+core.backlight.cap = 255
+core.edge_stop()
+# a real wake during the flash: no blank, normal brightness, flash state ends
+core.edge_flash(3000, 20); del flashes[:]
+core.set_screen_power("on", m.REASON_POWERKEY)
+check(core.screen_on and core.backlight.value == 180 and flashes == [False] and not edge_timers,
+      "power key during a flash: normal wake, flash ended without a blank")
+check(core.edge_flash(2000, 20) is False and flashes == [False], "refused with the display on")
+core.set_screen_power("off", m.REASON_POWERKEY)
+core.prox_clients.add("lomiri-telephony-service-handler")
+check(core.edge_flash(2000, 20) is False, "refused in a call (proximity handling)")
+core.prox_clients.clear()
+core.pocket = True
+check(core.edge_flash(2000, 20) is False, "refused in a pocket")
+core.pocket = False
+edge_iio = core.iio_root / "iio:device0"; edge_iio.mkdir()
+(edge_iio / "name").write_text("stk36c61\n"); (edge_iio / "in_proximity_nearlevel").write_text("25\n")
+(edge_iio / "in_proximity_raw").write_text("300\n")
+check(core.edge_flash(2000, 20) is False, "refused when the proximity sensor reads near (face down, bag)")
+(edge_iio / "in_proximity_raw").write_text("2\n")
+check(core.edge_flash(2000, 20) is True, "allowed when it reads far")
+core.set_pocket(True)
+check(not core.edge_flashing and core.backlight.value == 0, "covered during a flash: flash ends, blank")
+core.set_pocket(False)
+core.edge_flash(2000, 20)
+core.proximity_handling("lomiri-telephony-service-handler", True)
+check(not core.edge_flashing and core.backlight.value == 0, "call starting during a flash ends it")
+m.GLib.source_remove = real_source_remove
+
 # touch gesture-LP retries (lp_mode EBUSY at display-off) -----------------
 import errno
 class FakeTouch:
@@ -427,7 +583,7 @@ daemon = subprocess.Popen([sys.executable, str(Path(m.__file__)), "--session-bus
                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 DBusGMainLoop(set_as_default=True)
 bus = dbus.SessionBus()
-for _ in range(100):
+for _ in range(400):   # up to 20 s (a loaded build machine)
     if bus.name_has_owner(m.SCREEN) and bus.name_has_owner(m.REPOWERD):
         break
     time.sleep(0.05)
@@ -515,7 +671,7 @@ print(out)
 
 # auto brightness + proximity against a scripted SensorProxy ---------------
 fake = subprocess.Popen([sys.executable, str(Path(__file__).with_name("fake_sensorproxy.py"))])
-for _ in range(100):
+for _ in range(400):   # up to 20 s (a loaded build machine)
     if bus.name_has_owner(m.SENSORS):
         break
     time.sleep(0.05)
@@ -523,7 +679,7 @@ for _ in range(100):
 daemon = subprocess.Popen([sys.executable, str(Path(m.__file__)), "--session-bus",
                            "--backlight-dir", str(bl), "--touch-dir", str(touch)],
                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-for _ in range(100):
+for _ in range(400):   # up to 20 s (a loaded build machine)
     if bus.name_has_owner(m.REPOWERD):
         break
     time.sleep(0.05)
@@ -584,7 +740,7 @@ daemon = subprocess.Popen([sys.executable, str(Path(m.__file__)), "--session-bus
                            "--screen-power", "--backlight-dir", str(bl), "--touch-dir", str(touch),
                            "--iio-root", str(iio.parent)],
                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-for _ in range(100):
+for _ in range(400):   # up to 20 s (a loaded build machine)
     if bus.name_has_owner(m.REPOWERD):
         break
     time.sleep(0.05)
@@ -605,6 +761,72 @@ scr.setScreenPowerMode("off", 2)
 client = subprocess.run([sys.executable, "-c", "import dbus; b=dbus.SessionBus(); dbus.Interface(b.get_object(%r, %r), %r).SetPocket(True)" % (m.REPOWERD, m.GESTURES_PATH, m.GESTURES_IFACE)])
 settle(300)
 check(client.returncode == 0 and not bool(ges.GetPocket()), "pocket clears when its client leaves the bus")
+
+# edge flash through GDBusActionGroup (what Lomiri's QDBusActionGroup uses)
+from gi.repository import Gio
+prox(0)
+gconn = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+group = Gio.DBusActionGroup.get(gconn, m.REPOWERD, m.EDGE_IFACE_PATH)
+states = []
+group.connect("action-state-changed", lambda g, name, value: states.append((name, value.unpack())))
+group.list_actions()
+settle(300)
+check(sorted(group.list_actions()) == ["flash", "flashing", "stop"], f"EdgeFlash actions listed {group.list_actions()}")
+check(group.get_action_state("flashing").unpack() is False, "flashing state starts false")
+check(str(group.get_action_parameter_type("flash").dup_string()) == "s", "flash takes a string parameter")
+scr.setScreenPowerMode("off", 2)
+settle(200)
+del events[:]
+bus.add_signal_receiver(lambda s, r: events.append((int(s), int(r))), signal_name="DisplayPowerStateChange",
+                        dbus_interface=m.SCREEN)
+group.activate_action("flash", GLib.Variant("s", "1200:20"))
+settle(400)
+check((bl / "brightness").read_text().strip() == str((20 * 4095 + 127) // 255), "flash: backlight at level 20 over D-Bus")
+check(states == [("flashing", True)] and group.get_action_state("flashing").unpack() is True, f"flashing state change {states}")
+check(not events, f"flash sends no DisplayPowerStateChange {events}")
+settle(1300)
+check((bl / "brightness").read_text().strip() == "0" and states[-1] == ("flashing", False), "flash ends by itself: blank again")
+group.activate_action("flash", GLib.Variant("s", "5000:20"))
+settle(300)
+group.activate_action("stop", None)
+settle(300)
+check((bl / "brightness").read_text().strip() == "0" and states[-1] == ("flashing", False), "stop action ends the flash")
+prox(200)
+n = len(states)
+group.activate_action("flash", GLib.Variant("s", "1500:20"))
+settle(300)
+check((bl / "brightness").read_text().strip() == "0" and states[n:] in ([], [("flashing", False)]),
+      "flash refused while the proximity sensor reads near")
+prox(0)
+scr.setScreenPowerMode("on", 2)
+settle(200)
+lit = (bl / "brightness").read_text().strip()
+group.activate_action("flash", GLib.Variant("s", "1500:20"))
+settle(300)
+check((bl / "brightness").read_text().strip() == lit, "flash refused with the display on")
+
+# stay on while held over D-Bus: HoldCheck before the idle point, HoldResult extends
+checks = []
+bus.add_signal_receiver(lambda token, left: checks.append((int(token), int(left))), signal_name="HoldCheck",
+                        dbus_interface=m.GESTURES_IFACE)
+ges.SetHoldCheck(True)
+scr.setInactivityTimeouts(5, 0)
+settle(2500)
+check(len(checks) == 1 and checks[0][1] == 3, f"HoldCheck {m.HOLD_LEAD:.0f} s before the display-off point {checks}")
+check(bool(ges.HoldResult(dbus.UInt32(checks[0][0]), True)), "HoldResult(held) accepted")
+settle(4000)
+check(int((bl / "brightness").read_text()) > 0, "held: display still on past the original timeout")
+check(len(checks) == 2, f"asked again one period later {checks}")
+check(not bool(ges.HoldResult(dbus.UInt32(checks[1][0]), False)), "HoldResult(not held) does not extend")
+settle(2500)
+check((bl / "brightness").read_text().strip() == "0", "not held: display off at the idle point")
+client = subprocess.run([sys.executable, "-c", "import dbus; b=dbus.SessionBus(); dbus.Interface(b.get_object(%r, %r), %r).SetHoldCheck(True)" % (m.REPOWERD, m.GESTURES_PATH, m.GESTURES_IFACE)])
+settle(300)
+scr.setScreenPowerMode("on", 2)
+del checks[:]
+settle(2500)
+check(client.returncode == 0 and not checks, "hold check stops when its client leaves the bus")
+scr.setInactivityTimeouts(0, 0)
 daemon.terminate()
 out, _ = daemon.communicate(timeout=10)
 check(daemon.returncode == 0, "clean shutdown (gestures)")

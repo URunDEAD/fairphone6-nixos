@@ -31,6 +31,19 @@ and caller authorisation, copied here unchanged in behaviour) and adds:
     fresh proximity read, touch stays in LP, a lit display goes off after
     5 s; incoming calls still wake; a second power press within 3 s wakes
     anyway) and raise-to-wake (Peek: display on, off again if no input).
+  * stay on while held (com.fairphone6.Gestures SetHoldCheck/HoldCheck/
+    HoldResult): a few seconds before the idle dim (or display-off) point,
+    a registered client (fp6-gestures) is asked once whether the phone is
+    held in a reading pose; "held" moves the idle reference to now (input
+    stamps stay untouched, so raise-to-wake peeks are not extended), for at
+    most HOLD_MAX_EXTENSION after the last real input. No client, no signal.
+  * edge flash (org.gtk.Actions on /com/fairphone6/EdgeFlash, for Lomiri's
+    QDBusActionGroup): "flash" ("MS:LEVEL") lights the backlight at a low
+    level for MS while the display stays logically off (no
+    DisplayPowerStateChange, touch stays in LP, no idle timer, no lock
+    change); Lomiri draws a black frame with glowing edges meanwhile. Refused
+    with the display on, in a call, in a pocket or when the proximity sensor
+    reads near; "stop" ends it; the "flashing" state reports it.
 
 Nothing here suspends or touches the IMU.
 """
@@ -101,6 +114,16 @@ POCKET_OVERRIDE_WINDOW = 3.0   # second blocked power press within this wakes an
 POCKET_LATE_RELEASE = 0.6      # uncovered this soon after a blocked press: wake
 POCKET_DISPLAY_OFF = 5.0       # a lit display that gets pocketed goes off after this
 PROXIMITY_SENSOR = "stk36c61"
+# Stay on while held: ask this long before the first idle point (dim, or off
+# without dim); the client samples ~1.5 s. Never more than HOLD_MAX_EXTENSION
+# seconds past the last real input (a phone in a vibrating car mount).
+HOLD_LEAD = 3.0
+HOLD_MAX_EXTENSION = 600.0
+# Edge flash (screen-edge notification light): backlight level limits.
+EDGE_IFACE_PATH = "/com/fairphone6/EdgeFlash"
+GTK_ACTIONS = "org.gtk.Actions"
+EDGE_MAX_LEVEL = 64
+EDGE_MIN_MS, EDGE_MAX_MS = 300, 8000
 # Touch gesture-LP (lp_mode) writes that fail transiently are retried from a
 # GLib timer, never by sleeping. EBUSY: the driver had no gesture selected
 # (its gesture_wakeup store returns success even when the controller command
@@ -366,6 +389,16 @@ class Core:
     pocket_listeners = ()
     peek_id = 0
     iio_root = Path("/sys/bus/iio/devices")
+    # stay on while held (com.fairphone6.Gestures SetHoldCheck)
+    hold_enabled = False
+    hold_token = 0
+    hold_asked = None             # idle reference the last HoldCheck was sent for
+    hold_at = 0.0                 # last accepted "held" (monotonic)
+    hold_listeners = ()           # callables(token, seconds_left)
+    # edge flash (org.gtk.Actions /com/fairphone6/EdgeFlash)
+    edge_flashing = False
+    edge_timer = None
+    edge_listeners = ()           # callables(flashing)
     # touch gesture-LP: wanted state, pending retry timer, failed attempts
     touch_lp_want = None
     touch_lp_timer = None
@@ -584,6 +617,8 @@ class Core:
             return
         self.screen_on = want_on
         if want_on:
+            # A real wake ends an edge flash (no blank: the target follows).
+            self._edge_end(blank=False)
             target = self._auto_target() if self.auto else self.user_value
             try:
                 self.backlight.write(target)
@@ -664,6 +699,8 @@ class Core:
     def proximity_handling(self, name, enable):
         with self.lock:
             (self.prox_clients.add if enable else self.prox_clients.discard)(str(name))
+            if enable:
+                self._edge_end(blank=True)
             log("proximity handling", "enable" if enable else "disable", name, sorted(self.prox_clients))
             self._update_prox_claim()
             self._idle_rearm()
@@ -724,6 +761,21 @@ class Core:
         return (not self.screen_on or bool(self.prox_clients)
                 or bool(self.display_on_requests))
 
+    def _idle_ref(self):
+        """Idle is counted from the last input or accepted "held" answer."""
+        return max(self.last_activity, self.hold_at)
+
+    def _hold_point(self, off, dim):
+        """Seconds after the idle reference to send HoldCheck, or None."""
+        if not self.hold_enabled or self.idle_dimmed or self.pocket or not off:
+            return None
+        if self.hold_asked == self._idle_ref():
+            return None   # asked once for this idle period already
+        if self._idle_ref() - self.last_activity >= HOLD_MAX_EXTENSION:
+            return None
+        first = dim or off
+        return max(1.0, first - HOLD_LEAD)
+
     def idle_activity(self, now=None):
         now = time.monotonic() if now is None else now
         with self.lock:
@@ -745,7 +797,10 @@ class Core:
             return
         now = time.monotonic() if now is None else now
         due = dim if dim and not self.idle_dimmed else off
-        self.idle_timer = self._schedule(max(0.2, self.last_activity + due - now), self._idle_fire)
+        hold = self._hold_point(off, dim)
+        if hold is not None and hold < due:
+            due = hold
+        self.idle_timer = self._schedule(max(0.2, self._idle_ref() + due - now), self._idle_fire)
 
     def _idle_rearm(self):
         with self.lock:
@@ -763,17 +818,62 @@ class Core:
             if not off or self._idle_blocked():
                 self._idle_undim()
                 return
-            idle = now - self.last_activity
+            idle = now - self._idle_ref()
             if idle >= off - 0.05:
-                log("inactivity: display off after", round(idle), "s")
+                log("inactivity: display off after", round(now - self.last_activity), "s")
                 self.idle_dimmed = False
                 self.notification_woke = False
                 self.off_reasons.add("user")
                 self._apply_screen(REASON_INACTIVITY)
                 return
+            hold = self._hold_point(off, dim)
+            if hold is not None and idle >= hold - 0.05:
+                self._hold_ask((dim or off) - idle)
             if dim and not self.idle_dimmed and idle >= dim - 0.05:
                 self._idle_dim()
             self._idle_arm(now)
+
+    # stay on while held (com.fairphone6.Gestures) ---------------------------
+    def _hold_ask(self, seconds_left):
+        self.hold_asked = self._idle_ref()
+        self.hold_token = (self.hold_token + 1) % 0x7fffffff or 1
+        for listener in self.hold_listeners:
+            try:
+                listener(self.hold_token, max(0, int(round(seconds_left))))
+            except Exception as error:
+                log("hold check listener failed:", error)
+
+    def set_hold_check(self, enabled):
+        with self.lock:
+            enabled = bool(enabled)
+            if enabled == self.hold_enabled:
+                return
+            self.hold_enabled = enabled
+            self.hold_asked = None
+            log("stay on while held:", "on" if enabled else "off")
+            self._idle_cancel()
+            self._idle_arm()
+
+    def hold_result(self, token, held, now=None):
+        """Answer to HoldCheck(token). True when the idle period was extended."""
+        now = time.monotonic() if now is None else now
+        with self.lock:
+            if int(token) != self.hold_token or not self.hold_enabled:
+                return False
+            if not held:
+                log("stay on while held: not held, idle continues")
+                return False
+            if self._idle_blocked() or self.pocket:
+                return False
+            if now - self.last_activity >= HOLD_MAX_EXTENSION:
+                log("stay on while held: limit reached", round(now - self.last_activity), "s after input")
+                return False
+            log("stay on while held: held, idle timer extended")
+            self.hold_at = now
+            self._idle_undim()
+            self._idle_cancel()
+            self._idle_arm(now)
+            return True
 
     def _idle_dim(self):
         self.idle_dimmed = True
@@ -875,6 +975,7 @@ class Core:
             self._pocket_cancel_off()
             self._pocket_touch()
             if covered:
+                self._edge_end(blank=True)
                 if self.screen_on and not self.prox_clients:
                     self.pocket_off_timer = self._schedule(POCKET_DISPLAY_OFF, self._pocket_display_off)
             else:
@@ -946,6 +1047,87 @@ class Core:
             log("raise to wake: no input, display off again")
             self.off_reasons.add("user")
             self._apply_screen(REASON_INACTIVITY)
+
+    # edge flash (screen-edge notification light) ------------------------------
+    # The display stays logically off: screen_on, off_reasons, touch LP, the
+    # idle timer and Lomiri's lock state are not touched and no
+    # DisplayPowerStateChange is sent. Only the panel brightness goes from 0
+    # to a low level for `ms`; Lomiri (which keeps rendering while blanked)
+    # shows a black frame with glowing edges meanwhile, so on the OLED only
+    # the edge pixels emit.
+    def edge_refusal(self):
+        """Why a flash may not start now (None: it may)."""
+        if not self.screen_power:
+            return "no screen power"
+        if self.screen_on:
+            return "display on"
+        if self.prox_clients or "proximity" in self.off_reasons:
+            return "call"
+        if self.pocket:
+            return "pocket"
+        if self._proximity_now() is True:
+            return "proximity near"
+        return None
+
+    def edge_flash(self, ms, level):
+        with self.lock:
+            why = self.edge_refusal()
+            if why is not None:
+                log("edge flash refused:", why)
+                if self.edge_flashing:
+                    self._edge_end(blank=True)
+                return False
+            ms = max(EDGE_MIN_MS, min(EDGE_MAX_MS, int(ms)))
+            level = max(1, min(EDGE_MAX_LEVEL, int(level)))
+            try:
+                self.backlight.write(level)   # clamped to the battery-saver cap
+            except Exception as error:
+                log("edge flash brightness failed:", error)
+                self._edge_end(blank=True)
+                return False
+            self._edge_cancel_timer()
+            self.edge_timer = self._schedule(ms / 1000.0, self._edge_expired)
+            if not self.edge_flashing:
+                self.edge_flashing = True
+                log("edge flash: level", level, "for", ms, "ms")
+                self._edge_notify()
+            return True
+
+    def edge_stop(self):
+        with self.lock:
+            return self._edge_end(blank=True)
+
+    def _edge_expired(self):
+        with self.lock:
+            self.edge_timer = None
+            if self.edge_flashing:
+                log("edge flash: time up")
+            self._edge_end(blank=True)
+
+    def _edge_cancel_timer(self):
+        if self.edge_timer is not None:
+            GLib.source_remove(self.edge_timer)
+            self.edge_timer = None
+
+    def _edge_end(self, blank):
+        if not self.edge_flashing:
+            return False
+        self._edge_cancel_timer()
+        self.edge_flashing = False
+        if blank and not self.screen_on:
+            try:
+                self.backlight.blank()
+            except Exception as error:
+                log("edge flash blank failed:", error)
+        self._edge_notify()
+        return True
+
+    def _edge_notify(self):
+        for listener in self.edge_listeners:
+            try:
+                listener(self.edge_flashing)
+            except Exception as error:
+                log("edge flash listener failed:", error)
 
     # double tap -------------------------------------------------------------
     def set_dt2w(self, enabled):
@@ -1430,7 +1612,9 @@ class Gestures(dbus.service.Object):
         super().__init__(bus, GESTURES_PATH)
         self.bus, self.core, self.authorizer = bus, core, authorizer
         self.owner_watch, self.owner = None, None
+        self.hold_watch = None
         core.pocket_listeners = [lambda covered: self.PocketChanged(covered)]
+        core.hold_listeners = [lambda token, left: self.HoldCheck(dbus.UInt32(token), dbus.Int32(left))]
         core.listeners.append(core.pocket_screen_changed)
 
     @dbus.service.method(GESTURES_IFACE, in_signature="b", out_signature="b", sender_keyword="sender")
@@ -1462,6 +1646,98 @@ class Gestures(dbus.service.Object):
     def PocketChanged(self, covered):
         pass
 
+    # Stay on while held: the client asks for HoldCheck signals and answers
+    # each with HoldResult. Off again when the client leaves the bus.
+    @dbus.service.method(GESTURES_IFACE, in_signature="b", out_signature="", sender_keyword="sender")
+    def SetHoldCheck(self, enabled, sender=None):
+        self.authorizer.require(sender)
+        if self.hold_watch is not None:
+            self.hold_watch.cancel()
+            self.hold_watch = None
+        self.core.set_hold_check(bool(enabled))
+        if enabled and sender:
+            def owner(name):
+                if not name and self.hold_watch is not None:
+                    self.hold_watch.cancel()
+                    self.hold_watch = None
+                    self.core.set_hold_check(False)
+            self.hold_watch = self.bus.watch_name_owner(sender, owner)
+
+    @dbus.service.method(GESTURES_IFACE, in_signature="ub", out_signature="b", sender_keyword="sender")
+    def HoldResult(self, token, held, sender=None):
+        self.authorizer.require(sender)
+        return self.core.hold_result(int(token), bool(held))
+
+    # token, seconds until the idle dim (or display-off) point
+    @dbus.service.signal(GESTURES_IFACE, signature="ui")
+    def HoldCheck(self, token, seconds_left):
+        pass
+
+
+class EdgeFlash(dbus.service.Object):
+    """org.gtk.Actions for Lomiri's QDBusActionGroup (system bus):
+    flash("MS:LEVEL"), stop, and the boolean state "flashing"."""
+
+    def __init__(self, bus, core, authorizer):
+        super().__init__(bus, EDGE_IFACE_PATH)
+        self.core, self.authorizer = core, authorizer
+        core.edge_listeners = [self._changed]
+
+    def _describe(self, name):
+        if name == "flash":
+            return dbus.Struct((True, dbus.Signature("s"), dbus.Array([], signature="v")), signature="bgav")
+        if name == "stop":
+            return dbus.Struct((True, dbus.Signature(""), dbus.Array([], signature="v")), signature="bgav")
+        if name == "flashing":
+            return dbus.Struct((True, dbus.Signature(""),
+                                dbus.Array([dbus.Boolean(self.core.edge_flashing, variant_level=1)], signature="v")),
+                               signature="bgav")
+        raise Invalid("Unknown action")
+
+    @dbus.service.method(GTK_ACTIONS, in_signature="", out_signature="as")
+    def List(self):
+        return ["flash", "stop", "flashing"]
+
+    @dbus.service.method(GTK_ACTIONS, in_signature="s", out_signature="(bgav)")
+    def Describe(self, name):
+        return self._describe(str(name))
+
+    @dbus.service.method(GTK_ACTIONS, in_signature="", out_signature="a{s(bgav)}")
+    def DescribeAll(self):
+        return dbus.Dictionary({n: self._describe(n) for n in ("flash", "stop", "flashing")}, signature="s(bgav)")
+
+    @dbus.service.method(GTK_ACTIONS, in_signature="sava{sv}", out_signature="", sender_keyword="sender")
+    def Activate(self, name, parameter, platform_data, sender=None):
+        self.authorizer.require(sender)
+        name = str(name)
+        if name == "flash":
+            text = str(parameter[0]) if parameter else ""
+            ms, _, level = text.partition(":")
+            try:
+                ms, level = int(ms), int(level or 16)
+            except ValueError:
+                raise Invalid("flash parameter is 'MS:LEVEL'") from None
+            if not self.core.edge_flash(ms, level):
+                # Refused: re-announce the (false) state so the shell stops waiting.
+                self._changed(self.core.edge_flashing)
+        elif name == "stop":
+            self.core.edge_stop()
+        elif name != "flashing":
+            raise Invalid("Unknown action")
+
+    @dbus.service.method(GTK_ACTIONS, in_signature="sva{sv}", out_signature="")
+    def SetState(self, name, value, platform_data):
+        raise Unsupported("Actions here have no settable state")
+
+    @dbus.service.signal(GTK_ACTIONS, signature="asa{sb}a{sv}a{s(bgav)}")
+    def Changed(self, removals, enable_changes, state_changes, additions):
+        pass
+
+    def _changed(self, flashing):
+        self.Changed(dbus.Array([], signature="s"), dbus.Dictionary({}, signature="sb"),
+                     dbus.Dictionary({"flashing": dbus.Boolean(flashing, variant_level=1)}, signature="sv"),
+                     dbus.Dictionary({}, signature="s(bgav)"))
+
 
 class Service:
     def __init__(self, bus, core, authorizer):
@@ -1471,6 +1747,7 @@ class Service:
         self.powerkey = PowerKey(bus, core, authorizer)
         self.cap = BrightnessCap(bus, core, authorizer)
         self.gestures = Gestures(bus, core, authorizer)
+        self.edge = EdgeFlash(bus, core, authorizer)
         self.timer = GLib.timeout_add_seconds(2, self.repowerd.poll)
 
 
@@ -1520,6 +1797,7 @@ def main(argv=None):
             core.prox_clients.clear()
             core._update_light_claim()
             core._update_prox_claim()
+        core._edge_end(blank=True)
         if not core.screen_on:
             core.off_reasons.clear()
             core._apply_screen(REASON_UNKNOWN)
