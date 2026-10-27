@@ -24,7 +24,7 @@ let
     "--prefix" "NIXPKGS_QT5_QML_IMPORT_PATH" ":" "${camera.qtmultimediaFp6.bin}/${libsForQt5.qtbase.qtQmlPrefix}"
     "--prefix" "QT_PLUGIN_PATH" ":" "${camera.qtmultimediaFp6.bin}/${libsForQt5.qtbase.qtPluginPrefix}"
     "--prefix" "GST_PLUGIN_SYSTEM_PATH_1_0" ":" (lib.makeSearchPath "lib/gstreamer-1.0" (with gst_all_1; [
-      gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad camera.gstFp6Camera cameraLibcamera ]))
+      gstreamer.out gst-plugins-base.out gst-plugins-good.out gst-plugins-bad.out camera.gstFp6Camera cameraLibcamera ]))
     "--set" "QT_GSTREAMER_CAMERABIN_SRC" "fp6camerabinsrc"
     "--set" "QT_GSTREAMER_CAMERABIN_VIDEOSRC" "fp6libcamerasrc"
     "--set-default" "FP6_CAMERA_CONFIG" "/etc/fp6-camera/camera.conf"
@@ -95,14 +95,17 @@ stdenv.mkDerivation {
     # Camera's own wrapper check.
     saved=("''${qtWrapperArgs[@]}")
     qtWrapperArgs=()
+    stockQtmm=${libsForQt5.qtmultimedia.bin}
+    fp6Qtmm=${camera.qtmultimediaFp6.bin}
     for a in "''${saved[@]}"; do
-      qtWrapperArgs+=("''${a//${libsForQt5.qtmultimedia.bin}/${camera.qtmultimediaFp6.bin}}")
+      qtWrapperArgs+=("''${a//"$stockQtmm"/"$fp6Qtmm"}")
     done
     wrapQtApp $out/bin/fp6-magnifier ${lib.escapeShellArgs cameraWrapArgs}
     qtWrapperArgs=("''${saved[@]}")
     grep -q fp6camerabinsrc $out/bin/fp6-magnifier
     grep -q ${camera.qtmultimediaFp6.bin} $out/bin/fp6-magnifier
-    ! grep -q ${libsForQt5.qtmultimedia.bin} $out/bin/fp6-magnifier
+    ! grep -q ${builtins.substring 11 32 (toString libsForQt5.qtmultimedia.bin)} $out/bin/fp6-magnifier
+    grep -q 'FP6_PW_RECORD.*/nix/store/[a-z0-9]*-pipewire' $out/bin/fp6-magnifier
     ! grep -q fp6camerabinsrc $out/bin/fp6-sensor-tools
   '' else ''
     wrapQtApp $out/bin/fp6-magnifier
