@@ -50,6 +50,36 @@ stdenv.mkDerivation (finalAttrs: {
     assert n == 1, n
     open(p, "w").write(s)
     PY
+    # Modem start-up window (fp6-modem-mcfg-activate restarts the modem once
+    # per boot, oFono starts after it): the entry's visibility was decided
+    # once, when System Settings started, from indicator-network's
+    # ModemAvailable, so the Cellular page vanished for the whole session if
+    # Settings was opened before oFono had a modem. The FP6 always has one:
+    # keep the entry visible. The page then stays on its wait spinner, now
+    # labelled "Mobile network starting...", until oFono lists a modem
+    # (an empty modem list no longer drops to "No SIM detected").
+    substituteInPlace plugins/cellular/plugin/cellular-plugin.cpp \
+      --replace-fail 'setVisibility(supportedDevice);' 'Q_UNUSED(supportedDevice); setVisibility(true); // FP6: always has a modem'
+    python3 - <<'PY'
+    p = "plugins/cellular/PageComponent.qml"
+    s = open(p).read()
+    old = "            root.waiting = false;\n        }\n    }\n\n    QDBusActionGroup {"
+    new = "            root.waiting = modems.length === 0;\n        }\n    }\n\n    QDBusActionGroup {"
+    assert s.count(old) == 1
+    s = s.replace(old, new)
+    old = "        ActivityIndicator {\n            anchors.centerIn: parent\n            running: true\n        }\n"
+    new = (old[:-1] + "\n"
+           "        Label {\n"
+           "            anchors { top: parent.verticalCenter; topMargin: units.gu(4); left: parent.left; right: parent.right; margins: units.gu(4) }\n"
+           "            text: I18nd.tr(\"Mobile network starting…\")\n"
+           "            horizontalAlignment: Text.AlignHCenter\n"
+           "            color: theme.palette.normal.backgroundSecondaryText\n"
+           "            wrapMode: Text.WordWrap\n"
+           "        }\n")
+    assert s.count(old) == 1
+    s = s.replace(old, new)
+    open(p, "w").write(s)
+    PY
     substituteInPlace plugins/cellular/Components/LabelTextField.qml \
       --replace-fail 'import Lomiri.Keyboard 0.1' "" \
       --replace-fail 'InputMethod.extensions: { "enterKeyText": I18nd.tr("Next") }' ""

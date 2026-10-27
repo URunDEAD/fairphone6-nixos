@@ -17,10 +17,21 @@ set -euo pipefail
 # PDC ListConfigs blocks while the modem is still loading MCFG files over
 # TFTP, and frequent queries during that phase were seen to delay or stall
 # the selection. So: settle first, then poll sparsely with a long bound.
+#
+# oFono (and so the phone UI's whole mobile network) is ordered after this
+# unit, so every second spent here is "No network" after login. Boot
+# journals of r2 (4 boots, 2026-10-27): the modem's MCFG TFTP reads end
+# about 26 s after rmtfs starts it, Pending was already set at the first
+# poll (60 s) every time, and Active at the first poll after the restart
+# (60 s) every time; after the restart the modem's TFTP traffic is over
+# within ~2 s. The old fixed 60 s + 60 s settles were ~65 s of pure wait.
+# Override with MCFG_*_TIME (unit drop-in) if the stall ever comes back.
 Q=(timeout -k 5 60 qmicli --silent -d qrtr://0)
-SETTLE="${MCFG_SETTLE_TIME:-60}"
+SETTLE="${MCFG_SETTLE_TIME:-40}"
 WAIT="${MCFG_WAIT_TIME:-240}"
-POLL=20
+POLL="${MCFG_POLL_TIME:-10}"
+POST_SETTLE="${MCFG_POST_SETTLE_TIME:-15}"
+POST_POLL="${MCFG_POST_POLL_TIME:-5}"
 
 rproc=""
 for r in /sys/class/remoteproc/remoteproc*; do
@@ -35,8 +46,8 @@ platform_status() {
   "${Q[@]}" --pdc-list-configs=platform 2>/dev/null | grep -o "Status: *[A-Za-z]*" | awk '{print $2}' | sort -u | tr '\n' ' '
 }
 
-# The modem marks its auto-selected platform config "Pending" about 45-90 s
-# after start. (DMS reports "shutting-down" from the start on this firmware,
+# The modem marks its auto-selected platform config "Pending" within 60 s
+# of start (TFTP MCFG reads end at ~26 s). (DMS reports "shutting-down" from the start on this firmware,
 # so it is not a usable trigger.)
 sleep "$SETTLE"
 st=""
@@ -62,24 +73,29 @@ esac
 
 # Let the modem finish writing the selection into the (RAM) EFS.
 sleep 10
-echo "platform MCFG pending; restarting the modem remoteproc once to activate it"
+echo "platform MCFG pending ($((SECONDS - 10)) s after start); restarting the modem remoteproc once to activate it"
 echo stop > "$rproc/state"
 for _ in $(seq 1 20); do
   [ "$(cat "$rproc/state")" = offline ] && break
   sleep 1
 done
 echo start > "$rproc/state"
+for _ in $(seq 1 30); do
+  [ "$(cat "$rproc/state")" = running ] && break
+  sleep 1
+done
+t0=$SECONDS
 
-sleep "$SETTLE"
+sleep "$POST_SETTLE"
 deadline=$((SECONDS + WAIT))
 while [ "$SECONDS" -lt "$deadline" ]; do
   st=$(platform_status || true)
   case " $st " in
     *" Active "*)
-      echo "platform MCFG active after modem restart"
+      echo "platform MCFG active after modem restart ($((SECONDS - t0)) s after start)"
       exit 0 ;;
   esac
-  sleep "$POLL"
+  sleep "$POST_POLL"
 done
 echo "platform MCFG still not active after restart (status: ${st:-none})"
 exit 0
