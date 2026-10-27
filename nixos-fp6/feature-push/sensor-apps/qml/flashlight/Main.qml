@@ -38,7 +38,7 @@ MainView {
         feed.command("setLevel", String(settings.level));
         root.ls = feed.command("setStrobe", String(settings.strobeHz));
         if (fp6Preview === "strobe" || fp6Preview === "sos") {
-            pattern = fp6Preview === "strobe" ? 1 : 2;
+            sections.selectedIndex = fp6Preview === "strobe" ? 1 : 2;
             root.ls = feed.command("setMode", fp6Preview);
         } else if (fp6Preview === "on") {
             root.ls = feed.command("setMode", "on");
@@ -55,9 +55,9 @@ MainView {
             id: header
             title: i18n.tr("Flashlight")
             extension: Sections {
+                id: sections
                 anchors { left: parent.left; bottom: parent.bottom }
                 model: [i18n.tr("Steady"), i18n.tr("Strobe"), "SOS"]
-                selectedIndex: root.pattern
                 onSelectedIndexChanged: {
                     root.pattern = selectedIndex;
                     if (root.lit) root.ls = feed.command("setMode", root.modes[selectedIndex]);

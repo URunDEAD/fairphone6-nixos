@@ -33,7 +33,11 @@ MainView {
         property int wave: 0
     }
 
+    property bool ready: false
+
     Component.onCompleted: {
+        waveSections.selectedIndex = settings.wave;
+        ready = true;
         feed.command("setFreq", String(settings.freq));
         feed.command("setWave", waves[settings.wave]);
         root.ts = feed.command("setVolume", String(settings.volume));
@@ -55,10 +59,12 @@ MainView {
             id: header
             title: i18n.tr("Tone generator")
             extension: Sections {
+                id: waveSections
                 anchors { left: parent.left; bottom: parent.bottom }
                 model: [i18n.tr("Sine"), i18n.tr("Square"), i18n.tr("Triangle"), i18n.tr("Sawtooth")]
-                selectedIndex: settings.wave
-                onSelectedIndexChanged: { settings.wave = selectedIndex; root.ts = feed.command("setWave", root.waves[selectedIndex]) }
+                // set from the stored choice in Component.onCompleted (Sections
+                // resets its index while the model is set up)
+                onSelectedIndexChanged: if (root.ready) { settings.wave = selectedIndex; root.ts = feed.command("setWave", root.waves[selectedIndex]) }
             }
         }
 

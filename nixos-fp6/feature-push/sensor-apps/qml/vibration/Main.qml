@@ -30,6 +30,13 @@ MainView {
         property int unit: 0
     }
 
+    property bool ready: false
+    Component.onCompleted: {
+        if (fp6Preview === "g") settings.unit = 1;
+        unitSections.selectedIndex = settings.unit;
+        ready = true;
+    }
+
     // rough perception scale (whole-body vibration, RMS m/s²)
     function feel(rms) {
         if (!isFinite(rms)) return "";
@@ -53,10 +60,10 @@ MainView {
                 }
             ]
             extension: Sections {
+                id: unitSections
                 anchors { left: parent.left; bottom: parent.bottom }
                 model: ["m/s²", "g"]
-                selectedIndex: settings.unit
-                onSelectedIndexChanged: settings.unit = selectedIndex
+                onSelectedIndexChanged: if (root.ready) settings.unit = selectedIndex
             }
         }
 
