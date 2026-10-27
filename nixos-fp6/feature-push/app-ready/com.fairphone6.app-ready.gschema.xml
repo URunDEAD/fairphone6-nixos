@@ -31,7 +31,7 @@
     </key>
     <key name="preload-budget-mb" type="i">
       <range min="16" max="2048"/>
-      <default>300</default>
+      <default>400</default>
       <summary>Preload budget per app (MiB of files)</summary>
     </key>
     <key name="preload-interval-min" type="i">

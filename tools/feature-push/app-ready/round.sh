@@ -34,14 +34,26 @@ relogin() {  # relogin patched|system
   if [ "$1" = patched ]; then
     mkdir -p "$(dirname "$dropin")"
     printf '[Service]\nExecStart=\nExecStart=%s/lomiri-session\n' "$here" > "$dropin"
+    # e.g. LOMIRI_ENV='QT_LOGGING_RULES=qtmir.applications.debug=true'
+    [ -n "${LOMIRI_ENV:-}" ] && printf 'Environment="%s"\n' "$LOMIRI_ENV" >> "$dropin"
   else
     rm -f "$dropin"; rmdir "$(dirname "$dropin")" 2>/dev/null
   fi
   systemctl --user daemon-reload
   echo "$pin" | "$here/relogin.sh"
 }
+# The display locks after com.lomiri.touch.system activity-timeout (60 s) of
+# no input, which would put the greeter over the apps being measured: 600 s
+# while the round runs, the old value restored at the end.
+sysgs() {
+  local dir; dir=$(ls -d /nix/store/*-lomiri-schemas-*/share/gsettings-schemas/*/glib-2.0/schemas 2>/dev/null | head -1)
+  GSETTINGS_SCHEMA_DIR=$dir GIO_EXTRA_MODULES=$(ls -d /nix/store/*-dconf-*-lib/lib/gio/modules | head -1) \
+    "$(ls /nix/store/*-glib-*-bin/bin/gsettings | head -1)" "$@"
+}
+old_timeout=$(sysgs get com.lomiri.touch.system activity-timeout 2>/dev/null | awk '{print $NF}')
 restored=yes
 finish() {
+  [ -n "$old_timeout" ] && sysgs set com.lomiri.touch.system activity-timeout "$old_timeout"
   [ -n "${TEARDOWN:-}" ] && "$TEARDOWN"
   if [ "$restored" = no ]; then
     # Back to the system Lomiri, logged in, drop-in gone, before the lock is released.
@@ -63,6 +75,7 @@ case $setup in
       relogin system || exit 5
     fi ;;
 esac
+[ -n "$old_timeout" ] && sysgs set com.lomiri.touch.system activity-timeout 600
 [ -n "${SETUP:-}" ] && { "$SETUP" || { echo "setup $SETUP failed"; exit 6; }; }
 LAL=${LAL:-$(dirname "$(ls /nix/store/*-lomiri-app-launch-*/bin/lomiri-app-launch | head -1)")}
 apps=()

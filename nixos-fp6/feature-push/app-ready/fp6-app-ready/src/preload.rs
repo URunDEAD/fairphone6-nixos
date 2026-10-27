@@ -2,8 +2,8 @@
 //! Page-cache preload of an app's files.
 //!
 //! File list, in priority order (deduplicated, regular files only):
-//!  1. learned: files the app had mapped while it ran (binary, shared
-//!     libraries, QML disk caches, fonts, data), kept in
+//!  1. learned: files the app had mapped or open while it ran (binary,
+//!     shared libraries, QML disk caches, fonts, archives, databases), kept in
 //!     ~/.cache/fp6-app-ready/<appid>.files;
 //!  2. extra lists /etc/fp6-app-ready/preload.d/<appid>.list and
 //!     ~/.config/fp6-app-ready/preload.d/<appid>.list (a file or a directory

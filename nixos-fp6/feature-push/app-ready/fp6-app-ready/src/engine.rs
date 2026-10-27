@@ -212,8 +212,9 @@ impl Engine {
                 self.schedule(Duration::from_millis(100), Task::Reconcile);
                 self.schedule(Duration::from_millis(150), Task::Status);
             }
-            Event::Paused(app) | Event::Resumed(app) => {
-                log(format!("{app}: suspended/resumed by Lomiri"));
+            Event::Paused(ref app) | Event::Resumed(ref app) => {
+                let what = if matches!(ev, Event::Paused(_)) { "suspended (SIGSTOP)" } else { "resumed (SIGCONT)" };
+                log(format!("{app}: {what} by Lomiri"));
                 // lomiri-app-launch just wrote 900 / 100: put our values back.
                 self.schedule(Duration::from_millis(50), Task::Reconcile);
                 self.schedule(Duration::from_millis(300), Task::Status);
@@ -449,7 +450,7 @@ impl Engine {
         let Some(unit) = self.apps().into_iter().find(|u| u.app_id == app) else { return };
         let mut files = Vec::new();
         for pid in procs::pids(&unit.cgroup) {
-            for f in procs::mapped_files(pid) {
+            for f in procs::mapped_files(pid).into_iter().chain(procs::open_files(pid)) {
                 if !files.contains(&f) {
                     files.push(f);
                 }

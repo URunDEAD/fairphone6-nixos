@@ -63,7 +63,7 @@ for mode in "$@"; do
       echo "$app prelaunch: focused after hidden launch: $(cat "$XDG_RUNTIME_DIR/fp6-app-ready/focused" 2>/dev/null)" | tee -a "$out/results.txt" ;;
     resume)
       running "$app" || { timeout 25 "$LAL/lomiri-app-launch" "$app" >/dev/null 2>&1; sleep 12; }
-      timeout 25 "$LAL/lomiri-app-launch" "$OTHER" >/dev/null 2>&1; sleep 6 ;;
+      timeout 25 "$LAL/lomiri-app-launch" "$OTHER" >/dev/null 2>&1; sleep "${RESUME_WAIT:-6}" ;;
   esac
   d=$(unit_dir "$app")
   frozen=-

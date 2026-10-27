@@ -122,6 +122,7 @@ fn main() {
             for u in procs::scan(&slice).into_iter().filter(|u| u.app_id == arg(1)) {
                 for pid in procs::pids(&u.cgroup) {
                     files.extend(procs::mapped_files(pid));
+                    files.extend(procs::open_files(pid));
                 }
             }
             match preload::learn(&arg(1), &files) {

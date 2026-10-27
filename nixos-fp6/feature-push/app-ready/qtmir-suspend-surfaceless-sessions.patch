@@ -1,0 +1,33 @@
+FP6 app-ready: a helper connection without a surface does not block suspension.
+
+Morph (Qt 6 + QtWebEngine) opens a second Wayland connection that never
+creates a surface. Its qtmir Session stays "Starting", and since the combined
+state of several sessions is the most active one, the application never
+reaches "Suspended": it sits in SuspendingWaitSession and lomiri-app-launch
+is never asked to pause it. Ignore surfaceless Starting sessions as long as
+another session of the app has had a surface.
+--- a/src/modules/QtMir/Application/application.cpp
++++ b/src/modules/QtMir/Application/application.cpp
+@@ -765,8 +765,22 @@
+         return m_sessions[0]->state();
+     }
+ 
++    bool anyHadSurface = false;
++    for (auto session : m_sessions) {
++        if (session->hadSurface()) {
++            anyHadSurface = true;
++            break;
++        }
++    }
++
+     SessionInterface::State combinedState = SessionInterface::Stopped;
+     for (auto session : m_sessions) {
++        // FP6 app-ready: a helper connection that never shows a surface (Morph's
++        // QtWebEngine) must not keep the app "Starting" and block suspension.
++        if (anyHadSurface && !session->hadSurface()
++                && session->state() == SessionInterface::Starting) {
++            continue;
++        }
+         if (session->state() > combinedState) {
+             combinedState = session->state();
+         }

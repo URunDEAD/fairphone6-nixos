@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Undo after-setup.sh: daemon stopped, settings back to defaults, zram off.
+# Undo after-setup.sh: every com.fairphone6.app-ready key back to its default
+# (lists empty). zram and the service stay as the system configures them.
 here=$(dirname "$(readlink -f "$0")")
-asroot() { SUDO_ASKPASS=/home/user/fp6-install/sudo-askpass sudo -A -p "" "$@"; }
 "$here/ar-test.sh" reset >/dev/null
-"$here/ar-test.sh" stop
-asroot "$here/zram-live.sh" off | head -2
+"$here/ar-test.sh" gs get com.fairphone6.app-ready keep-ready

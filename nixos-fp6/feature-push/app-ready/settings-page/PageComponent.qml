@@ -223,8 +223,8 @@ ItemPage {
             OptionSelector {
                 objectName: "budgetSelector"
                 anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
-                readonly property var values: [150, 300, 600]
-                model: [i18n.tr("150 MB"), i18n.tr("300 MB"), i18n.tr("600 MB")]
+                readonly property var values: [200, 400, 800]
+                model: [i18n.tr("200 MB"), i18n.tr("400 MB"), i18n.tr("800 MB")]
                 selectedIndex: Math.max(0, values.indexOf(gs.preloadBudgetMb))
                 onDelegateClicked: gs.preloadBudgetMb = values[index]
             }

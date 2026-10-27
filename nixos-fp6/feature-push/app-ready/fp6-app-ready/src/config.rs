@@ -26,7 +26,7 @@ impl Default for Config {
             prelaunch: Vec::new(),
             preload: Vec::new(),
             freeze_background: false,
-            preload_budget_mb: 300,
+            preload_budget_mb: 400,
             preload_interval_min: 120,
             mlock_mb: 0,
             zram_enabled: true,

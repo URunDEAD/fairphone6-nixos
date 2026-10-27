@@ -183,6 +183,27 @@ pub fn mapped_files(pid: i32) -> Vec<PathBuf> {
     out
 }
 
+/// Regular files a process holds open (databases, archives read with read(),
+/// e.g. Firefox's omni.ja and profile SQLite files, which /proc/<pid>/maps misses).
+pub fn open_files(pid: i32) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(format!("/proc/{pid}/fd")) else { return Vec::new() };
+    let mut out: Vec<PathBuf> = Vec::new();
+    for e in entries.flatten() {
+        let Ok(target) = std::fs::read_link(e.path()) else { continue };
+        let t = target.to_string_lossy();
+        if !t.starts_with('/') || t.ends_with("(deleted)") {
+            continue;
+        }
+        if ["/dev/", "/proc/", "/sys/", "/run/", "/tmp/", "/memfd:"].iter().any(|p| t.starts_with(p)) {
+            continue;
+        }
+        if target.is_file() && !out.contains(&target) {
+            out.push(target);
+        }
+    }
+    out
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct MemInfo {
     pub total: u64,
@@ -281,6 +302,21 @@ mod tests {
         assert_eq!(m.available, 5000000 * 1024);
         let (s, f) = psi_avg10("some avg10=1.50 avg60=0.00 avg300=0.00 total=10\nfull avg10=0.25 avg60=0.00 avg300=0.00 total=3\n");
         assert_eq!((s, f), (1.5, 0.25));
+    }
+
+    #[test]
+    fn own_open_files() {
+        let f = std::env::temp_dir().join(format!("fp6-app-ready-fd-{}", std::process::id()));
+        std::fs::write(&f, b"x").unwrap();
+        let _keep = std::fs::File::open(&f).unwrap();
+        let files = open_files(std::process::id() as i32);
+        assert!(files.iter().all(|p| p.is_absolute() && p.is_file()));
+        // /tmp and /run are skipped on purpose (scratch files are not worth
+        // preloading); the Nix build sandbox's temp dir is /build.
+        let canon = std::fs::canonicalize(&f).unwrap();
+        let skipped = ["/tmp/", "/run/"].iter().any(|p| canon.starts_with(p));
+        assert_eq!(files.contains(&canon), !skipped);
+        std::fs::remove_file(&f).unwrap();
     }
 
     #[test]

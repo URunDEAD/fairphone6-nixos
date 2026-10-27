@@ -72,7 +72,7 @@ in {
 
   config = lib.mkIf cfg.enable {
     environment.systemPackages = [ package ];
-    system.build.fp6-app-ready = { inherit package lssPlugin schema; lomiri = pkgs.lomiri.lomiri; };
+    system.build.fp6-app-ready = { inherit package lssPlugin schema; inherit (pkgs.lomiri) lomiri qtmir; };
 
     environment.etc = lib.mapAttrs' (app: paths: lib.nameValuePair "fp6-app-ready/preload.d/${app}.list" {
       text = lib.concatMapStrings (p: "${p}\n") paths;
@@ -85,6 +85,11 @@ in {
           # Stage.qml reads com.fairphone6.app-ready: wrapGAppsHook adds the schema dir.
           buildInputs = (old.buildInputs or [ ]) ++ [ schema ];
           passthru = (old.passthru or { }) // { fp6AppReady = true; };
+        });
+        # Morph's surfaceless QtWebEngine connection kept it from ever being
+        # suspended (stuck in SuspendingWaitSession, seen live 2026-10-27).
+        qtmir = lprev.qtmir.overrideAttrs (old: {
+          patches = (old.patches or [ ]) ++ [ ./qtmir-suspend-surfaceless-sessions.patch ];
         });
         lomiri-system-settings = lprev.lomiri-system-settings.override (old: {
           plugins = (old.plugins or [ ]) ++ [ lssPlugin ];
@@ -124,14 +129,43 @@ in {
       "vm.page-cluster" = lib.mkDefault 0;
     };
 
-    # Settings > App Launch zram switch: fp6-app-ready (the phone user's
-    # service, not in a logind session) may start/stop exactly the zram swap.
+    # Settings > App Launch zram switch. Not by stopping dev-zram0.swap: its
+    # BindsTo'd systemd-zram-setup@zram0 then resets the device right after
+    # swapoff, which fails with EBUSY (udev still probes it) and leaves the
+    # setup unit failed, so a later start cannot configure the device again
+    # (seen live 2026-10-27). These two units only swapoff / swapon the
+    # configured device; fp6-app-ready (the phone user's service, not in a
+    # logind session) may start exactly these two.
+    systemd.services.fp6-zram-off = lib.mkIf cfg.zram.enable {
+      description = "Compressed swap off (Settings > App Launch)";
+      # swapoff reads every swapped page back into RAM.
+      serviceConfig = { Type = "oneshot"; TimeoutStartSec = 300; };
+      path = [ pkgs.util-linux pkgs.gnugrep ];
+      script = ''
+        if grep -q '^/dev/zram0 ' /proc/swaps; then swapoff /dev/zram0; fi
+      '';
+    };
+    systemd.services.fp6-zram-on = lib.mkIf cfg.zram.enable {
+      description = "Compressed swap on (Settings > App Launch)";
+      serviceConfig.Type = "oneshot";
+      path = [ pkgs.util-linux pkgs.gnugrep pkgs.coreutils config.systemd.package ];
+      script = ''
+        grep -q '^/dev/zram0 ' /proc/swaps && exit 0
+        if [ "$(cat /sys/block/zram0/disksize)" != 0 ]; then
+          swapon -p 100 /dev/zram0
+        else
+          systemctl reset-failed systemd-zram-setup@zram0.service || true
+          systemctl start dev-zram0.swap
+        fi
+      '';
+    };
     security.polkit.extraConfig = lib.mkIf cfg.zram.enable ''
       polkit.addRule(function(action, subject) {
         if (action.id == "org.freedesktop.systemd1.manage-units" &&
             subject.user == "${user}" &&
-            action.lookup("unit") == "dev-zram0.swap" &&
-            (action.lookup("verb") == "start" || action.lookup("verb") == "stop")) {
+            (action.lookup("unit") == "fp6-zram-on.service" ||
+             action.lookup("unit") == "fp6-zram-off.service") &&
+            action.lookup("verb") == "start") {
           return polkit.Result.YES;
         }
       });
