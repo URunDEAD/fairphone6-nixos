@@ -38,3 +38,16 @@ passphrase = pass \|\| ""
 # ota: synthetic /proc/net/tcp and tcp6 tables (all-zero addresses, port 22) in a parser test
 let t = "  sl  local_address rem_address   st tx_queue
 let t6 = "  sl  local_address                         remote_address
+# wifi-qr: SSID/password variables and the "Test;Net" fixture, no real values
+m_ssid = (s;|QStringLiteral\("Test;Net"\);|QString::fromUtf8\(nm::ssidOf\(s\)\);|ssid;)
+const QString ssid = QString::fromUtf8\(reinterpret_cast<const char \*>\(n\.ssid\)
+m_password = QString::fromUtf8\(reinterpret_cast<const char \*>\(n\.password\)
+password: rest\.first\(\)\.map
+let ssid = "Test;Net";
+pub password: String,
+let mut ssid = None;
+let mut password = String::new\(\);
+"S" => ssid = Some\(v\),
+let ssid = ssid\.filter\(
+WifiNetwork \{ ssid: ssid\.into\(\), security, password: password\.into\(\)
+showPassword
