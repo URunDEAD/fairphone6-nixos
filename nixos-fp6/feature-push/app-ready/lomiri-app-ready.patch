@@ -1,9 +1,21 @@
+--- a/plugins/WindowManager/CMakeLists.txt
++++ b/plugins/WindowManager/CMakeLists.txt
+@@ -39,7 +39,7 @@
+ add_library(windowmanager-qml SHARED ${WINDOWMANAGER_SRC})
+ 
+ target_link_libraries(windowmanager-qml
+-    Qt5::Qml Qt5::Quick Qt5::Gui
++    Qt5::Qml Qt5::Quick Qt5::Gui Qt5::DBus
+     ${QTMIRSERVER_LDFLAGS}
+     lomiri-private
+ )
 --- a/plugins/WindowManager/TopLevelWindowModel.cpp
 +++ b/plugins/WindowManager/TopLevelWindowModel.cpp
-@@ -26,7 +26,14 @@
+@@ -26,7 +26,15 @@
  #include <lomiri/shell/application/SurfaceManagerInterface.h>
  
  // Qt
++#include <QDBusConnection>
 +#include <QDateTime>
  #include <QDebug>
 +#include <QDir>
@@ -15,8 +27,49 @@
  
  // local
  #include "Window.h"
-@@ -58,6 +65,65 @@
+@@ -56,8 +64,106 @@
+     connect(m_nullWindow, &Window::focusedChanged, this, [this] {
+         Q_EMIT rootFocusChanged();
      });
++
++    // FP6 app-ready: a second start of a running app (url-dispatcher link,
++    // another app, the launcher) arrives as lomiri-app-launch's resume
++    // request, then Open(urls) to the app, then its focus request. qtmir
++    // turns both requests into the window's focusRequested, which a
++    // background-launched window ignores (it would otherwise raise itself
++    // at startup), so a prelaunched, frozen app never got the link until the
++    // user tapped it. These requests come from a start, not from the app:
++    // activate the window, which also resumes the app.
++    QDBusConnection bus = QDBusConnection::sessionBus();
++    for (const char *member : {"LomiriResumeRequest", "LomiriFocusRequest"}) {
++        if (!bus.connect(QString(), QStringLiteral("/"), QStringLiteral("com.lomiri.LomiriAppLaunch"),
++                         QLatin1String(member), this, SLOT(fp6OnLaunchRequest(QString,QString)))) {
++            qWarning().noquote() << "fp6-app-ready: cannot watch" << member;
++        }
++    }
++}
++
++void TopLevelWindowModel::fp6OnLaunchRequest(const QString &appId, const QString &instanceId)
++{
++    Q_UNUSED(instanceId);
++    for (const auto &entry : m_windowModel) {
++        if (!entry.window || !entry.application || !entry.window->fp6Background()) {
++            continue;
++        }
++        // Click ids: the request carries pkg_app_version, Lomiri pkg_app.
++        const QString id = entry.application->appId();
++        if (id.isEmpty() || (appId != id && !appId.startsWith(id + QLatin1Char('_')))) {
++            continue;
++        }
++        qInfo().noquote() << "fp6-app-ready: start request" << id << "- activating its background window";
++        QPointer<Window> window = entry.window;
++        QMetaObject::invokeMethod(this, [window]() {
++            if (window && window->fp6Background()) {
++                window->activate();
++            }
++        }, Qt::QueuedConnection);
++        return;
++    }
  }
  
 +// FP6 app-ready (nixos-fp6/feature-push/app-ready): background launches and
@@ -81,7 +134,7 @@
  TopLevelWindowModel::~TopLevelWindowModel()
  {
  }
-@@ -144,6 +210,7 @@
+@@ -144,6 +250,7 @@
  void TopLevelWindowModel::addApplication(lomiriapi::ApplicationInfoInterface *application)
  {
      DEBUG_MSG << "(" << application->appId() << ")";
@@ -89,7 +142,7 @@
  
      if (application->state() != lomiriapi::ApplicationInfoInterface::Stopped && application->surfaceList()->count() == 0) {
          prependPlaceholder(application);
-@@ -182,6 +249,14 @@
+@@ -182,6 +289,14 @@
  
      connectSurface(surface);
      m_allSurfaces.insert(surface);
@@ -104,7 +157,7 @@
  
      bool filledPlaceholder = false;
      for (int i = 0; i < m_windowModel.count() && !filledPlaceholder; ++i) {
-@@ -204,6 +279,7 @@
+@@ -204,6 +319,7 @@
  {
  
      Window *window = createWindow(surface);
@@ -112,7 +165,7 @@
  
      connect(window, &Window::stateChanged, this, [=](Mir::State newState) {
          if (newState == Mir::HiddenState) {
-@@ -219,6 +295,25 @@
+@@ -219,6 +335,25 @@
          }
      });
  
@@ -138,7 +191,7 @@
      prependWindow(window, application);
  
      // Activate the newly-prepended window.
-@@ -256,6 +351,29 @@
+@@ -256,6 +391,29 @@
      });
  
      connect(window, &Window::focusedChanged, this, [this, window](bool focused) {
@@ -168,7 +221,7 @@
          if (window->surface()) {
              if (focused) {
                  setFocusedWindow(window);
-@@ -748,6 +866,16 @@
+@@ -748,6 +906,16 @@
          m_focusedWindow = window;
          Q_EMIT focusedWindowChanged(m_focusedWindow);
  
@@ -185,7 +238,7 @@
          if (m_previousWindow && m_previousWindow->focused() && !m_previousWindow->surface()) {
              // do it ourselves. miral doesn't know about this window
              m_previousWindow->setFocused(false);
-@@ -818,7 +946,7 @@
+@@ -818,7 +986,7 @@
  
      for (int i = 0; i < m_windowModel.count(); ++i) {
          Window *window = m_windowModel[i].window;
@@ -194,6 +247,18 @@
              window->activate();
              break;
          }
+--- a/plugins/WindowManager/TopLevelWindowModel.h
++++ b/plugins/WindowManager/TopLevelWindowModel.h
+@@ -220,6 +220,9 @@
+     void onModificationsStarted();
+     void onModificationsEnded();
+ 
++    // FP6 app-ready: lomiri-app-launch LomiriResumeRequest / LomiriFocusRequest.
++    void fp6OnLaunchRequest(const QString &appId, const QString &instanceId);
++
+ private:
+     void doRaiseId(int id);
+     int generateId();
 --- a/plugins/WindowManager/Window.cpp
 +++ b/plugins/WindowManager/Window.cpp
 @@ -137,6 +137,7 @@

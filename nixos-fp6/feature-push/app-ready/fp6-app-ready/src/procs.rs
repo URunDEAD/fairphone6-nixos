@@ -128,6 +128,12 @@ pub fn all_stopped(pids: &[i32]) -> bool {
     !pids.is_empty() && pids.iter().all(|p| matches!(state(*p), Some('T') | Some('t')))
 }
 
+/// SIGCONT every process (the activation fallback, see Engine::launch_check).
+/// Returns how many were signalled.
+pub fn resume(pids: &[i32]) -> usize {
+    pids.iter().filter(|&&pid| pid > 0 && unsafe { libc::kill(pid, libc::SIGCONT) } == 0).count()
+}
+
 pub fn oom_adj(pid: i32) -> Option<i32> {
     std::fs::read_to_string(format!("/proc/{pid}/oom_score_adj")).ok()?.trim().parse().ok()
 }
@@ -317,6 +323,30 @@ mod tests {
         let skipped = ["/tmp/", "/run/"].iter().any(|p| canon.starts_with(p));
         assert_eq!(files.contains(&canon), !skipped);
         std::fs::remove_file(&f).unwrap();
+    }
+
+    #[test]
+    fn stopped_child_is_resumed() {
+        let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let pid = child.id() as i32;
+        let wait_state = |want_stopped: bool| {
+            for _ in 0..200 {
+                if all_stopped(&[pid]) == want_stopped {
+                    return true;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            false
+        };
+        assert!(wait_state(false));
+        unsafe { libc::kill(pid, libc::SIGSTOP) };
+        assert!(wait_state(true), "child did not stop");
+        assert_eq!(resume(&[pid]), 1);
+        assert!(wait_state(false), "child still stopped after SIGCONT");
+        assert!(!all_stopped(&[]));
+        assert_eq!(resume(&[]), 0);
+        let _ = child.kill();
+        let _ = child.wait();
     }
 
     #[test]

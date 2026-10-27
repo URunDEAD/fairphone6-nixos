@@ -12,6 +12,14 @@
 #    window open unfocused at the bottom of the stack and off screen.
 #    Lomiri writes the focused app id to $XDG_RUNTIME_DIR/fp6-app-ready/focused
 #    and logs "fp6-app-ready: added / first-frame / focus" lines.
+#    Links into a kept-ready app: lomiri-app-launch's second start of a
+#    running app (url-dispatcher, another app) is LomiriResumeRequest ->
+#    Open(urls) -> LomiriFocusRequest. A frozen app cannot answer Open, and
+#    qtmir's focus request was ignored for a still-background (prelaunched)
+#    window, so the link waited for a tap. The patched TopLevelWindowModel
+#    activates the background window on either request (which resumes it);
+#    fp6-app-ready SIGCONTs an app still fully stopped 1.5 s after a resume
+#    request as the fallback ("still frozen ... after a start request").
 #  * fp6-app-ready (Rust, user service): oom_score_adj by state (foreground
 #    300 > shell 200; kept ready 600; background 800/900), PSI-triggered
 #    low-memory killer (background apps, unpinned first, never the focused

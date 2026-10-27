@@ -13,7 +13,7 @@ use crate::config::Config;
 use crate::policy::{self, Candidate};
 use crate::preload::{self, Locked, Plan};
 use crate::procs::{self, AppUnit};
-use crate::watch::{Command, Event};
+use crate::watch::{launch_matches as watch_launch_matches, Command, Event};
 use crate::{log, prelaunch, zram};
 
 const SETTINGS_APP: &str = "lomiri-system-settings";
@@ -27,7 +27,17 @@ enum Task {
     Preload,
     Learn(String),
     Zram,
+    /// A running app was started again (lomiri-app-launch resume request):
+    /// make sure it is not left frozen.
+    LaunchCheck(String),
 }
+
+/// How long the patched Lomiri gets to resume a frozen app after a
+/// lomiri-app-launch resume request (it normally does within ~100 ms, by
+/// focusing the app's window) before fp6-app-ready sends SIGCONT itself.
+/// lomiri-app-launch waits up to 25 s (the D-Bus call timeout) for the
+/// frozen app to answer Open with the link, and only then asks for focus.
+const LAUNCH_RESUME_GRACE: Duration = Duration::from_millis(1500);
 
 #[derive(Default)]
 struct PreloadState {
@@ -219,6 +229,10 @@ impl Engine {
                 self.schedule(Duration::from_millis(50), Task::Reconcile);
                 self.schedule(Duration::from_millis(300), Task::Status);
             }
+            Event::LaunchRequest(app) => {
+                log(format!("{app}: start request for the running app (link or launcher)"));
+                self.schedule(LAUNCH_RESUME_GRACE, Task::LaunchCheck(app));
+            }
             Event::Units => {
                 self.schedule(Duration::from_millis(800), Task::Reconcile);
                 self.schedule(Duration::from_secs(4), Task::Reconcile);
@@ -269,6 +283,12 @@ impl Engine {
             Task::Prelaunch => self.login_prelaunch(),
             Task::Preload => self.preload_all(),
             Task::Learn(app) => self.learn(&app),
+            Task::LaunchCheck(app) => {
+                if self.launch_check(&app) > 0 {
+                    self.schedule(Duration::from_millis(50), Task::Reconcile);
+                    self.schedule(Duration::from_millis(300), Task::Status);
+                }
+            }
             Task::Zram => {
                 if let Some(sys) = &self.system {
                     zram::apply(sys, self.cfg.zram_enabled);
@@ -342,6 +362,29 @@ impl Engine {
         }
         self.schedule(Duration::from_millis(1500), Task::PressureCheck);
         self.schedule(Duration::from_millis(500), Task::Status);
+    }
+
+    /// Fallback for an activation Lomiri did not act on (e.g. while the
+    /// greeter is shown, or a window state the Lomiri patch does not cover):
+    /// if every process of the requested app is still stopped, SIGCONT it so
+    /// that it can take the link; Lomiri focuses it on lomiri-app-launch's
+    /// following focus request. Returns the number of processes resumed.
+    fn launch_check(&mut self, requested: &str) -> usize {
+        let mut resumed = 0;
+        for unit in self.apps().iter().filter(|u| watch_launch_matches(&u.app_id, requested)) {
+            let pids = procs::pids(&unit.cgroup);
+            if !procs::all_stopped(&pids) {
+                continue;
+            }
+            let n = procs::resume(&pids);
+            log(format!(
+                "{}: still frozen {} ms after a start request: SIGCONT ({n} processes)",
+                unit.app_id,
+                LAUNCH_RESUME_GRACE.as_millis()
+            ));
+            resumed += n;
+        }
+        resumed
     }
 
     fn running(&self, app: &str) -> bool {
@@ -549,6 +592,55 @@ pub fn status_path(runtime: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A fake app.slice with one lomiri-app-launch unit whose cgroup.procs
+    /// lists a stopped child: a start request resumes it; a running app and
+    /// an unrelated app are left alone.
+    #[test]
+    fn launch_request_resumes_frozen_app() {
+        let tmp = std::env::temp_dir().join(format!("fp6-app-ready-launch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let unit = tmp.join("app.slice/lomiri-app-launch--application-legacy--morph-browser--.service");
+        let other = tmp.join("app.slice/lomiri-app-launch--application-legacy--firefox--.service");
+        std::fs::create_dir_all(&unit).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let mut other_child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let pid = child.id() as i32;
+        let other_pid = other_child.id() as i32;
+        std::fs::write(unit.join("cgroup.procs"), format!("{pid}\n")).unwrap();
+        std::fs::write(other.join("cgroup.procs"), format!("{other_pid}\n")).unwrap();
+        let settle = |p: i32, stopped: bool| {
+            for _ in 0..200 {
+                if procs::all_stopped(&[p]) == stopped {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            false
+        };
+        unsafe {
+            libc::kill(pid, libc::SIGSTOP);
+            libc::kill(other_pid, libc::SIGSTOP);
+        }
+        assert!(settle(pid, true) && settle(other_pid, true));
+
+        let mut e = Engine::new(Config::default(), tmp.join("run"), None);
+        e.slice = tmp.join("app.slice");
+        // Not running under that id: nothing happens.
+        assert_eq!(e.launch_check("morph"), 0);
+        assert_eq!(e.launch_check("morph-browser"), 1);
+        assert!(settle(pid, false), "morph-browser still stopped");
+        assert!(procs::all_stopped(&[other_pid]), "firefox must stay frozen");
+        // Already running: no second SIGCONT.
+        assert_eq!(e.launch_check("morph-browser"), 0);
+
+        for c in [&mut child, &mut other_child] {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
 
     #[test]
     fn json_escape() {

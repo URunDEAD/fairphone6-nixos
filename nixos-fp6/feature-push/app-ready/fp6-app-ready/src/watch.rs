@@ -16,6 +16,9 @@ pub enum Event {
     Focus(String),
     Paused(String),
     Resumed(String),
+    /// LomiriResumeRequest from lomiri-app-launch: the app is already running
+    /// and is being started again (url-dispatcher link, launcher, another app).
+    LaunchRequest(String),
     Units,
     Pressure,
     /// Battery saver on/off (/run/fp6-battery/saver, battery agent).
@@ -115,8 +118,9 @@ pub fn spawn_focus(dir: PathBuf, tx: Sender<Event>) {
         .expect("focus thread");
 }
 
-/// com.lomiri.LomiriAppLaunch ApplicationPaused/Resumed (s appid, s instance, at pids)
-/// and systemd user manager UnitNew/UnitRemoved for lomiri-app-launch units.
+/// com.lomiri.LomiriAppLaunch ApplicationPaused/Resumed (s appid, s instance, at pids),
+/// LomiriResumeRequest (s appid, s instance) and systemd user manager
+/// UnitNew/UnitRemoved for lomiri-app-launch units.
 pub fn spawn_bus_signals(session: zbus::blocking::Connection, tx: Sender<Event>) {
     use zbus::blocking::MessageIterator;
     use zbus::MatchRule;
@@ -137,6 +141,29 @@ pub fn spawn_bus_signals(session: zbus::blocking::Connection, tx: Sender<Event>)
                 let app = short_app_id(&app);
                 let ev = if member == "ApplicationPaused" { Event::Paused(app) } else { Event::Resumed(app) };
                 if tx.send(ev).is_err() {
+                    return;
+                }
+            }
+        });
+    }
+    // Second start of a running app (lomiri-app-launch second_exec: resume
+    // request, then org.freedesktop.Application.Open with the URLs, then the
+    // focus request). A frozen app cannot answer Open until it is resumed.
+    {
+        let rule = MatchRule::builder()
+            .msg_type(zbus::message::Type::Signal)
+            .interface("com.lomiri.LomiriAppLaunch")
+            .and_then(|b| b.member("LomiriResumeRequest"))
+            .expect("match rule")
+            .build();
+        let it = MessageIterator::for_match_rule(rule, &session, Some(64));
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            let Ok(it) = it else { return log("cannot watch LomiriResumeRequest") };
+            for msg in it.flatten() {
+                let body = msg.body();
+                let Ok((app, _inst)) = body.deserialize::<(String, String)>() else { continue };
+                if !app.is_empty() && tx.send(Event::LaunchRequest(app)).is_err() {
                     return;
                 }
             }
@@ -235,9 +262,34 @@ pub fn short_app_id(app: &str) -> String {
     app.split('_').next().unwrap_or(app).to_string()
 }
 
+/// Does the running unit's app id (from the unit name: "morph-browser",
+/// "pkg_app_1.0") belong to the app id of a lomiri-app-launch request
+/// (full "pkg_app_version", or a short "pkg_app")?
+pub fn launch_matches(unit_app: &str, requested: &str) -> bool {
+    if unit_app.is_empty() || requested.is_empty() {
+        return false;
+    }
+    let prefixed = |long: &str, short: &str| long.len() > short.len() && long.starts_with(short) && long.as_bytes()[short.len()] == b'_';
+    unit_app == requested || prefixed(unit_app, requested) || prefixed(requested, unit_app)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn launch_request_ids() {
+        assert!(launch_matches("morph-browser", "morph-browser"));
+        assert!(launch_matches("firefox", "firefox"));
+        assert!(!launch_matches("firefox", "firefox-esr"));
+        assert!(!launch_matches("morph-browser", "morph"));
+        assert!(launch_matches("com.ubuntu.music_music_3.0", "com.ubuntu.music_music_3.0"));
+        assert!(launch_matches("com.ubuntu.music_music_3.0", "com.ubuntu.music_music"));
+        assert!(launch_matches("com.ubuntu.music_music", "com.ubuntu.music_music_3.0"));
+        assert!(!launch_matches("com.ubuntu.music_music_3.0", "com.ubuntu.music_musicx_3.0"));
+        assert!(!launch_matches("", ""));
+        assert!(!launch_matches("morph-browser", ""));
+    }
 
     #[test]
     fn short_ids() {
