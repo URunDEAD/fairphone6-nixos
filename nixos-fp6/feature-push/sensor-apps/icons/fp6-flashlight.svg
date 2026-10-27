@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256"><rect width="256" height="256" fill="url(#g)"/><defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#34495e"/><stop offset="1" stop-color="#17202a"/></linearGradient></defs>
+<polygon points="98,40 158,40 210,232 46,232" fill="#ffd75e" fill-opacity="0.35"/>
+<rect x="98" y="36" width="60" height="22" rx="4" fill="#ffffff"/>
+<path d="M 92 58 L 164 58 L 152 110 L 104 110 Z" fill="#ecf0f1"/>
+<rect x="106" y="110" width="44" height="98" rx="8" fill="#ecf0f1"/>
+<rect x="120" y="134" width="16" height="30" rx="4" fill="#f39c12"/></svg>
