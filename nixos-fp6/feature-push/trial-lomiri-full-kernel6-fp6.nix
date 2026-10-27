@@ -38,6 +38,12 @@ let
       # rewrite the running boot partition with a backup, no automatic rollback.
       # results/feature-push-20261024/ota/README.md
       ({ ... }: { imports = [ ./ota/ota-fp6.nix ]; hardware.fairphone6.ota.enable = true; hardware.fairphone6.ota.allowSlotSwitch = false; })
+      # Call recording: fp6-callrec user service + dialer Record button,
+      # settings and Recordings list. Recording stays OFF until the user
+      # picks a mode in Phone > Settings > Call recording. CS in-call record
+      # (csIncallRecord) stays off until cs-call-audio works.
+      # results/feature-push-20261024/call-recording/README.md
+      ({ ... }: { imports = [ ./call-recording/call-recording-fp6.nix ]; hardware.fairphone6.callRecording.enable = true; })
       # App switcher: close all apps (drag right past the first app, or Clear all);
       # Settings > Gesture Shortcuts > App switcher.
       # results/feature-push-20261024/spread-close-all/README.md

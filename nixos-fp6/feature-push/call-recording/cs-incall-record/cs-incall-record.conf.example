@@ -1,0 +1,68 @@
+# fp6-callrec: circuit-switched (CS) in-call record source.
+# Proposed /etc/fp6-callrec/cs-incall-record.conf. Off by default.
+# Only the keys that fp6-callrec's CsConfig parser knows are used
+# (enable card pcm channels rate uplink_channel downlink_channel
+# downlink_pcm control off_control). Everything else is a comment.
+#
+# Needs: cs-call-audio's voice path running (fp6-csvoiced has opened and
+# started VoiceMMode1 Playback + Capture, and 'VoiceMMode1 Mixer
+# TX_CODEC_DMA_TX_3 Voice' = 1), a topology built with
+# voice-graph-with-incall.nix, and kernel candidates 0005-0008.
+# Open the record PCM only AFTER the voice PCMs are started, and close it
+# BEFORE fp6-csvoiced stops them. The record graph's GRAPH_OPEN connects to
+# the two voice splitters, so both voice graphs must already be open.
+
+enable = false
+card = F6
+
+# Record FE from the topology fragment ("MultiMedia3 Capture (*)" in
+# /proc/asound/pcm, device 2 on card F6). Matched as a word-boundary prefix.
+pcm = MultiMedia3
+
+# Stereo build (FP6_INCALL_RECORD_DIR = 4, the default): one stereo stream,
+# channel 0 (L) = uplink (local mic, after TX mixing, before the encoder),
+# channel 1 (R) = downlink (far end, after the decoder + stream PP).
+# These come from the stock MUX_DEMUX table for UL_DL_Stereo: input port 2
+# (uplink) -> out ch 0, input port 4 (downlink) -> out ch 1.
+# The front end only offers S16_LE at 48000 Hz, with 1 or 2 channels.
+# Opening it with channels = 1 gives an UL+DL mono mix (MFC 0x4086
+# downmixes), but then the two sides cannot be told apart.
+channels = 2
+rate = 48000
+uplink_channel = 0
+downlink_channel = 1
+
+# Routing switch on the record FE's mixer. It is DAPM only: it gives the
+# FE its back end (TX_CODEC_DMA_TX_3, shared with VoiceMMode1 Capture). The
+# DSP connections are made by the record graph's own GRAPH_OPEN.
+control = 'MultiMedia3 Mixer VoiceMMode1 Record' 1
+off_control = 'MultiMedia3 Mixer VoiceMMode1 Record' 0
+
+# Direction tag. PAL sets the record direction at runtime as tag data
+# (TAG_STREAM_MUX_DEMUX 0xC0000027, key 0xBD000000 = 1 UL, 2 DL,
+# 3 UL+DL mono, 4 UL+DL stereo). Mainline q6apm has no kcontrol for
+# setting a module param or tag on a running FE, so the direction is fixed
+# when the topology is built (voice-graph-with-incall.nix recordDir; a
+# SET_CFG blob sent at prepare by kernel candidate 0006). With the stereo
+# build the daemon picks or mixes the channels itself, so it never needs a
+# runtime direction. A runtime switch would need a new kernel candidate,
+# for example a per-FE "module param" bytes kcontrol like downstream AGM's
+# "<FE> setParamTag". See NOTES.txt.
+
+# Fallbacks. There is one record FE per topology, so a separate downlink
+# PCM (downlink_pcm) is not offered.
+#  - If the stereo mux config is rejected on the device: rebuild with
+#    recordDir = 3 (the same table in this ACDB) or 1 / 2.
+#  - For a mono build (recordDir 1 or 2), use channels = 1,
+#    uplink_channel = 0 and downlink_channel = none. The file then holds
+#    only one side.
+
+# In-call music / announcement into the uplink (experimental, only when
+# the topology is built with music = true). fp6-callrec has no keys for it
+# yet. Proposed:
+#   announce_pcm = MultiMedia4          ("MultiMedia4 Playback (*)", S16_LE 48000, 1 channel)
+#   announce_control = 'MultiMedia4 Mixer VoiceMMode1 Uplink' 1
+#   announce_off_control = 'MultiMedia4 Mixer VoiceMMode1 Uplink' 0
+# The tone is mixed into the uplink before the encoder (SAL 0x458d), so the
+# far end hears it and the recording's uplink channel contains it. The local
+# user does not hear it through this path.

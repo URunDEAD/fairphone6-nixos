@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- FP6 call recording (call-recording module). Read by fp6-callrec and the
+     dialer's Call recording / Recordings pages. Recording is never on by
+     default. No ai/ax keys: gsettings-qt aborts on them. -->
+<schemalist gettext-domain="lomiri-dialer-app">
+  <schema id="com.fairphone6.callrecording" path="/com/fairphone6/callrecording/">
+    <key name="mode" type="s">
+      <choices>
+        <choice value="off"/>
+        <choice value="manual"/>
+        <choice value="auto-all"/>
+        <choice value="auto-contacts"/>
+      </choices>
+      <default>'off'</default>
+      <summary>off: no recording; manual: Record button in the call screen; auto-all: every call; auto-contacts: calls with the numbers in auto-contacts</summary>
+    </key>
+    <key name="auto-contacts" type="as">
+      <default>[]</default>
+      <summary>Phone numbers recorded automatically in auto-contacts mode</summary>
+    </key>
+    <key name="format" type="s">
+      <choices>
+        <choice value="flac"/>
+        <choice value="wav"/>
+        <choice value="opus"/>
+      </choices>
+      <default>'flac'</default>
+      <summary>File format of new recordings</summary>
+    </key>
+    <key name="sample-rate" type="i">
+      <range min="0" max="48000"/>
+      <default>0</default>
+      <summary>Recording rate in Hz; 0 = the call's native rate (48000 when unknown)</summary>
+    </key>
+    <key name="announce" type="b">
+      <default>false</default>
+      <summary>Play a short tone into the call (uplink, where possible) when recording starts</summary>
+    </key>
+    <key name="notice-accepted" type="b">
+      <default>false</default>
+      <summary>The first-use notice (recording laws differ by country) was acknowledged</summary>
+    </key>
+    <key name="fallback" type="b">
+      <default>true</default>
+      <summary>When no call tap exists, record the microphone and the speaker output instead (labelled "fallback")</summary>
+    </key>
+    <key name="debug-record-all" type="b">
+      <default>false</default>
+      <summary>Test sessions: record every call, whatever the mode</summary>
+    </key>
+    <key name="directory" type="s">
+      <default>''</default>
+      <summary>Recordings folder; empty = ~/Recordings/Calls</summary>
+    </key>
+  </schema>
+</schemalist>

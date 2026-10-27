@@ -1,0 +1,351 @@
+FP6 CS in-call recording: the AudioReach in-call record graph (and in-call music)
+Staged 2026-10-27. Off by default. UNVERIFIED on hardware: no phone access was used.
+Depends on cs-call-audio (results/feature-push-20261024/cs-call-audio/README.md).
+None of its files were changed.
+
+1. How Qualcomm does it (PAL / AudioReach)
+==========================================
+
+Android -> PAL
+  LineageOS android_hardware_qcom_audio-ar, branch lineage-24.0-caf-sm8450,
+  commit 25c64ed45218ef124659047b441167051cb0cf5c, hal/AudioStream.cpp
+  (Qualcomm's QSSI primary HAL on PAL):
+    AUDIO_SOURCE_VOICE_UPLINK   -> PAL_STREAM_VOICE_CALL_RECORD, INCALL_RECORD_VOICE_UPLINK (1)
+    AUDIO_SOURCE_VOICE_DOWNLINK -> PAL_STREAM_VOICE_CALL_RECORD, INCALL_RECORD_VOICE_DOWNLINK (2)
+    AUDIO_SOURCE_VOICE_CALL     -> PAL_STREAM_VOICE_CALL_RECORD, INCALL_RECORD_VOICE_UPLINK_DOWNLINK (3)
+    (only while a call is active or PAL_DEVICE_IN_TELEPHONY_RX is available;
+    otherwise the stream is DEEP_BUFFER or PROXY)
+    AUDIO_OUTPUT_FLAG_INCALL_MUSIC -> PAL_STREAM_VOICE_CALL_MUSIC
+  Android only lets system components use these sources (permission
+  CAPTURE_AUDIO_OUTPUT):
+  https://developer.android.com/reference/android/media/MediaRecorder.AudioSource
+
+PAL (https://github.com/AudioReach/audioreach-pal @ 09abaa9f7bc8ed2159b9907de9e21cfbbb86e171)
+  - PluginManagerStatic.cpp: VOICE_CALL_RECORD and VOICE_CALL_MUSIC both use
+    StreamInCall (stream/StreamInCall/src/StreamInCall.cpp). StreamInCall
+    creates a session and NO device.
+  - SessionAlsaPcm.cpp allocateFrontEndIds:
+    - VOICE_CALL_RECORD takes a PCM_RECORD_NONTUNNEL front end.
+    - VOICE_CALL_MUSIC takes a PCM_PLAYBACK_NONTUNNEL front end.
+    - Neither has a back end. The FE's "control" mixer is set to "ZERO",
+      AGM's no-device backend (SessionAlsaUtils.cpp: FE_CONTROL "ZERO").
+  - PAL_DEVICE_IN_TELEPHONY_RX is not used by VOICE_CALL_RECORD. It is the
+    RTProxy device for PAL_STREAM_PROXY (device/RTProxy).
+  - Stream key vectors (stock usecaseKvManager*.xml, identical in both files):
+    - VOICE_CALL_RECORD = StreamTX 0xB1000000 = INCALL_RECORD 0xB100000C.
+      There is no device key and no VSID key.
+    - VOICE_CALL_MUSIC = StreamRX 0xA1000000 = INCALL_MUSIC 0xA1000013.
+    - "icmd_plus" (music also played locally) = 0xA100001A + 0xAC000000=0xAC000002.
+  - plugins/configs/qcom/mobile/default/ConfigSessionAlsaPcm/src/ConfigSessionAlsaPcm.cpp,
+    capture path:
+    a. The MFC with TAG_STREAM_MFC_SR is set to the stream format.
+    b. The RAT (tag RAT_RENDER 0xC0000022) gets PARAM_ID_RAT_MEDIA_FORMAT:
+       48000 Hz, 2 channels for UL+DL, 1 channel otherwise ("mux_demux gives
+       only stereo o/p & there is no MFC between mux and RAT").
+    c. session->setConfig(MODULE, tagId), with tagId = INCALL_RECORD_UPLINK (32)
+       / DOWNLINK (33) / UPLINK_DOWNLINK_MONO (34) / UPLINK_DOWNLINK_STEREO (35).
+       For UL+DL the stereo tag is used when the stream has 2 channels.
+  - session/SessionAR/src/PayloadBuilder.cpp maps those tags to a tag key
+    vector on module tag TAG_STREAM_MUX_DEMUX (0xC0000027), key
+    TAG_KEY_MUX_DEMUX_CONFIG (0xBD000000):
+      1 UL_Mono, 2 DL_Mono, 3 UL_DL_Mono, 4 UL_DL_Stereo
+      (MUX_DEMUX_VOICE = 5 and VOIP = 6 are used by in-call music).
+    The graph manager then looks up that tag's data in the ACDB and sends it
+    with SET_CFG.
+  - VOICE_CALL_MUSIC output path:
+    - With local_playback it configures the RX MFC (configureInCallRxMFC).
+    - It sets MUX_DEMUX_VOICE on the stream while a voice call is active. In
+      the FP6 ACDB the music graph has no mux/demux tag, so that call does
+      nothing.
+AudioReach conf (https://github.com/AudioReach/audioreach-conf @ ca03cb5ae752961ad6e73be562b54ed24f5ff0e2),
+  linux/kvh2xml.h:
+  - INCALL_RECORD 0xB100000C, INCALL_MUSIC 0xA1000013
+  - TAG_KEY_MUX_DEMUX_CONFIG 0xBD000000 (values 1-4)
+  - TAG_STREAM_MUX_DEMUX 0xC0000027, RAT_RENDER 0xC0000022
+  - qcom/kvh2xml.h adds the mux/demux values VOICE 5 and VOIP 6.
+AudioReach engine (https://github.com/AudioReach/audioreach-engine @ b38cb85a1a2543aa28aa1b27f4c380cafa5024bb):
+  - Module ids:
+    - mux_demux 0x07001098: PARAM_ID_MUX_DEMUX_CONFIG 0x080011BD (input port/ch ->
+      output port/ch table), PARAM_ID_MUX_DEMUX_OUT_FORMAT 0x080011BE
+    - rate adapted timer 0x07001041: PARAM_ID_RAT_MEDIA_FORMAT 0x080010D0
+    - RT_PROXY_TX 0x0700106B: PARAM_ID_RT_PROXY_CONFIG 0x08001157
+    - simple splitter 0x07001011, EC_SYNC 0x07001028, SAL 0x07001010
+  - INTENT_ID_TIMER_DRIFT_INFO 0x080010C2.
+
+2. Stock FP6 ACDB (read-only, the user's vendor_a copy; raw dumps in the scratch dir only)
+==========================================================================================
+Tools: cs-call-audio/topology/acdb-tools (acdbq, gkvs, dump-graph.py) plus
+acdb-tools/acdbtag.c here (tags from GKV, module tag data, subgraph
+calibration). graphservices @ c3ed9dd4544dc2a36f4e6d54af66105c9e3f18ff.
+gkvs: StreamTX key 0xB1000000 has the key vector B100000C. StreamRX has
+A1000013, A100001A and A100001A+AC000002.
+
+In-call record, GKV B1000000=B100000C:
+  - One subgraph 0xb00000d0: TX, perf 1, scenario 2.
+  - 11 modules in 3 containers: 0xe000011b GC, 0xe0000067 GC (stack 0x400),
+    0xe000011c GC.
+  - Module chain:
+      [TX voice SG 0xb000003f] splitter 0x4560 out 3 -> RT_PROXY_TX 0x429a -> MFC 0x4081 -> MUX_DEMUX 0x4557 in 2
+      [RX voice SG 0xb0000041] splitter 0x4561 out 3 ->                        MFC 0x4085 -> MUX_DEMUX 0x4557 in 4
+      0x4557 -> RAT 0x4654 -> MFC 0x4086 -> LOG 0x4559 -> PCM_CNV 0x455a -> PCM_ENC 0x455b
+             -> LOG 0x455c -> RD_SHARED_MEM_EP 0x455d (host)
+  - Control link: RAT 0x4654 port 0xc0000003 <-> TX mailbox 0x41b0 port
+    0x80000002, intent TIMER_DRIFT_INFO. The record clock follows the voice
+    timing.
+  - The record subgraph's own GRAPH_OPEN data carries the two incoming
+    splitter connections and the control link. The TX voice graph's stock
+    open also lists 0x4560:3 -> 0x429a:2. cs-call-audio's
+    milos-voice-graph.m4 keeps both splitters (2 output ports, port 3 free).
+    It also keeps 0x41b0 and EC_SYNC 0x458c (2 inputs, input 4 free).
+  - Tags on this usecase:
+    - 0xC0000027 mux 0x4557
+    - 0xC0000022 RAT 0x4654
+    - 0xC000000B MFC 0x4086
+    - 0xC0000001 RD_SHMEM
+    - 0xC0000003, 0xC000000F, 0xC0000010 on PCM_CNV / PCM_ENC
+  - Mux/demux tag data (TKV 0xBD000000):
+      1 UL:  in 2 ch0 -> out 1 ch0;  out format 1 ch (C), 16 bit
+      2 DL:  in 4 ch0 -> out 1 ch0;  out format 1 ch
+      3 and 4 are IDENTICAL in this ACDB: in 2 ch0 -> out ch0, in 4 ch0 -> out ch1;
+             out format 2 ch, map L, R
+    So the stereo record has L = uplink and R = downlink.
+  - Calibration:
+    - MFC 0x4081 / 0x4085: 48 kHz, 16 bit, mono.
+    - MFC 0x4086: native (PAL sets it).
+    - RT proxy config: 20, 0, 0, -1.
+    - Log codes 0x19b1 / 0x1536. There is no RAT calibration (PAL supplies it).
+
+In-call music, GKV A1000000=A1000013:
+  - One subgraph 0xb00000d6: RX, perf 2, scenario 1.
+  - Containers: 0xe0000123 GC, 0xe0000124 SC.
+  - Module chain:
+      WR_SHARED_MEM_EP 0x458e -> LOG 0x458f -> PCM_DEC 0x4590 -> PCM_CNV 0x4591 -> LOG 0x4592
+      -> LOG 0x4593 -> VOL_CTRL 0x4594 -> soft pause 0x07001019/0x4595 (TAG_PAUSE)
+      -> MFC 0x4596 -> LOG 0x4597 -> [TX voice SG] MFC 0x458b -> EC_SYNC 0x458c in 4
+      -> SAL 0x458d (mixed with the mic path) -> 0x455f -> splitter 0x4560 -> ... encoder
+  - The music therefore enters the uplink before the record tap at 0x4560.
+    The recording's uplink channel contains the announcement, and the far
+    end hears it. The local user does not.
+  - cs-call-audio dropped MFC 0x458b from its TX graph (it is fed only from
+    outside the graph). Here 0x458b is the last module of the music subgraph.
+  - Stock 0x458b is also fed by 0x430b, a module of another usecase that is
+    not used here.
+
+3. What is staged (this directory)
+==================================
+  gen-incall-m4.py
+    Generator: acdbq/acdbtag dumps -> cs-incall-record.m4. It uses the same
+    data policy as acdb2m4.py: only numeric structure is written.
+    "gen-incall-m4.py --check <milos-voice-graph.m4> <0001 patch>" checks
+    the attach points in cs-call-audio's files.
+  cs-incall-record.m4
+    The generated fragment. Append it to cs-call-audio's FP6_VOICE_GRAPH
+    description (voice-graph-with-incall.nix does this). It needs their
+    0001 topology patch (module_generic.m4 helpers). What it adds:
+      - "MultiMedia3 Capture" (FE/graph id 2): the record subgraph 0xb00000d0.
+        - Own ICR_MODULE macro: AR_MODULE_GENERIC plus extra tokens (log code,
+          PCM interleave).
+        - SET_CFG blobs (kernel 0006):
+          - mux/demux table + RAT media format, by FP6_INCALL_RECORD_DIR
+            (default 4 = stereo)
+          - MFC 0x4081/0x4085 mono 48k
+          - RT proxy config
+        - GRAPH_OPEN extra params (kernel 0008):
+          - MODULE_CONN 0x4560:3 -> 0x429a:2
+          - MODULE_CONN 0x4561:3 -> 0x4085:2
+          - the RAT <-> 0x41b0 control link
+        - Mixer widget "MultiMedia3 Mixer", control "VoiceMMode1 Record".
+          DAPM route: VoiceMMode1 Mixer -> MultiMedia3 Mixer -> record SG.
+      - Under FP6_INCALL_MUSIC: "MultiMedia4 Playback" (id 3), the music
+        subgraph 0xb00000d6 + MFC 0x458b.
+        - Extra open param: MODULE_CONN 0x458b:1 -> 0x458c:4.
+        - Mixer widget "MultiMedia4 Mixer", control "VoiceMMode1 Uplink".
+          DAPM route: MultiMedia4 Mixer -> SEN_MI2S_RX Audio Mixer.
+      Why the DAPM-only mixers:
+        - ASoC DPCM refuses to open an FE that has no back end
+          (soc-pcm.c: "no backend DAIs enabled", -EINVAL).
+        - The DAPM routes give the record FE the TX_CODEC_DMA_TX_3 BE and the
+          music FE the SEN_MI2S_RX BE. Both BEs are already running for
+          VoiceMMode1, so DPCM only shares them.
+        - In mainline audioreach_route_load(), the control's module instance
+          id is set only when the route source is a module widget.
+        - The record route's source is a mixer widget (VoiceMMode1 Mixer).
+          The music mixer widget is never the source of a route to a module.
+        - So audioreach_alloc_graph_pkt() adds no FE<->BE connection
+          (src or dst is 0), and the only DSP connections are the explicit
+          ones above.
+        This is checked against the 7.2 + 0005-0008 source in the scratch tree
+        (topology.c audioreach_route_load / audioreach_connect_sub_graphs,
+        audioreach.c audioreach_populate_graph).
+  voice-graph-with-incall.nix
+    - Attribute graph: their milos-voice-graph.m4 + this fragment, with
+      recordDir (1-4) and music (bool).
+    - Attribute topology: their topology/package.nix with that graph. It is
+      only read, never modified.
+    - Build checked (x86_64, pinned nixpkgs, recordDir 4, music = true):
+      - base-tplg.bin still matches b799d0... (their check)
+      - voice-tplg.bin sha256 bb084bde...c05c
+      - the tplg contains "MultiMedia3 Capture", "MultiMedia4 Playback",
+        "VoiceMMode1 Record" and "VoiceMMode1 Uplink"
+    - recordDir 1/2/3 and music off were also built with alsatplg in the
+      scratch dir. The only warnings are the two pre-existing BE-stream
+      warnings that the base build also has.
+  cs-incall-record.conf.example
+    The proposed /etc/fp6-callrec/cs-incall-record.conf. It uses only keys
+    that fp6-callrec's CsConfig parser accepts (checked).
+  acdb-tools/acdbtag.c
+    ACDB tag / tag-data / calibration query tool (build like acdbq).
+
+Daemon config (summary)
+  - card F6, pcm MultiMedia3 ("MultiMedia3 Capture (*)" in /proc/asound/pcm)
+  - S16_LE, 48000 Hz, 2 channels: ch0 = uplink, ch1 = downlink
+  - before opening:  'MultiMedia3 Mixer VoiceMMode1 Record' = 1
+  - after closing:   'MultiMedia3 Mixer VoiceMMode1 Record' = 0
+  - Note: the tap.rs doc comment uses 'MultiMedia3 Mixer VOICEMMODE1'. The
+    real name in this topology is 'MultiMedia3 Mixer VoiceMMode1 Record'.
+  - Order:
+    1. Open after fp6-csvoiced has started both VoiceMMode1 PCMs, with
+       'VoiceMMode1 Mixer TX_CODEC_DMA_TX_3 Voice' = 1.
+    2. Close before it stops them.
+  - Optional announcement (built with music = true):
+    - pcm MultiMedia4 (playback), S16_LE 48000 mono
+    - 'MultiMedia4 Mixer VoiceMMode1 Uplink' = 1 / 0
+    - fp6-callrec has no config keys for it yet; the .example proposes them.
+
+Direction tag mechanism (kernel)
+  - Mainline q6apm/audioreach has no way to set a module param or tag key
+    vector on a running FE. The only per-module controls are the FE_BE graph
+    mixer and the vol-ctrl kcontrol. There is no TKV or graph-manager layer.
+  - With candidate 0006, a topology SET_CFG blob is sent at prepare. So the
+    direction is fixed at build time, which is enough: the stereo build
+    gives both sides, and fp6-callrec can pick or mix channels.
+  - A runtime switch would need a new candidate: a per-FE bytes kcontrol
+    ("<FE> module param") that forwards APM SET_CFG to the FE's open graph.
+    Its instance ids would be checked against that graph's modules, as in
+    downstream AGM "setParam"/"setParamTag". It is not needed and not staged.
+
+4. Kernel and topology requirements
+===================================
+  - Kernel: cs-call-audio's 0005-0008, unchanged. Record and music need no
+    new kernel candidate:
+    - 0006 sends the mux/RAT/MFC/RT-proxy blobs for any module at media
+      format time (hostful graphs: in q6apm_graph_media_format_pcm order).
+    - 0008 appends the extra GRAPH_OPEN params (MODULE_CONN, CTRL_LINK) to
+      the FE graph's open.
+    - 0005 and 0007 are needed for the voice path itself.
+  - Topology: cs-call-audio's 0001 patch (for module_generic.m4 and the
+    "VoiceMMode1 Mixer" / "SEN_MI2S_RX Audio Mixer" widgets) plus this
+    fragment.
+  - Nothing is missing on the macro side. ICR_MODULE is defined here
+    because AR_MODULE_GENERIC has no slot for extra tokens (log code,
+    interleave). An optional "extra tuples" argument on AR_MODULE_GENERIC
+    would let us drop ICR_MODULE; that would be the owner's change.
+
+5. Requests and dependencies for the cs-call-audio owner (no changes made to their files)
+======================================================================================
+  Nothing here edits their files. Using this needs their agreement on the following:
+  a. The attach points must stay when they regenerate milos-voice-graph.m4:
+     - splitters 0x4560 / 0x4561 with 2 output ports, port 3 unused
+     - TX mailbox 0x41b0
+     - EC_SYNC 0x458c with input 4 free
+     - MFC 0x458b left out of the TX graph
+     - widget names "VoiceMMode1 Mixer" and "SEN_MI2S_RX Audio Mixer"
+     Run "gen-incall-m4.py --check" after any regeneration. Their mixer was
+     renamed from "VoiceMMode1 Capture Mixer" while this work was in
+     progress, and the fragment follows the new name.
+  b. Their SEN_MI2S_RX Audio Mixer gains an extra DAPM input (from
+     "MultiMedia4 Mixer"), and their "VoiceMMode1 Mixer" gains an extra DAPM
+     output. Both happen only in the music / record builds.
+  c. To ship it, set hardware.fairphone6.csCallAudio.voiceGraph to
+     (import .../voice-graph-with-incall.nix {}).graph in a test target.
+     That is a change to their option value, not to their module. A
+     dedicated option (e.g. csCallAudio.extraGraphs) would be their change.
+  d. Life-cycle coordination: fp6-csvoiced must not close the voice PCMs
+     while the record (or music) FE is open, or it must signal fp6-callrec
+     first. Today there is no such signal. Options are a D-Bus property or
+     signal from fp6-csvoiced, or fp6-callrec watching the oFono call state
+     and closing first. That needs their agreement.
+
+6. Risks
+========
+  - Nothing has run on hardware yet, and everything depends on cs-call-audio's
+    own call test passing first.
+  - APM may reject the cross-graph MODULE_CONN if the voice graphs were not
+    opened first, or if a port number or instance id differs from what the
+    graph expects. The result is a GRAPH_OPEN error on the record FE. The
+    voice graphs should not be affected, but this is unverified.
+  - The control link RAT <-> TX mailbox may be rejected, like the voice
+    control links. Fallback: rebuild without AR_CTRL_LINK_WORDS in
+    stream2.voice_taps. The RAT then free-runs, with possible drift and
+    glitches.
+  - The kernel sets every MFC in a hostful graph to the FE PCM format
+    (q6apm_graph_media_format_pcm). The 0x4081/0x4085 blobs restore mono
+    afterwards. If the order were reversed, the mux still takes ch0 of each
+    input, so this should be harmless.
+  - DPCM BE sharing: if fp6-csvoiced is in RX-only fallback (TX route off),
+    the record FE has no BE and open fails with EINVAL. This is clean but
+    means no recording. The music FE would start SEN_MI2S_RX on its own if
+    no call were running, so fp6-callrec must open it only during an
+    active voice path.
+  - With the voice graph's mute (TX_DEC0 Volume 0), the uplink channel is
+    silent, as intended.
+  - Legal/consent: recording calls is regulated (two-party consent in many
+    places). The announcement path exists for that, but it is experimental.
+
+7. Live test (supervised; only after cs-call-audio's README section 4 steps 1-3 pass)
+=====================================================================================
+  Ground rules as in cs-call-audio:
+  - RAM boot only, with the user present.
+  - The second phone is the user's.
+  - Never print numbers or IMEIs.
+  - Recordings stay on the phone, and the user deletes them after the test.
+  Build: the csvoice test target with voiceGraph = (voice-graph-with-incall.nix {}).graph
+         (recordDir 4, music false first), on the same test kernel.
+  R0  No call, read only:
+        cat /proc/asound/pcm   # "MultiMedia3 Capture (*)" present (device 2)
+        amixer -c F6 controls | grep -E "MultiMedia3 Mixer|VoiceMMode1 Record"
+        dmesg | grep -iE "tplg|topology|module config|graph open"   # no errors
+      Regression: the MultiMedia1 speaker and MultiMedia2 mic still work.
+  R1  Without a call, opening the record FE must fail cleanly. The voice
+      graphs are not open, so APM should reject the cross-graph connections.
+      Run it once to confirm the failure mode:
+        amixer -c F6 cset name='MultiMedia3 Mixer VoiceMMode1 Record' 1
+        arecord -D hw:F6,2 -f S16_LE -r 48000 -c 2 -d 2 /tmp/r0.wav   # expect an error, no hang
+        amixer -c F6 cset name='MultiMedia3 Mixer VoiceMMode1 Record' 0
+        dmesg | tail -20   # record the APM error code
+      Then check that "fp6-csvoiced probe --seconds 5" still works.
+  R2  Probe without a call (voice graphs open but silent):
+        sudo systemctl stop fp6-csvoiced
+        sudo fp6-csvoiced probe --seconds 10 &      # voice PCMs up
+        sleep 2
+        amixer -c F6 cset name='MultiMedia3 Mixer VoiceMMode1 Record' 1
+        arecord -D hw:F6,2 -f S16_LE -r 48000 -c 2 -d 5 /tmp/r1.wav
+        amixer -c F6 cset name='MultiMedia3 Mixer VoiceMMode1 Record' 0
+        wait; sudo systemctl start fp6-csvoiced
+      - Expect a 5 s file. The L channel may carry the room mic (the TX
+        path runs from the codec); R should be silence.
+      - In dmesg, record any GRAPH_OPEN / SET_CFG / PREPARE / START error,
+        and which param it names.
+  R3  Real call, phone ~10 cm from the ear:
+      - User places a call to the second phone.
+      - After the voice path starts, run the same amixer/arecord commands for
+        20 s, with the user speaking on both ends in turn.
+      - Then stop the record before hanging up.
+      - Check: L = local voice, R = far-end voice, no gaps or drift (RAT
+        control link), and the call audio is unaffected during and after
+        the recording.
+  R4  fp6-callrec end-to-end:
+      - Install the conf from cs-incall-record.conf.example with
+        enable = true, in manual mode.
+      - Press Record in the dialer, then stop.
+      - The file has 2 channels and is mixed as the daemon intends.
+  R5  (optional, music = true build) Announcement:
+        amixer -c F6 cset name='MultiMedia4 Mixer VoiceMMode1 Uplink' 1
+        aplay -D hw:F6,3 <48k mono S16 tone, 2 s>
+      - The second phone hears the tone.
+      - The recording's L channel contains it.
+      - The local earpiece does not play it.
+  Rollback:
+    - Set the mixer controls to 0 and kill arecord/aplay.
+    - systemctl restart fp6-csvoiced.
+    - If APM is wedged, reboot (RAM boot).

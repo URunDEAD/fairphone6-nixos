@@ -1,0 +1,314 @@
+diff -ruN a/src/qml/DialerPage/DialerPage.qml b/src/qml/DialerPage/DialerPage.qml
+--- a/src/qml/DialerPage/DialerPage.qml	2026-10-27 16:49:49.818916904 +0200
++++ b/src/qml/DialerPage/DialerPage.qml	2026-10-27 16:50:39.965725165 +0200
+@@ -25,6 +25,7 @@
+ import Lomiri.Contacts 0.1
+ import Lomiri.Components.ListItems 1.3 as ListItems
+ import QtQuick.Layouts 1.12
++import GSettings 1.0
+ 
+ import "../"
+ 
+@@ -44,6 +45,12 @@
+     readonly property bool isTall: page.height >= units.gu(95)
+     property bool isInEmergencyMode: (greeter.greeterActive && mainView.applicationActive) | (mainView.account && mainView.account.simLocked)
+ 
++    // FP6 call recording: "Call recordings" header action
++    GSettings {
++        id: callRecordingSettings
++        schema.id: "com.fairphone6.callrecording"
++    }
++
+     function selectAccount(accountId) {
+         for (var i in accountsModel.activeAccounts) {
+             var account = accountsModel.activeAccounts[i]
+@@ -73,6 +80,13 @@
+                 onTriggered: pageStackNormalMode.push(Qt.resolvedUrl("../ContactsPage/ContactsPage.qml"), { "initialTab":"0", "initialState":"searching"})
+             },
+             Action {
++                objectName: "callRecordings"
++                iconName: "media-record"
++                text: i18n.tr("Call recordings")
++                visible: ["manual", "auto-all", "auto-contacts"].indexOf(callRecordingSettings.mode) >= 0
++                onTriggered: pageStackNormalMode.push(Qt.resolvedUrl("../SettingsPage/RecordingsPage.qml"))
++            },
++            Action {
+                 iconName: "settings"
+                 text: i18n.tr("Settings")
+                 onTriggered: pageStackNormalMode.push(Qt.resolvedUrl("../SettingsPage/SettingsPage.qml"))
+@@ -110,6 +124,7 @@
+         focus: false
+         trailingActionBar {
+             actions: mainView.greeterMode ? actionsGreeter : actionsNormal
++            numberOfSlots: 4
+         }
+ 
+         // make sure the SIM selector never gets focus
+diff -ruN a/src/qml/LiveCallPage/LiveCall.qml b/src/qml/LiveCallPage/LiveCall.qml
+--- a/src/qml/LiveCallPage/LiveCall.qml	2026-10-27 16:49:49.821355903 +0200
++++ b/src/qml/LiveCallPage/LiveCall.qml	2026-10-27 16:57:34.934758809 +0200
+@@ -49,6 +49,14 @@
+     property int defaultTimeout: 10000
+     property string initialStatus: ""
+     property string initialNumber: ""
++    // FP6 call recording: the in-call button row has up to 6 buttons now;
++    // shrink them (7 gu max) so the row/column always fits.
++    readonly property int callButtonCount: recordButton.visible ? 6 : 5
++    readonly property real callButtonSize: {
++        var avail = mainLayout.isWideLayout ? liveCall.height - pageHeader.height - units.gu(2)
++                                            : liveCall.width - units.gu(2)
++        return Math.max(units.gu(5), Math.min(units.gu(7), Math.floor(avail / callButtonCount) - units.dp(5)))
++    }
+     property string caller: {
+         if (call && call.isConference) {
+             return i18n.tr("Conference");
+@@ -113,6 +121,18 @@
+         closeTimer.running = true;
+     }
+ 
++    function toggleRecording() {
++        if (!callRecorder.noticeAccepted) {
++            var dialog = PopupUtils.open(recordingNoticeComponent, liveCall)
++            dialog.accepted.connect(function() {
++                callRecorder.acceptNotice()
++                callRecorder.toggle()
++            })
++            return
++        }
++        callRecorder.toggle()
++    }
++
+     function isDefaultAudioOutput(id) {
+         return (id == "default" ||
+                 id == "wired_headset" ||
+@@ -209,6 +229,25 @@
+         }
+     }
+ 
++    CallRecorder {
++        id: callRecorder
++    }
++
++    Component {
++        id: recordingNoticeComponent
++        CallRecordingNotice { }
++    }
++
++    Timer {
++        id: recordingClock
++        property double now: Date.now()
++        interval: 1000
++        repeat: true
++        running: callRecorder.recording
++        triggeredOnStart: true
++        onTriggered: now = Date.now()
++    }
++
+     states: [
+         State {
+             name: "keypadVisibleNarrow"
+@@ -217,7 +256,8 @@
+ 
+             PropertyChanges {
+                 target: durationLabel
+-                anchors.topMargin: units.gu(2)
++                // leave room for the recording indicator above it
++                anchors.topMargin: recordingIndicator.visible ? units.gu(4) : units.gu(2)
+             }
+ 
+             PropertyChanges {
+@@ -664,6 +704,65 @@
+                 fontSize: liveCall.compactView ? "large" : "x-large"
+             }
+ 
++            // FP6 call recording: red dot + "REC mm:ss" (+ fallback / error)
++            Row {
++                id: recordingIndicator
++                objectName: "recordingIndicator"
++
++                anchors {
++                    bottom: durationLabel.top
++                    bottomMargin: units.gu(1)
++                    horizontalCenter: parent.horizontalCenter
++                }
++                width: Math.min(implicitWidth, parent.width - units.gu(4))
++                spacing: units.gu(1)
++                visible: statusLabel.text === "" && (callRecorder.recording || recordingError.text !== "")
++
++                Rectangle {
++                    anchors.verticalCenter: parent.verticalCenter
++                    visible: callRecorder.recording
++                    width: units.gu(1.2)
++                    height: width
++                    radius: width / 2
++                    color: theme.palette.normal.negative
++                }
++
++                Label {
++                    id: recordingLabel
++                    objectName: "recordingLabel"
++                    anchors.verticalCenter: parent.verticalCenter
++                    visible: callRecorder.recording
++                    color: theme.palette.normal.negative
++                    font.weight: Font.DemiBold
++                    // TRANSLATORS: %1 is the elapsed recording time (mm:ss)
++                    text: i18n.tr("REC %1").arg(callRecorder.startedAt > 0 ?
++                        callRecorder.formatElapsed(Math.max(0, recordingClock.now - callRecorder.startedAt)) : "00:00")
++                }
++
++                Label {
++                    objectName: "recordingFallbackLabel"
++                    anchors.verticalCenter: parent.verticalCenter
++                    visible: callRecorder.recording && callRecorder.path === "fallback"
++                    width: Math.min(implicitWidth, recordingIndicator.parent.width - units.gu(4) - recordingLabel.width - units.gu(2.2))
++                    elide: Text.ElideRight
++                    textSize: Label.Small
++                    color: theme.palette.normal.backgroundSecondaryText
++                    text: i18n.tr("Debug fallback: mic + speaker output")
++                }
++
++                Label {
++                    id: recordingError
++                    objectName: "recordingErrorLabel"
++                    anchors.verticalCenter: parent.verticalCenter
++                    visible: !callRecorder.recording && text !== ""
++                    width: Math.min(implicitWidth, recordingIndicator.parent.width - units.gu(4))
++                    elide: Text.ElideRight
++                    textSize: Label.Small
++                    color: theme.palette.normal.negative
++                    text: callRecorder.error !== "" ? i18n.tr("Recording failed: %1").arg(callRecorder.error) : ""
++                }
++            }
++
+             Label {
+                 id: callerLabel
+ 
+@@ -841,6 +940,8 @@
+                     id: speakerButton
+                     objectName: "speakerButton"
+                     Layout.alignment: Qt.AlignCenter
++                    Layout.preferredWidth: liveCall.callButtonSize
++                    Layout.preferredHeight: liveCall.callButtonSize
+                     iconSource: {
+                         if (audioOutputs && audioOutputs.length <= 2) {
+                             if (activeAudioOutput == "speaker") {
+@@ -883,6 +984,8 @@
+                 LiveCallKeypadButton {
+                     objectName: "muteButton"
+                     Layout.alignment: Qt.AlignCenter
++                    Layout.preferredWidth: liveCall.callButtonSize
++                    Layout.preferredHeight: liveCall.callButtonSize
+                     iconSource: selected ? "microphone-mute" : "microphone"
+                     enabled: !isVoicemail
+                     selected: liveCall.isMuted
+@@ -899,6 +1002,8 @@
+                     id: newCallButton
+                     objectName: "newCallButton"
+                     Layout.alignment: Qt.AlignCenter
++                    Layout.preferredWidth: liveCall.callButtonSize
++                    Layout.preferredHeight: liveCall.callButtonSize
+                     iconSource: "add"
+                     iconWidth: units.gu(3)
+                     iconHeight: units.gu(3)
+@@ -909,6 +1014,8 @@
+                 LiveCallKeypadButton {
+                     objectName: "callHoldButton"
+                     Layout.alignment: Qt.AlignCenter
++                    Layout.preferredWidth: liveCall.callButtonSize
++                    Layout.preferredHeight: liveCall.callButtonSize
+                     iconSource: {
+                         if (callManager.backgroundCall) {
+                             return "swap"
+@@ -932,6 +1039,8 @@
+                     id: dtmfButton
+                     objectName: "dtmfButton"
+                     Layout.alignment: Qt.AlignCenter
++                    Layout.preferredWidth: liveCall.callButtonSize
++                    Layout.preferredHeight: liveCall.callButtonSize
+                     iconSource: "keypad"
+                     iconWidth: units.gu(4)
+                     iconHeight: units.gu(4)
+@@ -939,6 +1048,34 @@
+                     onClicked: dtmfVisible = !dtmfVisible
+                 }
+ 
++                LiveCallKeypadButton {
++                    id: recordButton
++                    objectName: "recordButton"
++                    Layout.alignment: Qt.AlignCenter
++                    Layout.preferredWidth: liveCall.callButtonSize
++                    Layout.preferredHeight: liveCall.callButtonSize
++                    iconSource: "media-record"
++                    iconColor: callRecorder.recording ? theme.palette.normal.negative : theme.palette.normal.baseText
++                    iconWidth: units.gu(3)
++                    iconHeight: units.gu(3)
++                    visible: callRecorder.uiEnabled
++                    selected: callRecorder.recording
++                    enabled: callRecorder.available && !!call && call.active === true
++                    onClicked: liveCall.toggleRecording()
++
++                    Rectangle {
++                        z: -1
++                        anchors.centerIn: parent
++                        width: Math.min(units.gu(5), recordButton.width - units.dp(4))
++                        height: width
++                        radius: width / 2
++                        color: "transparent"
++                        border.width: units.dp(2)
++                        border.color: theme.palette.normal.negative
++                        visible: recordButton.selected
++                    }
++                }
++
+                 Item {
+                     Layout.fillWidth: true
+                 }
+diff -ruN a/src/qml/SettingsPage/SettingsPage.qml b/src/qml/SettingsPage/SettingsPage.qml
+--- a/src/qml/SettingsPage/SettingsPage.qml	2026-10-27 16:49:49.822790856 +0200
++++ b/src/qml/SettingsPage/SettingsPage.qml	2026-10-27 16:50:39.966051896 +0200
+@@ -22,6 +22,7 @@
+ import Lomiri.Components 1.3
+ import Lomiri.Components.ListItems 1.3 as ListItem
+ import Lomiri.Telephony 0.1
++import GSettings 1.0
+ 
+ Page {
+     id: settingsPage
+@@ -135,6 +136,25 @@
+                 text: i18n.tr("Contact search with dial pad (Experimental)")
+             }
+ 
++            ListItem.SingleValue {
++                objectName: "callRecording"
++                anchors {
++                    left: parent.left
++                    right: parent.right
++                }
++                text: i18n.tr("Call recording")
++                value: {
++                    switch (callRecordingSettings.mode) {
++                    case "manual": return i18n.tr("Manual")
++                    case "auto-all": return i18n.tr("All calls")
++                    case "auto-contacts": return i18n.tr("Chosen contacts")
++                    default: return i18n.tr("Off")
++                    }
++                }
++                progression: true
++                onClicked: pageStackNormalMode.push(Qt.resolvedUrl("CallRecordingSettings.qml"))
++            }
++
+             Repeater {
+                 model: telepathyHelper.voiceAccounts.all
+ 
+@@ -158,6 +178,11 @@
+         }
+     }
+ 
++    GSettings {
++        id: callRecordingSettings
++        schema.id: "com.fairphone6.callrecording"
++    }
++
+     Loader {
+         id: onlineAccountHelper
+ 

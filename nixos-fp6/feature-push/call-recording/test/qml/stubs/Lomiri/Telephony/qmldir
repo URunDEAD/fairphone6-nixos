@@ -1,0 +1,4 @@
+module Lomiri.Telephony
+ContactWatcher 0.1 ContactWatcher.qml
+AccountEntry 0.1 AccountEntry.qml
+singleton FakeContacts 0.1 FakeContacts.qml

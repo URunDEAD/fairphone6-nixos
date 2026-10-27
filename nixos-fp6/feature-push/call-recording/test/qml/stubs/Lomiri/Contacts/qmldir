@@ -1,0 +1,3 @@
+module Lomiri.Contacts
+singleton ContactManager 0.1 ContactManager.qml
+ContactAvatar 0.1 ContactAvatar.qml
