@@ -61,3 +61,13 @@ ok: setServer refuses (ftp://10\.0\.0\.1|http://user:pw@10\.0\.0\.1|http://10\.0
 # lockscreen-polish: keypad-type flag, no value
 property bool passphrase: false
 passphrase: root\.alphanumeric
+# quick-share vendored mdns-sd/rqs_lib: upstream author email, doc example IPs, public Quick Share protocol salts, proto field names
+keepsimple@gmail\.com
+//! let (ip|host_name) = "192\.168\.1\.12
+/// - (Single IPv4|Multiple IPv4 separated by comma|A slice of IPv4|A mix of IPv4 and IPv6): `
+salt_hex = "82AA55A0D397F88346CA1CEE8D3909B95F13FA7DEB1D4AB38376B8256DA85510"
+salt_hex = "BF9D2A53C63616D75DB0A7165B91C1EF73E537F2427405FA23610A4BE657642E"
+optional (string|bool) (hidden_)?ssid = [0-9]
+WPA_PSK = 2;
+# webshare synthetic preview/test address
+192\.168\.77\.1
