@@ -78,6 +78,10 @@ let
       # battery, last connected, profiles, forget), devices in the BT menu.
       # results/feature-push-20261024/bluetooth-settings/README.md
       ({ ... }: { imports = [ ./bluetooth-settings/bluetooth-settings-fp6.nix ]; hardware.fairphone6.bluetoothSettings.enable = true; })
+      # Control centre in the pulled-down panel (tiles, sliders, media,
+      # notifications; edit mode, Settings > Quick settings) and rounded-corner
+      # insets for the status bar. results/feature-push-20261024/quick-settings/README.md
+      ({ ... }: { imports = [ ./quick-settings/quick-settings-fp6.nix ]; hardware.fairphone6.quickSettings.enable = true; })
       ({ lib, options, ... }: {
         # fp6-lomiri-powerd replaces the manual-only brightness bridge.
         # lomiri-gpu-fp6.nix restates it at mkOverride 10.

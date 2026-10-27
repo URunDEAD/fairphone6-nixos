@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- FP6 quick settings (control centre in the pulled-down Lomiri panel).
+     String lists only: gsettings-qt in Lomiri cannot read integer arrays. -->
+<schemalist>
+  <schema id="com.fairphone6.quick-settings" path="/com/fairphone6/quick-settings/">
+    <key name="tiles" type="as">
+      <default>['wifi', 'bluetooth', 'mobile-data', 'flashlight', 'dnd', 'rotation-lock', 'airplane', 'location', 'battery-saver', 'night-light', 'hotspot', 'screen-record', 'dark-theme', 'silent', 'screenshot']</default>
+      <summary>Tiles in the control centre, in order</summary>
+      <description>Tile ids: wifi, bluetooth, mobile-data, flashlight, dnd, rotation-lock, airplane, location, battery-saver, night-light, hotspot, screen-record, dark-theme, silent, screenshot, bedtime, stay-awake, greyscale, scan-qr. Tiles not listed are in the editor's tray. Tiles whose backend is missing are not shown.</description>
+    </key>
+    <key name="wide-tiles" type="as">
+      <default>['wifi', 'bluetooth']</default>
+      <summary>Tiles drawn wide (two columns, with their state as text)</summary>
+    </key>
+    <key name="columns" type="i">
+      <range min="4" max="6"/>
+      <default>4</default>
+      <summary>Small tiles per row</summary>
+    </key>
+    <key name="collapsed-rows" type="i">
+      <range min="1" max="3"/>
+      <default>2</default>
+      <summary>Tile rows shown before the grid is expanded</summary>
+    </key>
+    <key name="sliders" type="as">
+      <default>['brightness', 'volume', 'media']</default>
+      <summary>Sliders below the tiles, in order (brightness, volume, media); missing ones are hidden</summary>
+    </key>
+    <key name="pull-down-opens" type="s">
+      <choices>
+        <choice value="control-centre"/>
+        <choice value="indicator"/>
+      </choices>
+      <default>'control-centre'</default>
+      <summary>What pulling the status bar down opens</summary>
+      <description>control-centre: the quick settings page; indicator: the indicator under the finger (stock Lomiri), the quick settings stay one tap away.</description>
+    </key>
+    <key name="show-notifications" type="b">
+      <default>true</default>
+      <summary>List notifications under the quick settings</summary>
+    </key>
+    <key name="dark-theme" type="b">
+      <default>false</default>
+      <summary>Dark theme for apps (kept in sync with the UITK theme.ini by fp6-quick-settings-theme)</summary>
+    </key>
+    <key name="show-safe-area" type="b">
+      <default>false</default>
+      <summary>Draw the rounded-corner safe area over the screen (calibration aid)</summary>
+    </key>
+  </schema>
+</schemalist>

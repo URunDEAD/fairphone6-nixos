@@ -1,0 +1,28 @@
+{
+    "icon": "view-grid-symbolic",
+    "name": "Quick settings",
+    "translations": "lomiri-system-settings",
+    "category": "personal",
+    "priority": 5,
+    "form-factors": [
+        "phone",
+        "tablet"
+    ],
+    "keywords": [
+        "quick settings",
+        "control centre",
+        "control center",
+        "tiles",
+        "toggles",
+        "status bar",
+        "panel",
+        "pull down",
+        "notifications",
+        "brightness",
+        "sliders",
+        "edit"
+    ],
+    "has-dynamic-keywords": false,
+    "has-dynamic-visibility": false,
+    "page-component": "PageComponent.qml"
+}
