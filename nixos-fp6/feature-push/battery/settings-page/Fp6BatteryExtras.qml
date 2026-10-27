@@ -25,9 +25,7 @@ Column {
     Label {
         objectName: "fp6ChargingSpeed"
         visible: model.plugged
-        anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
-        topPadding: units.gu(1)
-        bottomPadding: units.gu(1)
+        anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2); topMargin: units.gu(1); bottomMargin: units.gu(1) }
         wrapMode: Text.WordWrap
         text: model.chargingText()
     }
