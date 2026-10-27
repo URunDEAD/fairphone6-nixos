@@ -76,6 +76,10 @@ let
       # Reconnect at startup: restore last state / always on / off).
       # results/feature-push-20261024/persistence/README.md
       ({ ... }: { imports = [ ./persistence/persistence-fp6.nix ]; hardware.fairphone6.persistence.enable = true; })
+      # Settings > Accessibility: magnification (triple-tap / hold / volume keys,
+      # pinch + two-finger pan), colour inversion and correction, mono audio,
+      # balance; quick-settings tiles. results/feature-push-20261024/accessibility/README.md
+      ({ ... }: { imports = [ ./accessibility/accessibility-fp6.nix ]; hardware.fairphone6.accessibility.enable = true; })
       # Edge lighting: screen-edge glow for notifications while the display
       # is off (Settings > Edge Lighting, off by default); always-on display
       # research. results/feature-push-20261024/edge-flash/README.md
