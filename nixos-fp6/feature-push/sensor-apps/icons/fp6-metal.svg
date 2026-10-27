@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256"><rect width="256" height="256" fill="url(#g)"/><defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#7f8c8d"/><stop offset="1" stop-color="#3d4a4b"/></linearGradient></defs>
+<path d="M 76 60 L 76 140 A 52 52 0 0 0 180 140 L 180 60" fill="none" stroke="#e74c3c" stroke-width="34"/>
+<rect x="59" y="44" width="34" height="30" fill="#ecf0f1"/><rect x="163" y="44" width="34" height="30" fill="#ecf0f1"/>
+<g fill="none" stroke="#ffd75e" stroke-width="8" stroke-linecap="round"><path d="M 40 214 Q 128 180 216 214"/><path d="M 70 236 Q 128 214 186 236"/></g>
+<text x="128" y="132" font-family="sans-serif" font-size="30" font-weight="bold" fill="#ffffff" text-anchor="middle">µT</text></svg>
