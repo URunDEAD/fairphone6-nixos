@@ -186,7 +186,7 @@ mod tests {
 
     #[test]
     fn dialing_starts_for_ringback_and_held_keeps() {
-        let cfg = Config::default();
+        let cfg = Config::parse("states = dialing,alerting,active,held").unwrap();
         let (mut c, mut d) = (Controller::default(), Fake::default());
         c.apply(&cfg, &snap(&["dialing"]), &mut d);
         c.apply(&cfg, &snap(&["alerting"]), &mut d);

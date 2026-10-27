@@ -72,7 +72,7 @@ AR_MODULE_OPEN_WORDS(`stream17.voice_open',
 	AR_CTRL_LINK_WORDS(0x6130, 0x80000009, 0x41b0, 0x80000005, 0x8001089),
 	0x4,0x8001162,56,0,0x1,0xb000003f,0x1,0x80011b2,0x24,0x4,0x8001177,0x41ae,0x8001178,0x41b0,0x800117a,0x41ab,0x80011e1,0x41ac)
 ')dnl
-define(`VOICE_TX_LINES', `"stream17.m47b8, , VoiceMMode1 Capture Mixer"
+define(`VOICE_TX_LINES', `"stream17.m47b8, , VoiceMMode1 Mixer"
 		"stream17.m41ab, , stream17.m41aa"
 		"stream17.m41ac, , stream17.m41ab"
 		"stream17.m41ae, , stream17.m41ad"

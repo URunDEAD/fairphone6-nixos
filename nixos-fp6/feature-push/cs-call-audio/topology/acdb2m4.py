@@ -17,7 +17,9 @@ What is kept (see the cs-call-audio README, "Phase B"):
 Control links and the VCPM VOICE_CONFIG ride in the GRAPH_OPEN (kernel
 candidate 0008); the VSID is a SET_CFG blob (0006).
 
-usage: acdb2m4.py <rx-prefix> <tx-prefix> > milos-voice-graph.m4
+usage: acdb2m4.py [--vsid=setcfg|open|none] <rx-prefix> <tx-prefix> > milos-voice-graph.m4
+  --vsid: how VSID_VOICE1 reaches VCPM: SET_CFG at prepare (default), inside
+  the GRAPH_OPEN, or not at all (bring-up experiments).
 """
 import struct
 import sys
@@ -138,6 +140,9 @@ def topo_order(keep, conns):
     return out
 
 
+VSID_MODE = 'setcfg'   # setcfg | open | none (see --vsid)
+
+
 def emit(name, g, sgs, drop, prefix, fe_stream, endpoint_map, allmods, out):
     keep = [i for i in g.order if g.mods[i][0] in sgs and i not in drop]
     keepset = set(keep)
@@ -196,6 +201,8 @@ def emit(name, g, sgs, drop, prefix, fe_stream, endpoint_map, allmods, out):
     pad = [0] if param_size % 8 else []
     open_words += ['%#x,%#x,%d,0,' % (VCPM_IID, VCPM_VOICE_CONFIG, param_size) +
                    ','.join('%#x' % x for x in vc + pad)]
+    if VSID_MODE == 'open':
+        open_words += ['%#x,%#x,4,0,%#x,0' % (VCPM_IID, VCPM_PARAM_ID_VSID, VSID_VOICE1)]
 
     w("define(`VOICE_%s_MODULES', `\n" % name)
     for n, i in enumerate(order):
@@ -210,7 +217,7 @@ def emit(name, g, sgs, drop, prefix, fe_stream, endpoint_map, allmods, out):
         if i == fe:
             wtype = 'aif_in' if name == 'RX' else 'aif_out'
             stream = fe_stream
-        cfg = '%s.voice_vsid' % prefix if n == 0 else ''
+        cfg = '%s.voice_vsid' % prefix if n == 0 and VSID_MODE == 'setcfg' else ''
         opn = '%s.voice_open' % prefix if n == 0 else ''
         args = ["`m%x'" % i, '1', str(cidx[c]), '%#x' % i, '%#010x' % mid, str(mi), str(mo),
                 str(l0[1]), str(l0[3]), '%#x' % (l0[2] if outs else 0),
@@ -218,7 +225,8 @@ def emit(name, g, sgs, drop, prefix, fe_stream, endpoint_map, allmods, out):
         if l1:
             args += [str(l1[1]), str(l1[3]), '%#x' % l1[2]]
         w('AR_MODULE_GENERIC(%s)\n' % ', '.join(args))
-    w("AR_MODULE_CFG_WORDS(`%s.voice_vsid', %#x, %#x, 4, 0, %#x, 0)\n" % (prefix, VCPM_IID, VCPM_PARAM_ID_VSID, VSID_VOICE1))
+    if VSID_MODE == 'setcfg':
+        w("AR_MODULE_CFG_WORDS(`%s.voice_vsid', %#x, %#x, 4, 0, %#x, 0)\n" % (prefix, VCPM_IID, VCPM_PARAM_ID_VSID, VSID_VOICE1))
     w("AR_MODULE_OPEN_WORDS(`%s.voice_open',\n\t%s)\n" % (prefix, ',\n\t'.join(open_words)))
     w("')dnl\n")
     w("define(`VOICE_%s_LINES', `" % name)
@@ -228,7 +236,7 @@ def emit(name, g, sgs, drop, prefix, fe_stream, endpoint_map, allmods, out):
         if line not in lines:  # two port links between the same modules
             lines.append(line)
     if name == 'TX':
-        lines.insert(0, '"%s.m%x, , VoiceMMode1 Capture Mixer"' % (prefix, ext))
+        lines.insert(0, '"%s.m%x, , VoiceMMode1 Mixer"' % (prefix, ext))
     w('\n\t\t'.join(lines))
     w("')dnl\n")
     if name == 'RX':
@@ -237,7 +245,12 @@ def emit(name, g, sgs, drop, prefix, fe_stream, endpoint_map, allmods, out):
 
 
 def main():
-    rx, tx = load(sys.argv[1]), load(sys.argv[2])
+    global VSID_MODE
+    args = sys.argv[1:]
+    if args and args[0].startswith('--vsid='):
+        VSID_MODE = args.pop(0).split('=', 1)[1]
+        assert VSID_MODE in ('setcfg', 'open', 'none')
+    rx, tx = load(args[0]), load(args[1])
     rx_sgs = {0xb0000040, 0xb0000041}
     tx_sgs = {0xb000003f}
     tx_drop = {0x458b}   # MFC fed only by sources outside the graph (sidetone/HPCM)

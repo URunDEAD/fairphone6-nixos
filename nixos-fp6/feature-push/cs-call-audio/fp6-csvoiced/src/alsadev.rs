@@ -94,15 +94,18 @@ impl AlsaVoicePath {
         }
     }
 
-    fn open_one(&self, dev: &str, dir: Direction) -> Result<PCM, String> {
-        let pcm = PCM::new(dev, dir, false).map_err(|e| format!("open {dev} {dir:?}: {e}"))?;
+    /// hw/sw params + prepare. Preparing a hostless q6apm FE sends the
+    /// topology's VSID to the voice manager, so both directions' graphs
+    /// must already be open (PCM open = GRAPH_OPEN), as with PAL, which
+    /// opens both voice PCMs before configuring either.
+    fn configure(&self, pcm: &PCM, dev: &str) -> Result<(), String> {
         {
-            let hwp = HwParams::any(&pcm).map_err(|e| e.to_string())?;
+            let hwp = HwParams::any(pcm).map_err(|e| e.to_string())?;
             hwp.set_access(Access::RWInterleaved).map_err(|e| format!("access: {e}"))?;
             hwp.set_format(Format::s16()).map_err(|e| format!("format: {e}"))?;
             hwp.set_channels(self.cfg.channels).map_err(|e| format!("channels {}: {e}", self.cfg.channels))?;
             hwp.set_rate(self.cfg.rate, ValueOr::Nearest).map_err(|e| format!("rate {}: {e}", self.cfg.rate))?;
-            pcm.hw_params(&hwp).map_err(|e| format!("hw_params {dev}: {e}"))?;
+            pcm.hw_params(&hwp).map_err(|e| format!("hw_params/prepare {dev}: {e}"))?;
         }
         {
             // Nothing is ever written/read: the host pointer never moves, so
@@ -113,9 +116,7 @@ impl AlsaVoicePath {
             swp.set_start_threshold(1).map_err(|e| format!("start_threshold: {e}"))?;
             pcm.sw_params(&swp).map_err(|e| format!("sw_params {dev}: {e}"))?;
         }
-        pcm.prepare().map_err(|e| format!("prepare {dev}: {e}"))?;
-        pcm.start().map_err(|e| format!("start {dev} {dir:?}: {e}"))?;
-        Ok(pcm)
+        pcm.prepare().map_err(|e| format!("prepare {dev}: {e}"))
     }
 }
 
@@ -125,10 +126,26 @@ impl VoicePath for AlsaVoicePath {
             eprintln!("dry-run: would start {}", self.describe());
             return Ok(());
         }
-        for (dev, dir) in self.resolve()? {
-            match self.open_one(&dev, dir) {
+        let devs = self.resolve()?;
+        // 1. open every direction (each open = one GRAPH_OPEN on the DSP)
+        for (dev, dir) in &devs {
+            match PCM::new(dev, *dir, false) {
                 Ok(p) => self.open.push(p),
                 Err(e) => {
+                    self.stop();
+                    return Err(format!("open {dev} {dir:?}: {e}"));
+                }
+            }
+        }
+        // 2. configure + prepare, 3. start
+        for step in 0..2 {
+            for (i, (dev, dir)) in devs.iter().enumerate() {
+                let r = if step == 0 {
+                    self.configure(&self.open[i], dev)
+                } else {
+                    self.open[i].start().map_err(|e| format!("start {dev} {dir:?}: {e}"))
+                };
+                if let Err(e) = r {
                     self.stop();
                     return Err(e);
                 }

@@ -6,6 +6,8 @@
 #                       that file (generated from the stock ACDB)
 { lib, stdenvNoCC, fetchgit, gnum4, alsa-utils
 , voiceGraph ? null
+# false for bring-up variants without a SET_CFG blob (acdb2m4.py --vsid=open|none)
+, expectSetCfg ? true
 }:
 stdenvNoCC.mkDerivation {
   pname = "fp6-audioreach-topology" + lib.optionalString (voiceGraph != null) "-voice";
@@ -32,14 +34,14 @@ stdenvNoCC.mkDerivation {
     # Without a voice graph the patch must not change the phone's topology.
     echo "b799d001cf0da889f92215a6ef5143bda54021f5f76fa3e2e5d3797a169d7aa0  base-tplg.bin" | sha256sum -c -
     ${lib.optionalString (voiceGraph != null) ''
-      for s in "VoiceMMode1 Playback" "VoiceMMode1 Capture" "VoiceMMode1 Capture Mixer" "SEN_MI2S_RX Audio Mixer"; do
+      for s in "VoiceMMode1 Playback" "VoiceMMode1 Capture" "VoiceMMode1 Mixer" "SEN_MI2S_RX Audio Mixer"; do
         grep -aq "$s" voice-tplg.bin
       done
       # VCPM VOICE_CONFIG param id present as a little-endian word
       od -An -tx4 -v voice-tplg.bin | tr -s ' ' '\n' > words.txt
       grep -qx 08001162 words.txt   # VCPM VOICE_CONFIG
       grep -qx 01001007 words.txt   # GRAPH_OPEN extra params blob
-      grep -qx 01001006 words.txt   # SET_CFG blob (VSID)
+      ${lib.optionalString expectSetCfg "grep -qx 01001006 words.txt   # SET_CFG blob (VSID)"}
       grep -qx 08001061 words.txt   # control links
     ''}
   '';

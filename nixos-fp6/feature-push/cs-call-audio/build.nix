@@ -22,6 +22,11 @@ in
   topologyVoice = pkgs.callPackage ./topology/package.nix {
     voiceGraph = ./topology/milos-voice-graph.m4;
   };
+  # Bring-up fallback without the VSID SET_CFG (hot-swap with bringup/swap-tplg.sh).
+  topologyVoiceNoVsid = pkgs.callPackage ./topology/package.nix {
+    voiceGraph = ./topology/milos-voice-graph-novsid.m4;
+    expectSetCfg = false;
+  };
   # The kernel6 target with the feature enabled in its default dry-run
   # mode: the generated unit, config and the oFono actually used by the
   # system, without building a second toplevel.

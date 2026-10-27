@@ -6,8 +6,11 @@
 //!   fp6-csvoiced run    [--config FILE]   daemon
 //!   fp6-csvoiced status [--config FILE]   read-only: config, PCMs, call states
 //!   fp6-csvoiced probe  [--config FILE] [--seconds N]
-//!       bring-up only: run the voice path for N (1..30, default 5) seconds
-//!       without a call, then close it and restore the routes
+//!       bring-up only: run the voice path for N (1..30, default 5) seconds,
+//!       then close it and restore the routes. Refuses unless oFono has a
+//!       call in a voice state: on the FP6, opening the voice graphs with no
+//!       call makes the modem's voice service crash (vs.c:1336, modem SSR).
+//!       --no-call-crashes-modem overrides that (bring-up only).
 
 mod alsadev;
 mod config;
@@ -73,7 +76,18 @@ fn status(cfg: &Config) -> i32 {
     0
 }
 
-fn probe(cfg: Config, seconds: u64) -> i32 {
+fn probe(cfg: Config, seconds: u64, force: bool) -> i32 {
+    if !force {
+        let in_call = zbus::blocking::Connection::system()
+            .ok()
+            .filter(|c| ofono::ofono_present(c))
+            .and_then(|c| ofono::snapshot(&c).ok())
+            .is_some_and(|s| s.wants_voice(&cfg));
+        if !in_call {
+            eprintln!("probe: no call in a voice state; opening the voice graphs now would crash the modem's voice service (SSR). Use --no-call-crashes-modem to override.");
+            return 3;
+        }
+    }
     let mut dev = alsadev::AlsaVoicePath::new(&cfg);
     let mut ctl = Controller::default();
     let fake = state::Snapshot {
@@ -188,6 +202,7 @@ fn main() {
     let mut cmd = None;
     let mut path = DEFAULT_CONFIG.to_string();
     let mut seconds: u64 = 5;
+    let mut force = false;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -199,9 +214,10 @@ fn main() {
                 Some(n) if (1..=30).contains(&n) => seconds = n,
                 _ => { eprintln!("--seconds needs 1..30"); std::process::exit(2) }
             },
+            "--no-call-crashes-modem" => force = true,
             "--version" => { println!("fp6-csvoiced {}", env!("CARGO_PKG_VERSION")); return }
             "run" | "status" | "probe" if cmd.is_none() => cmd = Some(a.clone()),
-            _ => { eprintln!("usage: fp6-csvoiced run|status|probe [--config FILE] [--seconds N]"); std::process::exit(2) }
+            _ => { eprintln!("usage: fp6-csvoiced run|status|probe [--config FILE] [--seconds N] [--no-call-crashes-modem]"); std::process::exit(2) }
         }
     }
     let cfg = match load(&path) {
@@ -211,8 +227,8 @@ fn main() {
     let rc = match cmd.as_deref() {
         Some("run") => run(cfg),
         Some("status") => status(&cfg),
-        Some("probe") => probe(cfg, seconds),
-        _ => { eprintln!("usage: fp6-csvoiced run|status|probe [--config FILE] [--seconds N]"); 2 }
+        Some("probe") => probe(cfg, seconds, force),
+        _ => { eprintln!("usage: fp6-csvoiced run|status|probe [--config FILE] [--seconds N] [--no-call-crashes-modem]"); 2 }
     };
     std::process::exit(rc);
 }

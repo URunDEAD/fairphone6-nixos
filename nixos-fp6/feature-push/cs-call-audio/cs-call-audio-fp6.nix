@@ -128,8 +128,12 @@ in
     channels = lib.mkOption { type = lib.types.int; default = 1; };
     callStates = lib.mkOption {
       type = lib.types.listOf (lib.types.enum [ "active" "held" "dialing" "alerting" "incoming" "waiting" ]);
-      default = [ "dialing" "alerting" "active" "held" ];
-      description = "oFono VoiceCall states that need the voice path (ringback is in band while dialing/alerting).";
+      # Only once the call is connected: on 2026-10-27 opening the voice
+      # graphs while the modem's voice service was idle crashed it (modem
+      # SSR). Whether "alerting" (in-band ringback) is safe is part of the
+      # first supervised call test.
+      default = [ "active" "held" ];
+      description = "oFono VoiceCall states that need the voice path.";
     };
 
     onControls = lib.mkOption {
@@ -143,7 +147,7 @@ in
         { name = "SEN_MI2S_RX Audio Mixer MultiMedia1"; value = 0; }
         { name = "MultiMedia2 Mixer TX_CODEC_DMA_TX_3"; value = 0; }
         { name = "SEN_MI2S_RX Audio Mixer VoiceMMode1"; value = 1; }
-        { name = "VoiceMMode1 Capture Mixer TX_CODEC_DMA_TX_3"; value = 1; }
+        { name = "VoiceMMode1 Mixer TX_CODEC_DMA_TX_3 Voice"; value = 1; }
       ];
     };
     offControls = lib.mkOption {
@@ -151,7 +155,7 @@ in
       description = "Mixer writes after the voice PCMs are closed (restore the HiFi routes).";
       default = [
         { name = "SEN_MI2S_RX Audio Mixer VoiceMMode1"; value = 0; }
-        { name = "VoiceMMode1 Capture Mixer TX_CODEC_DMA_TX_3"; value = 0; }
+        { name = "VoiceMMode1 Mixer TX_CODEC_DMA_TX_3 Voice"; value = 0; }
         { name = "SEN_MI2S_RX Audio Mixer MultiMedia1"; value = 1; }
         { name = "MultiMedia2 Mixer TX_CODEC_DMA_TX_3"; value = 1; }
       ];

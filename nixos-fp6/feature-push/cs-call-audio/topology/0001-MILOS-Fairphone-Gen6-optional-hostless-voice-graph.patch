@@ -1,4 +1,4 @@
-From 5fbd8cfadabba1412aa39fb483d33d6d5e07120f Mon Sep 17 00:00:00 2001
+From 4173af3719e693faa98e8d5cc15b607808f7ce44 Mon Sep 17 00:00:00 2001
 From: Paul Schuldesz <paulschuldesz@gmail.com>
 Date: Tue, 27 Oct 2026 13:47:23 +0200
 Subject: [PATCH] audioreach: MILOS-Fairphone-Gen6: optional hostless
@@ -13,19 +13,19 @@ VoiceMMode1 Playback/Capture front ends routed to SEN_MI2S_RX and from
 TX_CODEC_DMA_TX_3 when built with -DFP6_VOICE_GRAPH=<description>; without
 it the output is unchanged.
 ---
- MILOS-Fairphone-Gen6.m4                      |  41 +++++++
- audioreach/module_generic.m4                 | 115 +++++++++++++++++++
- audioreach/subgraph-stream-voice-hostless.m4 |  97 ++++++++++++++++
+ MILOS-Fairphone-Gen6.m4                      |  43 +++++++
+ audioreach/module_generic.m4                 | 115 ++++++++++++++++++
+ audioreach/subgraph-stream-voice-hostless.m4 | 118 +++++++++++++++++++
  audioreach/tokens.m4                         |   3 +
- 4 files changed, 256 insertions(+)
+ 4 files changed, 279 insertions(+)
  create mode 100644 audioreach/module_generic.m4
  create mode 100644 audioreach/subgraph-stream-voice-hostless.m4
 
 diff --git a/MILOS-Fairphone-Gen6.m4 b/MILOS-Fairphone-Gen6.m4
-index f28b887..5698015 100644
+index f28b887..dbc499b 100644
 --- a/MILOS-Fairphone-Gen6.m4
 +++ b/MILOS-Fairphone-Gen6.m4
-@@ -64,8 +64,49 @@ DEVICE_SG_ADD(audioreach/subgraph-device-codec-dma-capture.m4, `TX_CODEC_DMA_TX_
+@@ -64,8 +64,51 @@ DEVICE_SG_ADD(audioreach/subgraph-device-codec-dma-capture.m4, `TX_CODEC_DMA_TX_
  	LPAIF_INTF_TYPE_RXTX, CODEC_INTF_IDX_TX3, 0, DATA_FORMAT_FIXED_POINT,
  	0x00004008, 0x00004008, 0x00006130)
  
@@ -44,7 +44,7 @@ index f28b887..5698015 100644
 +# of the stock voice stream subgraphs. Build: m4 -DFP6_VOICE_GRAPH=<file>.
 +#
 +#  modem ~VCPM~> [VoiceMMode1 Playback SG] -> SEN_MI2S_RX Audio Mixer -> Senary MI2S
-+#  WCD9378 -> TX_CODEC_DMA_TX_3 -> VoiceMMode1 Capture Mixer -> [VoiceMMode1 Capture SG] ~VCPM~> modem
++#  WCD9378 -> TX_CODEC_DMA_TX_3 -> VoiceMMode1 Mixer -> [VoiceMMode1 Capture SG] ~VCPM~> modem
 +#
 +include(FP6_VOICE_GRAPH)
 +define(`VOICE_DAI_ID', VOICE_RX_DAI_ID)dnl
@@ -69,7 +69,9 @@ index f28b887..5698015 100644
 +define(`VOICE_SG_DIRECTION', APM_SUB_GRAPH_DIRECTION_TX)dnl
 +define(`VOICE_SG_MODULES', `VOICE_TX_MODULES')dnl
 +define(`VOICE_SG_LINES', `VOICE_TX_LINES')dnl
-+define(`VOICE_TX_DEVICES', ``"TX_CODEC_DMA_TX_3"'')dnl
++define(`VOICE_TX_DEVICE_CTL', ``TX_CODEC_DMA_TX_3 Voice'')dnl
++define(`VOICE_TX_DEVICE_SG_DATA', `device'TX_CODEC_DMA_TX_3`.sub_graph1_data')dnl
++define(`VOICE_TX_DEVICE_LAST', `device'TX_CODEC_DMA_TX_3`.logger1')dnl
 +include(`audioreach/subgraph-stream-voice-hostless.m4')
 +
 +STREAM_DEVICE_PLAYBACK_MIXER(SENARY_MI2S_RX, ``SEN_MI2S_RX'', ``MultiMedia1'', ``VoiceMMode1'')
@@ -198,10 +200,10 @@ index 0000000..f2827a9
 +define(`VCPM_VSID_WORDS', `VCPM_MODULE_INSTANCE_ID,VCPM_PARAM_ID_VSID,4,0,$1,0') dnl
 diff --git a/audioreach/subgraph-stream-voice-hostless.m4 b/audioreach/subgraph-stream-voice-hostless.m4
 new file mode 100644
-index 0000000..3f56279
+index 0000000..01c08cf
 --- /dev/null
 +++ b/audioreach/subgraph-stream-voice-hostless.m4
-@@ -0,0 +1,97 @@
+@@ -0,0 +1,118 @@
 +# Copyright, Paul Schuldesz, 2026
 +# SPDX-License-Identifier: BSD-3-Clause
 +include(`audioreach/audioreach.m4') dnl
@@ -219,7 +221,7 @@ index 0000000..3f56279
 +dnl  RX ("VoiceMMode1 Playback", modem -> device):
 +dnl   [aif_in: RX mailbox/decoder ...] -> [... last] -> "<device> Audio Mixer"
 +dnl  TX ("VoiceMMode1 Capture", device -> modem):
-+dnl   "VoiceMMode1 Capture Mixer" -> [first ...] -> [aif_out: encoder/TX mailbox]
++dnl   "VoiceMMode1 Mixer" -> [first ...] -> [aif_out: encoder/TX mailbox]
 +
 +define(`VOICE_PCM_SECTION',
 +`'
@@ -253,8 +255,10 @@ index 0000000..3f56279
 +
 +dnl Routing control: playback -> a control "VoiceMMode1" in the device
 +dnl mixer ("SEN_MI2S_RX Audio Mixer VoiceMMode1"); capture -> a mixer
-+dnl widget "VoiceMMode1 Capture Mixer" whose controls are the device
-+dnl subgraphs ("VoiceMMode1 Capture Mixer TX_CODEC_DMA_TX_3").
++dnl widget "VoiceMMode1 Mixer" with its own control on the TX device
++dnl subgraph ("VoiceMMode1 Mixer TX_CODEC_DMA_TX_3 Voice"). alsatplg binds a
++dnl control section to one widget only, so the device subgraph's own
++dnl "TX_CODEC_DMA_TX_3" control (used by MultiMedia2 Mixer) cannot be shared.
 +ifelse(VOICE_PCM_DIR, `playback',
 +`
 +SectionControlMixer."VOICE_MIXER_NAME" {
@@ -282,12 +286,30 @@ index 0000000..3f56279
 +	]
 +}',
 +`
-+SectionWidget."VOICE_MIXER_NAME Capture Mixer" {
++SectionControlMixer."VOICE_TX_DEVICE_CTL" {
++	reg "-1"
++	index STR(VOICE_DAI_ID)
++	max "1"
++	invert "false"
++	channel."fl" {
++		reg "-1"
++		max "1"
++	}
++	ops."ctl" {
++		get "SND_SOC_AR_TPLG_FE_BE_GRAPH_CTL_MIX"
++		put "SND_SOC_AR_TPLG_FE_BE_GRAPH_CTL_MIX"
++		info "1"
++	}
++	data [
++		"VOICE_TX_DEVICE_SG_DATA"
++	]
++}
++SectionWidget."VOICE_MIXER_NAME Mixer" {
 +	reg "-1"
 +	index STR(VOICE_DAI_ID)
 +	type "mixer"
 +	mixer [
-+		VOICE_TX_DEVICES
++		"VOICE_TX_DEVICE_CTL"
 +	]
 +	data [
 +		"NAME_PREFIX.sub_graph1_data"
@@ -296,6 +318,7 @@ index 0000000..3f56279
 +SectionGraph."NAME_PREFIX.voice Graph" {
 +	index STR(VOICE_DAI_ID)
 +	lines [
++		"VOICE_MIXER_NAME Mixer, VOICE_TX_DEVICE_CTL, VOICE_TX_DEVICE_LAST"
 +		VOICE_SG_LINES
 +	]
 +}')

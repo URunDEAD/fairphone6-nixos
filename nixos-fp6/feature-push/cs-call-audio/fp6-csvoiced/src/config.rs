@@ -47,9 +47,10 @@ impl Default for Config {
             capture: true,
             rate: 48000,
             channels: 1,
-            // Ringback and early media arrive in band while dialing/alerting;
-            // a held call keeps its session (the network plays hold tones).
-            states: ["dialing", "alerting", "active", "held"].iter().map(|s| s.to_string()).collect(),
+            // Connected calls only: opening the voice graphs while the modem's
+            // voice service is idle crashed it (FP6, 2026-10-27). A held call
+            // keeps its session (the network plays hold tones).
+            states: ["active", "held"].iter().map(|s| s.to_string()).collect(),
             on_controls: Vec::new(),
             off_controls: Vec::new(),
             mute_control: None,
