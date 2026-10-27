@@ -185,7 +185,7 @@ Item {
     readonly property var catalogue: [wifi, bluetooth, mobileData, flashlight, dnd, rotationLock,
         airplane, location, batterySaver, nightLight, hotspot, screenRecord, darkTheme, silent,
         screenshot, batteryPage, soundPage, timeDatePage, messagesPage, systemPage, privacyPage,
-        usbDrivePage, keyboardPage, bedtime, stayAwake, greyscale, scanQr]
+        usbDrivePage, usbModesPage, keyboardPage, bedtime, stayAwake, greyscale, scanQr]
     function tile(id) {
         for (var i = 0; i < catalogue.length; i++) if (catalogue[i].tileId === id) return catalogue[i];
         return null;
@@ -463,6 +463,18 @@ Item {
         
         subtitle: backend.liveLabel(info)
         indicator: "fp6-usb-drive-indicator"
+    }
+    QsTileDef {
+        // usb-modes agent indicator (visible while a computer/device is on
+        // the cable); hold opens System Settings > USB.
+        id: usbModesPage
+        readonly property var info: backend.pageInfo("fp6-usb-modes-indicator")
+        tileId: "usb"; label: i18n.tr("USB")
+        iconOn: "stock_usb"
+        pageOnly: true; toggleable: false
+        available: !!info
+        subtitle: backend.liveLabel(info)
+        indicator: "fp6-usb-modes-indicator"; settingsUrl: "settings:///system/usb-modes"
     }
     QsTileDef {
         id: keyboardPage

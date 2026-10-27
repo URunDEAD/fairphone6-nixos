@@ -237,9 +237,14 @@ impl Gadget {
         if self.hosting() || self.state_path.exists() {
             return Err("an image is already being hosted".into());
         }
-        let udc = self.udc();
+        let mut udc = self.udc();
         if udc.is_empty() {
-            return Err("the USB controller is not bound (another USB change in progress?)".into());
+            // Unbound with nothing linked = USB modes "charging only"; with
+            // links it is another change in progress.
+            if !self.links().is_empty() {
+                return Err("the USB controller is not bound (another USB change in progress?)".into());
+            }
+            udc = self.first_controller().ok_or("no USB device controller")?;
         }
         let links = self.links();
         let removed = if spec.exclusive { links.clone() } else { vec![] };
@@ -327,8 +332,12 @@ impl Gadget {
             }
         }
         let udc = if saved.udc.is_empty() { self.first_controller().unwrap_or_default() } else { saved.udc.clone() };
-        if let Err(e) = self.bind(&udc) {
-            errors.push(e);
+        // Nothing left to offer (hosted from "charging only"): stay unbound,
+        // an empty configuration cannot bind.
+        if !self.links().is_empty() {
+            if let Err(e) = self.bind(&udc) {
+                errors.push(e);
+            }
         }
         if errors.is_empty() || !self.hosting() {
             let _ = fs::remove_file(&self.state_path);
@@ -472,6 +481,22 @@ pub mod tests {
         fs::write(g.root.join("UDC"), "\n").unwrap();
         assert!(g.host(&spec(false)).is_err());
         assert!(!g.state_path.exists());
+        fs::remove_dir_all(base).ok();
+    }
+
+    #[test]
+    fn host_from_charging_only() {
+        // USB modes "charging only": no links, UDC unbound.
+        let (g, base) = fake("chargeonly");
+        fs::remove_file(g.cfg_dir().join("rndis")).unwrap();
+        fs::remove_file(g.cfg_dir().join("adb")).unwrap();
+        fs::write(g.root.join("UDC"), "\n").unwrap();
+        let s = g.host(&spec(false)).unwrap();
+        assert_eq!(names(&g), vec![FUNCTION]);
+        assert_eq!(g.udc(), "a600000.usb");
+        g.restore(&s).unwrap();
+        assert!(names(&g).is_empty());
+        assert_eq!(g.udc(), "", "back to charging only");
         fs::remove_dir_all(base).ok();
     }
 

@@ -49,12 +49,13 @@ ItemPage {
         "system": [i18n.tr("System"), "system-shutdown", true],
         "privacy": [i18n.tr("Privacy"), "preferences-system-privacy-symbolic", true],
         "usb-drive": [i18n.tr("USB drive"), "save-to", true],
+        "usb": [i18n.tr("USB"), "stock_usb", true],
         "keyboard": [i18n.tr("Keyboard"), "preferences-desktop-keyboard-shortcuts-symbolic", true]
     })
     readonly property var order: ["wifi", "bluetooth", "mobile-data", "flashlight", "dnd", "rotation-lock",
         "airplane", "location", "battery-saver", "night-light", "hotspot", "screen-record", "dark-theme",
         "silent", "screenshot", "battery", "sound", "time-date", "messages", "system", "privacy",
-        "usb-drive", "keyboard", "bedtime", "stay-awake", "greyscale", "scan-qr"]
+        "usb-drive", "usb", "keyboard", "bedtime", "stay-awake", "greyscale", "scan-qr"]
 
     function list(v) { var o = []; if (v) for (var i = 0; i < v.length; i++) o.push(String(v[i])); return o; }
     readonly property var tiles: list(gs.tiles)

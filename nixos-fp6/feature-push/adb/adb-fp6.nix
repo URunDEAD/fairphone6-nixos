@@ -37,7 +37,7 @@ let
 
   gadgetTool = pkgs.writeShellApplication {
     name = "fp6-adb-gadget";
-    runtimeInputs = with pkgs; [ coreutils util-linux kmod ];
+    runtimeInputs = with pkgs; [ coreutils findutils util-linux kmod ];
     text = builtins.readFile ./fp6-adb-gadget.sh;
   };
 

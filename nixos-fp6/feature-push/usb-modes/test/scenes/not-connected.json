@@ -1,0 +1,51 @@
+{
+ "version": 1,
+ "functions": [
+  "ncm"
+ ],
+ "keep": [
+  "ncm"
+ ],
+ "defaults": [
+  "ncm"
+ ],
+ "available": {
+  "ncm": true,
+  "mtp": true,
+  "adb": false,
+  "mass_storage": true
+ },
+ "udcBound": true,
+ "udcState": "not attached",
+ "peer": "none",
+ "cable": false,
+ "hostRecognizable": false,
+ "power": {
+  "role": "sink",
+  "dataRole": "device",
+  "drp": true,
+  "opmode": "default",
+  "partnerPd": false,
+  "pdRevision": "3.0",
+  "canSwap": false,
+  "swapReason": "nothing connected",
+  "usbType": "",
+  "online": false,
+  "currentUa": 0,
+  "voltageUv": 0,
+  "canStopCharging": false,
+  "stopChargingReason": "the charger firmware has no input-suspend control on this kernel; use Battery > Charge limit"
+ },
+ "locked": false,
+ "asking": false,
+ "pendingUnlock": null,
+ "prefs": {
+  "defaultMode": "system",
+  "rememberHosts": false,
+  "lastUsed": []
+ },
+ "driveExclusive": false,
+ "busy": false,
+ "lastError": "",
+ "lastChange": 0
+}

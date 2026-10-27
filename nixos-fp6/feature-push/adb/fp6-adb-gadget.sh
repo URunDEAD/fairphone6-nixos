@@ -35,8 +35,11 @@ controller() {
 }
 bound() { [[ -n "$(tr -d '[:space:]' < "$gadget/UDC")" ]]; }
 udc_unbind() { if bound; then printf '\n' > "$gadget/UDC"; fi; }
+linked() { [[ -n "$(find "$gadget/configs/c.1" -maxdepth 1 -type l -print -quit)" ]]; }
 udc_bind() {
   local c
+  # No function left (usb-modes "charging only"): an empty config cannot bind.
+  linked || return 0
   c=$(controller)
   bound || printf '%s\n' "$c" > "$gadget/UDC"
 }
@@ -77,7 +80,7 @@ unbind|sync)
   unmount_ffs
   if [[ -d $function_dir ]]; then rmdir "$function_dir" 2>/dev/null || true; fi
   udc_bind
-  log "NCM only, bound on $(cat "$gadget/UDC")"
+  log "without ADB: links $(find "$gadget/configs/c.1" -maxdepth 1 -type l -printf '%f '), UDC '$(cat "$gadget/UDC")'"
   ;;
 *)
   log "unknown operation"; exit 2 ;;

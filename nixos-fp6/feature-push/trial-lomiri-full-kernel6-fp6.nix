@@ -31,6 +31,12 @@ let
       # apps: xdg-desktop-portal FileChooser backend.
       # results/feature-push-20261024/file-picker/README.md
       ({ ... }: { imports = [ ./file-picker/file-picker-fp6.nix ]; hardware.fairphone6.filePickerPortal.enable = true; })
+      # USB preferences: System Settings > USB (USB network / file transfer /
+      # USB drive / ADB toggles, power role), "Charging via USB" notification.
+      # Developer build: usb0 (172.16.42.1) is always kept for SSH over USB.
+      # results/feature-push-20261024/usb-modes/README.md
+      ({ ... }: { imports = [ ./usb-modes/usb-modes-fp6.nix ];
+                  hardware.fairphone6.usbModes = { enable = true; defaultFunctions = [ "ncm" ]; keepFunctions = [ "ncm" ]; }; })
       # White-box text test (2026-10-27): GPU preemption off via msm.enable_preemption=0.
       # results/feature-push-20261024 white-boxes notes; the Mesa CCHE backport stays off.
       ({ ... }: { imports = [ ./white-boxes/white-boxes-fp6.nix ]; hardware.fairphone6.whiteBoxes.gpuPreemptionOff = true; })

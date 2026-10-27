@@ -1,0 +1,30 @@
+{
+    "icon": "stock_usb",
+    "name": "USB",
+    "translations": "lomiri-system-settings",
+    "category": "network",
+    "priority": 8,
+    "form-factors": [
+        "phone",
+        "tablet"
+    ],
+    "keywords": [
+        "usb",
+        "usb preferences",
+        "connected devices",
+        "charging",
+        "charge only",
+        "reverse charging",
+        "file transfer",
+        "mtp",
+        "usb network",
+        "tethering",
+        "ncm",
+        "adb",
+        "developer",
+        "power role"
+    ],
+    "has-dynamic-keywords": false,
+    "has-dynamic-visibility": false,
+    "page-component": "PageComponent.qml"
+}

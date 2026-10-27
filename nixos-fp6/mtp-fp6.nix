@@ -21,7 +21,7 @@ let
   ) mediaDirectories);
   runMtp = pkgs.writeShellApplication {
     name = "fp6-mtp";
-    runtimeInputs = [ pkgs.coreutils pkgs.gnugrep pkgs.util-linux responder ];
+    runtimeInputs = [ pkgs.coreutils pkgs.findutils pkgs.gnugrep pkgs.util-linux responder ];
     text = ''
       fail() { echo "FP6 MTP: $*" >&2; exit 1; }
       gadget=/sys/kernel/config/usb_gadget/g1
@@ -36,7 +36,7 @@ let
         trap - EXIT INT TERM
         if [[ "$mtp_changed" == 1 ]]; then
           flock -w 30 9 || status=1
-          printf '\n' > "$gadget/UDC" || status=1
+          if [[ -n "$(cat "$gadget/UDC")" ]]; then printf '\n' > "$gadget/UDC" || status=1; fi
           if [[ -n "$mtp_pid" ]]; then
             kill "$mtp_pid" 2>/dev/null || true
             wait "$mtp_pid" 2>/dev/null || true
@@ -49,7 +49,10 @@ let
           fi
           rmdir "$endpoints" "$function_dir" 2>/dev/null || status=1
           # Keep the existing NCM (and ADB, if Developer mode is on) functions on every exit.
-          printf '%s\n' "$controller" > "$gadget/UDC" || status=1
+          # No function left (USB modes "charging only"): stay unbound, an empty config cannot bind.
+          if [[ -n "$(find "$gadget/configs/c.1" -maxdepth 1 -type l -print -quit)" ]]; then
+            printf '%s\n' "$controller" > "$gadget/UDC" || status=1
+          fi
           echo 'FP6 MTP: original gadget restored'
         fi
         exit "$status"
@@ -60,14 +63,21 @@ let
       grep -aq 'fairphone,fp6' /sys/firmware/devicetree/base/compatible || fail 'wrong board'
       [[ "$(cat "$gadget/idVendor")" == 0x18d1 ]] || fail 'unexpected USB vendor'
       [[ "$(cat "$gadget/idProduct")" == 0x4ee3 ]] || fail 'unexpected USB product'
-      [[ "$(readlink -f "$gadget/configs/c.1/rndis")" == "$gadget/functions/ncm.usb0" ]] || fail 'NCM configuration changed'
+      # NCM is optional (usb-modes may have switched USB network off); if present it must be ncm.usb0.
+      if [[ -L "$gadget/configs/c.1/rndis" ]]; then
+        [[ "$(readlink -f "$gadget/configs/c.1/rndis")" == "$gadget/functions/ncm.usb0" ]] || fail 'NCM configuration changed'
+      fi
       # ADB is optional (Developer mode, feature-push/adb/adb-fp6.nix); if present it must be ffs.adb.
       if [[ -L "$gadget/configs/c.1/adb" ]]; then
         [[ "$(readlink -f "$gadget/configs/c.1/adb")" == "$gadget/functions/ffs.adb" ]] || fail 'ADB configuration changed'
       fi
       [[ ! -e "$function_dir" && ! -L "$function_link" && ! -e "$endpoints" ]] || fail 'MTP resources already exist'
       controller=$(cat "$gadget/UDC")
-      [[ -n "$controller" && -d "/sys/class/udc/$controller" ]] || fail 'USB controller is not bound'
+      # Unbound = no function linked (usb-modes "charging only"): use the first controller.
+      if [[ -z "$controller" ]]; then
+        for c in /sys/class/udc/*; do [[ -e "$c" ]] && { controller=''${c##*/}; break; }; done
+      fi
+      [[ -n "$controller" && -d "/sys/class/udc/$controller" ]] || fail 'no USB device controller'
       for directory in ${lib.escapeShellArgs mediaDirectories}; do
         [[ -d "/home/user/$directory" && ! -L "/home/user/$directory" ]] || fail 'media directory missing or symlinked'
       done
@@ -77,7 +87,7 @@ let
       exec 9>/run/fp6-adb-gadget.lock
       flock -w 30 9 || fail 'USB gadget is busy'
       mtp_changed=1
-      printf '\n' > "$gadget/UDC"
+      if [[ -n "$(cat "$gadget/UDC")" ]]; then printf '\n' > "$gadget/UDC"; fi
       # /dev/usb-ffs only exists once ADB has run (Developer mode); MTP must
       # not depend on it.
       mkdir -p "$(dirname "$endpoints")"

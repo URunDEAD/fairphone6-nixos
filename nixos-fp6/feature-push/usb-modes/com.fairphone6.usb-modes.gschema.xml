@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- FP6 USB connection preferences (System Settings > USB). The session
+     agent fp6-usbmodes-agent forwards these to fp6-usbmoded. -->
+<schemalist>
+  <schema id="com.fairphone6.usb-modes" path="/com/fairphone6/usb-modes/">
+    <key name="default-when-connected" type="s">
+      <choices>
+        <choice value="system"/>
+        <choice value="charge"/>
+        <choice value="last"/>
+        <choice value="ask"/>
+      </choices>
+      <default>'system'</default>
+      <summary>What a newly connected computer gets</summary>
+      <description>system: the build's default functions; charge: charge only (no data); last: the last used functions (after unlock); ask: charge only and ask.</description>
+    </key>
+    <key name="remember-hosts" type="b">
+      <default>false</default>
+      <summary>Remember the choice per computer (only for USB-PD computers that identify themselves)</summary>
+    </key>
+    <key name="notify-on-connect" type="b">
+      <default>true</default>
+      <summary>Show "Charging via USB · Tap for options" when a computer is connected</summary>
+    </key>
+    <key name="request" type="s">
+      <default>''</default>
+      <summary>Request from the settings page to the agent: functions:LIST@nonce | power:ROLE@nonce | ask-dismissed@nonce</summary>
+    </key>
+  </schema>
+</schemalist>
