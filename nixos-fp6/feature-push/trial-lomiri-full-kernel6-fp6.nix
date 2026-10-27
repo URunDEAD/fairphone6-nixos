@@ -55,6 +55,9 @@ let
       # Unified share sheet (Quick Share, KDE Connect, link/QR, content-hub, copy/save/print/OCR), built by a Codex worker:
       # nixos-fp6/feature-push/sharesheet/README.md
       ({ ... }: { imports = [ ./sharesheet/module.nix ]; hardware.fairphone6.share.enable = true; })
+      # Live captions (offline, on-device; off until started), built by a Codex worker:
+      # nixos-fp6/feature-push/captions/README.md
+      ({ ... }: { imports = [ ./captions/module.nix ]; hardware.fairphone6.captions.enable = true; })
       # Persist the modem's EFS working copy across boots (real partitions stay read-only;
       # supervised test passed 2026-10-27, user approved). Removes the per-boot modem restart.
       ({ ... }: { hardware.fairphone6.modem.persistShadow = true; })

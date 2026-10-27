@@ -1,0 +1,32 @@
+{
+  "date": "2026-10-27",
+  "architecture": "x86_64",
+  "cpu": "Intel(R) Core(TM) Ultra 7 155U",
+  "rust": "rustc 1.99.0 (b940084d7 2026-09-28)",
+  "native_build": "RelWithDebInfo; GGML_NATIVE=OFF; GGML_AVX2=OFF",
+  "binary": "Cargo debug (native Whisper optimized), 2 decoder threads",
+  "audio_context_positions": 256,
+  "model": "tiny-q5_1",
+  "source": "Existing verified reference model copied read-only into /tmp; local espeak-ng speech only",
+  "constraints": "Laptop shared with other workloads; no phone, power, quality or end-to-end latency measurement; inference benchmark ran after this task stopped its earlier parallel build. No host audio devices opened.",
+  "summary": [
+    {
+      "language": "en",
+      "windows": 4,
+      "first_window_ready_ms": 3995.032784,
+      "mean_decode_ms": 2372.25,
+      "max_decode_ms": 2531.19,
+      "load_ms": 1192.509786,
+      "meets_1_to_2_second_first_window_budget": false
+    },
+    {
+      "language": "ro",
+      "windows": 4,
+      "first_window_ready_ms": 4248.616875,
+      "mean_decode_ms": 2672.15,
+      "max_decode_ms": 2901.09,
+      "load_ms": 858.808546,
+      "meets_1_to_2_second_first_window_budget": false
+    }
+  ]
+}

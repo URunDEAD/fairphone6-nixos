@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Live Captions
+Comment=Private offline captions for device audio
+Exec=fp6-captions-ui
+Icon=audio-input-microphone
+Terminal=false
+Categories=AudioVideo;Accessibility;
+X-Lomiri-Touch=true

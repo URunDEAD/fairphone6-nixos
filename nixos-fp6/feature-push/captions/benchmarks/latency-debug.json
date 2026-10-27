@@ -1,0 +1,84 @@
+[
+  {
+    "audio_ms": 4822.4375,
+    "chunks": [
+      {
+        "decode_ms": 2495.032784,
+        "end_audio_ms": 1500.0,
+        "simulated_ready_ms": 3995.032784,
+        "window_ms": 1500.0,
+        "word_count": 6
+      },
+      {
+        "decode_ms": 2531.1947059999998,
+        "end_audio_ms": 2600.0,
+        "simulated_ready_ms": 6526.227489999999,
+        "window_ms": 1500.0,
+        "word_count": 4
+      },
+      {
+        "decode_ms": 2224.214163,
+        "end_audio_ms": 3060.0,
+        "simulated_ready_ms": 8750.441653,
+        "window_ms": 860.0,
+        "word_count": 1
+      },
+      {
+        "decode_ms": 2238.570621,
+        "end_audio_ms": 4560.0,
+        "simulated_ready_ms": 10989.012274,
+        "window_ms": 1500.0,
+        "word_count": 5
+      }
+    ],
+    "kind": "offline-decoder",
+    "language": "en",
+    "load_ms": 1192.509786,
+    "model": "tiny-q5_1",
+    "note": "Ready times simulate serial processing; live service drops stale pending windows. Excludes PipeWire and display. No recognition accuracy claim.",
+    "rolling_words": 16,
+    "threads": 2,
+    "id": "en-train"
+  },
+  {
+    "audio_ms": 5033.25,
+    "chunks": [
+      {
+        "decode_ms": 2748.6168749999997,
+        "end_audio_ms": 1500.0,
+        "simulated_ready_ms": 4248.616875,
+        "window_ms": 1500.0,
+        "word_count": 6
+      },
+      {
+        "decode_ms": 2901.089546,
+        "end_audio_ms": 2600.0,
+        "simulated_ready_ms": 7149.706421,
+        "window_ms": 1500.0,
+        "word_count": 6
+      },
+      {
+        "decode_ms": 2581.64984,
+        "end_audio_ms": 3280.0,
+        "simulated_ready_ms": 9731.356261,
+        "window_ms": 1080.0,
+        "word_count": 3
+      },
+      {
+        "decode_ms": 2457.2437489999998,
+        "end_audio_ms": 4780.0,
+        "simulated_ready_ms": 12188.60001,
+        "window_ms": 1500.0,
+        "word_count": 4
+      }
+    ],
+    "kind": "offline-decoder",
+    "language": "ro",
+    "load_ms": 858.808546,
+    "model": "tiny-q5_1",
+    "note": "Ready times simulate serial processing; live service drops stale pending windows. Excludes PipeWire and display. No recognition accuracy claim.",
+    "rolling_words": 18,
+    "threads": 2,
+    "id": "ro-train"
+  }
+]

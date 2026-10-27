@@ -1,0 +1,36 @@
+{
+  "date": "2026-10-28 (Europe/Bucharest)",
+  "architecture": "x86_64",
+  "cpu": "Intel(R) Core(TM) Ultra 7 155U",
+  "rust": "rustc 1.99.0 (b940084d7 2026-09-28)",
+  "native_build": "Release; GGML_NATIVE=OFF; portable x86 without AVX2",
+  "binary": "Installed Nix release, 2 decoder threads",
+  "audio_context_positions": 256,
+  "model": "tiny-q5_1",
+  "source": "Existing verified reference model copied read-only into /tmp; local espeak-ng speech only",
+  "constraints": "Shared laptop, this task had no concurrent builds during release measurement. No phone, power, quality or end-to-end latency measurement. No host audio devices opened.",
+  "summary": [
+    {
+      "language": "en",
+      "windows": 4,
+      "first_window_ready_ms": 2701.852903,
+      "mean_decode_ms": 1084.37,
+      "max_decode_ms": 1201.85,
+      "load_ms": 127.114927,
+      "decoder_real_time_factor": 0.899,
+      "meets_1_to_2_second_first_window_budget": false
+    },
+    {
+      "language": "ro",
+      "windows": 4,
+      "first_window_ready_ms": 3081.485787,
+      "mean_decode_ms": 1872.46,
+      "max_decode_ms": 2462.36,
+      "load_ms": 92.444431,
+      "decoder_real_time_factor": 1.488,
+      "meets_1_to_2_second_first_window_budget": false
+    }
+  ],
+  "measured_at_utc": "2026-10-27T22:05Z",
+  "package": "/nix/store/2al7fqi1kld2wg7ls20c8yw2bax4lg9n-fp6-captions-0.1.0"
+}

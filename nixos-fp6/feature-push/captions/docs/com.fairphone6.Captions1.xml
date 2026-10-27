@@ -1,0 +1,10 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN" "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<node name="/com/fairphone6/Captions1">
+  <interface name="com.fairphone6.Captions1">
+    <!-- JSON options documented in DESIGN.md. Session belongs to the calling bus connection. -->
+    <method name="Start"><arg name="options" type="s" direction="in"/></method>
+    <method name="Stop"/>
+    <method name="Snapshot"><arg name="snapshot" type="s" direction="out"/></method>
+    <signal name="Updated"><arg name="snapshot" type="s"/></signal>
+  </interface>
+</node>
