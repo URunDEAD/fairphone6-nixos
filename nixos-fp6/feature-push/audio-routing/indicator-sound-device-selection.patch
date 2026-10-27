@@ -1,0 +1,1414 @@
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 4c57477..2d6b7ce 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -41,6 +41,7 @@ vala_init(ayatana-indicator-sound-service
+     --vapidir=${CMAKE_SOURCE_DIR}/vapi/
+     --vapidir=.
+     --pkg=bus-watcher
++    --pkg=fp6-pulse-ports
+     ${VALA_DEFINE_LOMIRI_FEATURES_ENABLED}
+ )
+ 
+@@ -68,9 +69,14 @@ vala_add(ayatana-indicator-sound-service
+     notification
+ )
+ 
++vala_add(ayatana-indicator-sound-service
++  audio-device-selector.vala
++)
++
+ vala_add(ayatana-indicator-sound-service
+   service.vala
+   DEPENDS
++    audio-device-selector
+     sound-menu
+     volume-control
+     volume-control-pulse
+@@ -184,6 +190,7 @@ vala_add(ayatana-indicator-sound-service
+ vala_add(ayatana-indicator-sound-service
+   sound-menu.vala
+   DEPENDS
++    audio-device-selector
+     media-player
+     volume-control
+     options
+diff --git a/src/audio-device-selector.vala b/src/audio-device-selector.vala
+new file mode 100644
+index 0000000..2b0daa1
+--- /dev/null
++++ b/src/audio-device-selector.vala
+@@ -0,0 +1,1177 @@
++/*
++ * Copyright 2026 Paul Schuldesz
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; version 3.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++/*
++ * Output and input device selection for the sound menu.
++ *
++ * Every (card, port) pair is one choice, as in GNOME's and pavucontrol's
++ * port lists. Choosing a port that the card's active profile does not
++ * carry switches the card profile first (PulseAudio >= 15 and PipeWire
++ * build one UCM profile per device combination when devices share a PCM,
++ * e.g. "HiFi (Mic1, Speaker)" / "HiFi (Earpiece, Mic1)"; Bluetooth
++ * microphones need the headset profile). The profile is picked so that the
++ * other direction keeps its current device. Then the port is set and the
++ * node becomes the default sink/source (WirePlumber stores that as the
++ * configured default: it sticks, falls back while the device is away and
++ * returns when it reappears). Volumes are not touched: the session manager
++ * restores each device's own volume.
++ *
++ * Also here:
++ *  - switching to newly connected Bluetooth/USB devices (a card whose first
++ *    node appears after startup), unless the user turned it off;
++ *  - per-app routing: each app (key = application.process.binary, else
++ *    application.name) can be pinned to an output and an input device. The
++ *    choice is kept in $XDG_CONFIG_HOME/ayatana-indicator-sound/fp6-audio-routing.ini
++ *    and applied to the app's streams whenever they or the device appear.
++ *    Call streams (media.role phone) are left to the telephony routing.
++ */
++
++using PulseAudio;
++
++/* AudioDeviceSelectorPa (vapi/fp6-pulse-ports.vapi) mirrors the pa_card_port_info
++ * and pa_card_profile_info2 members that the libpulse vapi keeps private. */
++
++public class AudioDeviceSelector : Object
++{
++    public enum Kind {
++        OUTPUT,
++        INPUT
++    }
++
++    public class Device {
++        public string id;
++        public string label;
++        public string icon;
++    }
++
++    class CardPort {
++        public string name;
++        public string description;
++        public uint32 priority;
++        public bool output;
++        public bool unavailable;
++        public string[] profiles = {};
++    }
++
++    class Card {
++        public uint32 index;
++        public string name;
++        public string description;
++        public string bus;
++        public string form_factor;
++        public string address;
++        public string active_profile;
++        public Gee.ArrayList<CardPort> ports = new Gee.ArrayList<CardPort> ();
++        public HashTable<string, uint32> profile_priority = new HashTable<string, uint32> (str_hash, str_equal);
++        public HashTable<string, bool> profile_available = new HashTable<string, bool> (str_hash, str_equal);
++
++        public bool is_bluetooth () {
++            return this.name.has_prefix ("bluez_card.") || this.bus == "bluetooth";
++        }
++
++        public bool is_internal () {
++            return this.name.has_prefix ("alsa_card.platform-");
++        }
++
++        public bool is_usb () {
++            return this.bus == "usb";
++        }
++    }
++
++    class Node {
++        public uint32 index;
++        public string name;
++        public string description;
++        public uint32 card;
++        public string? active_port;
++        public string[] ports = {};
++        public bool output;
++        public bool is_monitor;
++    }
++
++    class Stream {
++        public uint32 index;
++        public bool output;
++        public string key;
++        public string name;
++        public string icon;
++        public uint32 node;
++        public bool corked;
++    }
++
++    class Pending {
++        public bool output;
++        public uint32 card;
++        public string port;
++        public int64 deadline;
++    }
++
++    private unowned PulseAudio.GLibMainLoop loop;
++    private PulseAudio.Context context = null;
++    private uint reconnect_timer = 0;
++    private uint refresh_idle = 0;
++    private int ops_in_flight = 0;
++    private bool refresh_again = false;
++    private bool ready = false;
++
++    /* Snapshot being collected and the last complete one */
++    private Gee.ArrayList<Card> new_cards;
++    private Gee.ArrayList<Node> new_nodes;
++    private string new_default_sink = "";
++    private string new_default_source = "";
++    private Gee.ArrayList<Card> cards = new Gee.ArrayList<Card> ();
++    private Gee.ArrayList<Node> nodes = new Gee.ArrayList<Node> ();
++    private Gee.ArrayList<Stream> new_streams;
++    private Gee.ArrayList<Stream> streams = new Gee.ArrayList<Stream> ();
++    private string default_sink = "";
++    private string default_source = "";
++
++    private Gee.ArrayList<Pending> pending = new Gee.ArrayList<Pending> ();
++    /* Bluetooth cards put on the headset profile for a call (back to A2DP after it) */
++    private Gee.HashSet<string> call_headsets = new Gee.HashSet<string> ();
++    private string last_signature = "";
++
++    public Gee.ArrayList<Device> outputs { get; private set; default = new Gee.ArrayList<Device> (); }
++    public Gee.ArrayList<Device> inputs { get; private set; default = new Gee.ArrayList<Device> (); }
++    public string active_output { get; private set; default = ""; }
++    public bool auto_switch { get; private set; default = true; }
++    /* Diagnostics: observe only, never change the sound server */
++    public bool read_only { get; set; default = false; }
++    public string active_input { get; private set; default = ""; }
++    public bool in_call { get; private set; default = false; }
++
++    public signal void changed ();
++
++    public AudioDeviceSelector (PulseAudio.GLibMainLoop loop)
++    {
++        this.loop = loop;
++        this.load_settings ();
++        this.reconnect ();
++    }
++
++    /* Settings file (per user; the indicator is the only writer) */
++
++    private KeyFile settings = new KeyFile ();
++    private string settings_path;
++    private int64 bt_names_mtime = -1;
++    private KeyFile bt_names = new KeyFile ();
++
++    private void load_settings ()
++    {
++        this.settings_path = Path.build_filename (Environment.get_user_config_dir (), "ayatana-indicator-sound", "fp6-audio-routing.ini");
++        try {
++            this.settings.load_from_file (this.settings_path, KeyFileFlags.KEEP_COMMENTS);
++        } catch (GLib.Error e) {
++            /* first run */
++        }
++        try {
++            this.auto_switch = this.settings.get_boolean ("General", "switch-to-new-devices");
++        } catch (GLib.Error e) {
++            this.auto_switch = true;
++        }
++    }
++
++    private void save_settings ()
++    {
++        try {
++            DirUtils.create_with_parents (Path.get_dirname (this.settings_path), 0700);
++            this.settings.save_to_file (this.settings_path);
++        } catch (GLib.Error e) {
++            warning ("audio devices: cannot save %s: %s", this.settings_path, e.message);
++        }
++    }
++
++    private string? setting (string group, string key)
++    {
++        try {
++            return this.settings.get_string (group, key);
++        } catch (GLib.Error e) {
++            return null;
++        }
++    }
++
++    public void set_switch_to_new_devices (bool on)
++    {
++        this.auto_switch = on;
++        this.settings.set_boolean ("General", "switch-to-new-devices", on);
++        this.save_settings ();
++        this.last_signature = "";
++        this.rebuild ();
++    }
++
++    /* Names and types the Bluetooth settings page lets the user choose:
++     * $XDG_CONFIG_HOME/fp6-bluetooth/devices.ini, one group per address
++     * ("AA:BB:CC:DD:EE:FF") with optional keys name= and type=
++     * (car, headphones, headset, speaker, hifi, portable, phone, other). */
++    private void load_bt_names ()
++    {
++        string path = Path.build_filename (Environment.get_user_config_dir (), "fp6-bluetooth", "devices.ini");
++        int64 mtime = 0;
++        try {
++            var info = File.new_for_path (path).query_info (FileAttribute.TIME_MODIFIED, FileQueryInfoFlags.NONE);
++            mtime = (int64) info.get_attribute_uint64 (FileAttribute.TIME_MODIFIED);
++        } catch (GLib.Error e) {
++            mtime = 0;
++        }
++        if (mtime == this.bt_names_mtime)
++            return;
++        this.bt_names_mtime = mtime;
++        this.bt_names = new KeyFile ();
++        if (mtime == 0)
++            return;
++        try {
++            this.bt_names.load_from_file (path, KeyFileFlags.NONE);
++        } catch (GLib.Error e) {
++            warning ("audio devices: cannot read %s: %s", path, e.message);
++        }
++    }
++
++    private string? bt_value (Card card, string key)
++    {
++        if (card.address == "")
++            return null;
++        try {
++            string v = this.bt_names.get_string (card.address.up (), key).strip ();
++            return v != "" ? v : null;
++        } catch (GLib.Error e) {
++            return null;
++        }
++    }
++
++    ~AudioDeviceSelector ()
++    {
++        if (this.reconnect_timer != 0)
++            Source.remove (this.reconnect_timer);
++        if (this.refresh_idle != 0)
++            Source.remove (this.refresh_idle);
++        if (this.context != null)
++            this.context.disconnect ();
++    }
++
++    /* Connection */
++
++    private void reconnect ()
++    {
++        if (this.context != null) {
++            this.context.disconnect ();
++            this.context = null;
++        }
++        this.ready = false;
++
++        var props = new Proplist ();
++        props.sets (Proplist.PROP_APPLICATION_NAME, "Ayatana Indicator Sound (devices)");
++        props.sets (Proplist.PROP_APPLICATION_ID, "org.ayatana.indicator.sound.devices");
++
++        this.context = new PulseAudio.Context (this.loop.get_api (), null, props);
++        this.context.set_state_callback (this.context_state_cb);
++
++        unowned string server_string = Environment.get_variable ("PULSE_SERVER");
++        if (this.context.connect (server_string, Context.Flags.NOFAIL, null) < 0)
++            warning ("audio devices: pa_context_connect() failed: %s", PulseAudio.strerror (this.context.errno ()));
++    }
++
++    private void context_state_cb (Context c)
++    {
++        switch (c.get_state ()) {
++            case Context.State.READY:
++                this.ready = true;
++                c.set_subscribe_callback (this.context_events_cb);
++                c.subscribe (Context.SubscriptionMask.SINK |
++                             Context.SubscriptionMask.SOURCE |
++                             Context.SubscriptionMask.CARD |
++                             Context.SubscriptionMask.SINK_INPUT |
++                             Context.SubscriptionMask.SOURCE_OUTPUT |
++                             Context.SubscriptionMask.SERVER);
++                this.queue_refresh ();
++                break;
++
++            case Context.State.FAILED:
++            case Context.State.TERMINATED:
++                this.ready = false;
++                if (this.reconnect_timer == 0) {
++                    this.reconnect_timer = Timeout.add_seconds (2, () => {
++                        this.reconnect_timer = 0;
++                        this.reconnect ();
++                        return Source.REMOVE;
++                    });
++                }
++                break;
++
++            default:
++                break;
++        }
++    }
++
++    private void context_events_cb (Context c, Context.SubscriptionEventType t, uint32 index)
++    {
++        this.queue_refresh ();
++    }
++
++    /* Collecting a snapshot */
++
++    private void queue_refresh ()
++    {
++        if (this.refresh_idle != 0)
++            return;
++        /* Coalesce the burst of events a profile switch produces */
++        this.refresh_idle = Timeout.add (60, () => {
++            this.refresh_idle = 0;
++            this.refresh ();
++            return Source.REMOVE;
++        });
++    }
++
++    private void refresh ()
++    {
++        if (!this.ready)
++            return;
++        if (this.ops_in_flight > 0) {
++            this.refresh_again = true;
++            return;
++        }
++
++        this.new_cards = new Gee.ArrayList<Card> ();
++        this.new_nodes = new Gee.ArrayList<Node> ();
++        this.new_default_sink = "";
++        this.new_default_source = "";
++        this.new_streams = new Gee.ArrayList<Stream> ();
++        this.ops_in_flight = 6;
++
++        this.context.get_server_info (this.server_info_cb);
++        this.context.get_card_info_list (this.card_info_cb);
++        this.context.get_sink_info_list (this.sink_info_cb);
++        this.context.get_source_info_list (this.source_info_cb);
++        this.context.get_sink_input_info_list (this.sink_input_info_cb);
++        this.context.get_source_output_info_list (this.source_output_info_cb);
++    }
++
++    private Stream? make_stream (uint32 index, Proplist props, uint32 node, int corked, bool output)
++    {
++        unowned string? role = props.gets ("media.role");
++        if (role != null && role.down () == "phone")
++            return null;  /* calls: telephony-service routes them */
++        if (props.gets ("application.id") == "org.ayatana.indicator.sound.devices")
++            return null;
++        unowned string? binary = props.gets ("application.process.binary");
++        unowned string? name = props.gets ("application.name");
++        if (binary == null && name == null)
++            return null;
++        var st = new Stream ();
++        st.index = index;
++        st.output = output;
++        /* Wrapped Nix binaries are called .foo-wrapped */
++        string key = binary ?? name;
++        if (key.has_prefix (".") && key.has_suffix ("-wrapped"))
++            key = key.substring (1, key.length - 9);
++        st.key = key;
++        st.name = name ?? key;
++        st.icon = props.gets ("application.icon_name") ?? props.gets ("application.icon-name") ?? "";
++        st.node = node;
++        st.corked = corked != 0;
++        return st;
++    }
++
++    private void sink_input_info_cb (Context c, SinkInputInfo? i, int eol)
++    {
++        if (eol != 0 || i == null) {
++            this.op_done ();
++            return;
++        }
++        var st = this.make_stream (i.index, i.proplist, i.sink, i.corked, true);
++        if (st != null)
++            this.new_streams.add (st);
++    }
++
++    private void source_output_info_cb (Context c, SourceOutputInfo? i, int eol)
++    {
++        if (eol != 0 || i == null) {
++            this.op_done ();
++            return;
++        }
++        /* Peak meters and other monitor readers are not apps recording */
++        unowned string? target = i.proplist.gets ("target.object");
++        if (target != null && target.has_suffix (".monitor"))
++            return;
++        var st = this.make_stream (i.index, i.proplist, i.source, i.corked, false);
++        if (st != null)
++            this.new_streams.add (st);
++    }
++
++    private void op_done ()
++    {
++        this.ops_in_flight--;
++        if (this.ops_in_flight > 0)
++            return;
++
++        this.cards = this.new_cards;
++        this.nodes = this.new_nodes;
++        this.streams = this.new_streams;
++        this.default_sink = this.new_default_sink;
++        this.default_source = this.new_default_source;
++        this.rebuild ();
++
++        if (this.refresh_again) {
++            this.refresh_again = false;
++            this.queue_refresh ();
++        }
++    }
++
++    private void server_info_cb (Context c, ServerInfo? i)
++    {
++        if (i != null) {
++            this.new_default_sink = i.default_sink_name ?? "";
++            this.new_default_source = i.default_source_name ?? "";
++        }
++        this.op_done ();
++    }
++
++    private void card_info_cb (Context c, CardInfo? i, int eol)
++    {
++        if (eol != 0 || i == null) {
++            this.op_done ();
++            return;
++        }
++
++        var card = new Card ();
++        card.index = i.index;
++        card.name = i.name;
++        card.description = i.proplist.gets ("device.description") ?? i.name;
++        card.bus = i.proplist.gets ("device.bus") ?? "";
++        card.form_factor = i.proplist.gets ("device.form_factor") ?? "";
++        card.address = i.proplist.gets ("api.bluez5.address") ?? "";
++        card.active_profile = (i.active_profile2 != null) ? i.active_profile2->name : "";
++
++        for (int p = 0; p < i.profiles2.length; p++) {
++            var prof = (AudioDeviceSelectorPa.ProfileInfo2*) i.profiles2[p];
++            card.profile_priority.insert (prof->name, prof->priority);
++            card.profile_available.insert (prof->name, prof->available != 0);
++        }
++
++        for (int p = 0; p < i.ports.length; p++) {
++            var port = (AudioDeviceSelectorPa.PortInfo*) i.ports[p];
++            var cp = new CardPort ();
++            cp.name = port->name;
++            cp.description = port->description ?? port->name;
++            cp.priority = port->priority;
++            cp.output = (port->direction & (int) PulseAudio.Direction.OUTPUT) != 0;
++            cp.unavailable = port->available == (int) PulseAudio.PortAvailable.NO;
++            for (int q = 0; q < port->profiles2.length; q++)
++                cp.profiles += port->profiles2[q]->name;
++            card.ports.add (cp);
++        }
++
++        this.new_cards.add (card);
++    }
++
++    private void sink_info_cb (Context c, SinkInfo? i, int eol)
++    {
++        if (eol != 0 || i == null) {
++            this.op_done ();
++            return;
++        }
++
++        var node = new Node ();
++        node.index = i.index;
++        node.name = i.name;
++        node.description = i.description ?? i.name;
++        node.card = i.card;
++        node.output = true;
++        node.is_monitor = false;
++        node.active_port = (i.active_port != null) ? i.active_port->name : null;
++        for (int p = 0; p < i.ports.length; p++)
++            node.ports += i.ports[p]->name;
++        this.new_nodes.add (node);
++    }
++
++    private void source_info_cb (Context c, SourceInfo? i, int eol)
++    {
++        if (eol != 0 || i == null) {
++            this.op_done ();
++            return;
++        }
++
++        var node = new Node ();
++        node.index = i.index;
++        node.name = i.name;
++        node.description = i.description ?? i.name;
++        node.card = i.card;
++        node.output = false;
++        node.is_monitor = i.monitor_of_sink != PulseAudio.INVALID_INDEX;
++        node.active_port = (i.active_port != null) ? i.active_port->name : null;
++        for (int p = 0; p < i.ports.length; p++)
++            node.ports += i.ports[p]->name;
++        this.new_nodes.add (node);
++    }
++
++    /* Model */
++
++    private static string strip_ucm_prefix (string port)
++    {
++        if (port.has_prefix ("[Out] "))
++            return port.substring (6);
++        if (port.has_prefix ("[In] "))
++            return port.substring (5);
++        return port;
++    }
++
++    private static string id_for (Card card, CardPort port)
++    {
++        return "%s|%s".printf (card.name, port.name);
++    }
++
++
++    private Card? card_by_name (string name)
++    {
++        foreach (var c in this.cards)
++            if (c.name == name)
++                return c;
++        return null;
++    }
++
++    private Node? node_by_name (string name)
++    {
++        foreach (var n in this.nodes)
++            if (n.name == name)
++                return n;
++        return null;
++    }
++
++    private Node? node_on_card (uint32 card, bool output, string? port)
++    {
++        foreach (var n in this.nodes) {
++            if (n.card != card || n.output != output || n.is_monitor)
++                continue;
++            if (port == null)
++                return n;
++            foreach (var p in n.ports)
++                if (p == port)
++                    return n;
++        }
++        return null;
++    }
++
++    private string label_for (Card card, CardPort port, int ports_in_direction)
++    {
++        if (card.is_internal ()) {
++            string dev = strip_ucm_prefix (port.name);
++            if (port.output) {
++                if (dev.contains ("Earpiece") || dev == "output-earpiece")
++                    return _("Earpiece");
++                if (dev.contains ("Speaker") || dev == "output-speaker")
++                    return _("Phone speaker");
++                if (dev.contains ("Headphone") || dev.contains ("Headset") || dev.contains ("wired"))
++                    return _("Wired headset");
++            } else {
++                if (dev == "Mic1" || dev == "Mic" || dev == "DigitalMic" || dev == "input-builtin_mic")
++                    return _("Built-in microphone");
++                if (dev == "Mic2")
++                    return _("Built-in microphone (top)");
++                if (dev.contains ("Headset") || dev.contains ("wired"))
++                    return _("Headset microphone");
++            }
++            return port.description;
++        }
++
++        if (card.is_bluetooth ()) {
++            string name = this.bt_value (card, "name") ?? card.description;
++            if (port.output)
++                return name;
++            return _("%s microphone").printf (name);
++        }
++
++        if (ports_in_direction > 1)
++            return "%s – %s".printf (card.description, port.description);
++        return card.description;
++    }
++
++    private string icon_for (Card card, CardPort port)
++    {
++        if (card.is_bluetooth ()) {
++            if (!port.output)
++                return "audio-input-microphone-symbolic";
++            switch (this.bt_value (card, "type") ?? card.form_factor) {
++                case "car":
++                    return "audio-car";
++                case "speaker":
++                case "hifi":
++                case "portable":
++                    return "audio-speakers-symbolic";
++                case "phone":
++                case "handset":
++                    return "phone-symbolic";
++                default:
++                    return "audio-headphones-symbolic";
++            }
++        }
++        if (!port.output)
++            return "audio-input-microphone-symbolic";
++        string dev = strip_ucm_prefix (port.name);
++        if (card.is_internal () && dev.contains ("Earpiece"))
++            return "phone-symbolic";
++        if (card.is_internal () && dev.contains ("Speaker"))
++            return "audio-speakers-symbolic";
++        return "audio-headphones-symbolic";
++    }
++
++    private static int card_order (Card a, Card b)
++    {
++        int ra = a.is_internal () ? 0 : (a.is_usb () ? 1 : (a.is_bluetooth () ? 2 : 3));
++        int rb = b.is_internal () ? 0 : (b.is_usb () ? 1 : (b.is_bluetooth () ? 2 : 3));
++        if (ra != rb)
++            return ra - rb;
++        return (int) a.index - (int) b.index;
++    }
++
++    private Gee.ArrayList<Device> build_list (bool output, out string active_id)
++    {
++        var list = new Gee.ArrayList<Device> ();
++        string default_name = output ? this.default_sink : this.default_source;
++        Node? default_node = this.node_by_name (default_name);
++        active_id = "";
++
++        var sorted = new Gee.ArrayList<Card> ();
++        sorted.add_all (this.cards);
++        sorted.sort (card_order);
++
++        foreach (var card in sorted) {
++            var ports = new Gee.ArrayList<CardPort> ();
++            foreach (var port in card.ports) {
++                if (port.output != output || port.unavailable)
++                    continue;
++                /* The earpiece only makes sense next to the ear */
++                if (output && card.is_internal () && !this.in_call &&
++                        strip_ucm_prefix (port.name).contains ("Earpiece"))
++                    continue;
++                bool usable = false;
++                foreach (var prof in port.profiles)
++                    if (card.profile_available.lookup (prof))
++                        usable = true;
++                if (!usable)
++                    continue;
++                ports.add (port);
++            }
++
++            if (ports.size == 0) {
++                /* Cards without ports (some USB devices): one entry per node */
++                foreach (var n in this.nodes) {
++                    if (n.card != card.index || n.output != output || n.is_monitor)
++                        continue;
++                    var dev = new Device ();
++                    dev.id = "node|" + n.name;
++                    dev.label = card.is_bluetooth () && !output ? _("%s microphone").printf (card.description) : card.description;
++                    dev.icon = output ? "audio-headphones-symbolic" : "audio-input-microphone-symbolic";
++                    list.add (dev);
++                    if (n.name == default_name)
++                        active_id = dev.id;
++                }
++                continue;
++            }
++
++            foreach (var port in ports) {
++                var dev = new Device ();
++                dev.id = id_for (card, port);
++                dev.label = this.label_for (card, port, ports.size);
++                dev.icon = this.icon_for (card, port);
++                list.add (dev);
++
++                if (default_node != null && default_node.card == card.index &&
++                        (default_node.active_port == port.name ||
++                         (default_node.active_port == null && default_node.ports.length == 0)))
++                    active_id = dev.id;
++            }
++        }
++
++        /* A default without a card (filter or virtual node): still show what is in use */
++        if (active_id == "" && default_node != null && default_node.card == PulseAudio.INVALID_INDEX &&
++                !default_node.name.has_prefix ("auto_null")) {
++            var dev = new Device ();
++            dev.id = "node|" + default_node.name;
++            dev.label = default_node.description;
++            dev.icon = output ? "audio-speakers-symbolic" : "audio-input-microphone-symbolic";
++            list.add (dev);
++            active_id = dev.id;
++        }
++
++        return list;
++    }
++
++    private void rebuild ()
++    {
++        bool call = false;
++        foreach (var card in this.cards)
++            if (card.is_internal () && card.active_profile.has_prefix ("Voice Call"))
++                call = true;
++        if (call != this.in_call) {
++            this.in_call = call;
++            if (!call)
++                this.restore_call_headsets ();
++        }
++
++        this.process_pending ();
++        this.load_bt_names ();
++        this.switch_to_new_devices ();
++        this.apply_app_routes ();
++
++        string out_id, in_id;
++        var outs = this.build_list (true, out out_id);
++        var ins = this.build_list (false, out in_id);
++
++        var sig = new StringBuilder ();
++        foreach (var d in outs)
++            sig.append_printf ("o:%s=%s;", d.id, d.label);
++        foreach (var d in ins)
++            sig.append_printf ("i:%s=%s;", d.id, d.label);
++        sig.append_printf ("ao:%s;ai:%s;c:%d;a:%d;", out_id, in_id, call ? 1 : 0, this.auto_switch ? 1 : 0);
++        sig.append (this.apps_json ());
++
++        if (sig.str == this.last_signature)
++            return;
++        this.last_signature = sig.str;
++
++        this.outputs = outs;
++        this.inputs = ins;
++        this.active_output = out_id;
++        this.active_input = in_id;
++        this.changed ();
++    }
++
++    /* Switching to new devices */
++
++    private bool first_snapshot = true;
++    private Gee.HashSet<string> cards_with_outputs = new Gee.HashSet<string> ();
++    private Gee.HashSet<string> cards_with_inputs = new Gee.HashSet<string> ();
++
++    private void switch_to_new_devices ()
++    {
++        var outs = new Gee.HashSet<string> ();
++        var ins = new Gee.HashSet<string> ();
++        Node? new_out = null, new_in = null;
++
++        foreach (var n in this.nodes) {
++            if (n.is_monitor || n.card == PulseAudio.INVALID_INDEX)
++                continue;
++            Card? card = null;
++            foreach (var c in this.cards)
++                if (c.index == n.card)
++                    card = c;
++            if (card == null || !(card.is_bluetooth () || card.is_usb ()))
++                continue;
++            if (n.output) {
++                outs.add (card.name);
++                if (!this.cards_with_outputs.contains (card.name) && new_out == null)
++                    new_out = n;
++            } else {
++                ins.add (card.name);
++                /* A Bluetooth microphone only exists on the headset profile:
++                 * following it would drag music onto HFP. USB mics are fine. */
++                if (!this.cards_with_inputs.contains (card.name) && new_in == null && card.is_usb ())
++                    new_in = n;
++            }
++        }
++
++        if (!this.first_snapshot && this.auto_switch && !this.in_call && !this.read_only) {
++            if (new_out != null) {
++                debug ("audio devices: new output %s", new_out.name);
++                this.apply_node (new_out, null);
++            }
++            if (new_in != null) {
++                debug ("audio devices: new input %s", new_in.name);
++                this.apply_node (new_in, null);
++            }
++        }
++
++        this.cards_with_outputs = outs;
++        this.cards_with_inputs = ins;
++        this.first_snapshot = false;
++    }
++
++    /* Per-app routing */
++
++    private const string APP_OUTPUT = "App output";
++    private const string APP_INPUT = "App input";
++    private const string APP_NAMES = "App names";
++    private const string APP_ICONS = "App icons";
++
++    /* Node currently realising a device id, or null when it is not available
++     * without a profile switch (per-app routes never switch profiles). */
++    private Node? node_for_id (string id, bool output)
++    {
++        if (id.has_prefix ("node|"))
++            return this.node_by_name (id.substring (5));
++        int bar = id.index_of ("|");
++        if (bar <= 0)
++            return null;
++        Card? card = this.card_by_name (id.substring (0, bar));
++        if (card == null)
++            return null;
++        string port = id.substring (bar + 1);
++        Node? n = this.node_on_card (card.index, output, port);
++        if (n == null)
++            return null;
++        if (n.active_port != null && n.active_port != port)
++            return null;
++        return n;
++    }
++
++    private void apply_app_routes ()
++    {
++        if (this.read_only)
++            return;
++        foreach (var st in this.streams) {
++            string? want = this.setting (st.output ? APP_OUTPUT : APP_INPUT, st.key);
++            Node? target = null;
++            if (want != null && want != "")
++                target = this.node_for_id (want, st.output);
++            if (target == null) {
++                /* Default (or the chosen device is away): follow the default */
++                if (want == null || want == "" || !this.moved_streams.contains (st.index))
++                    continue;
++                target = this.node_by_name (st.output ? this.default_sink : this.default_source);
++                if (target == null)
++                    continue;
++            }
++            if (target.index == st.node)
++                continue;
++            debug ("audio devices: moving %s stream of %s to %s", st.output ? "output" : "input", st.key, target.name);
++            this.moved_streams.add (st.index);
++            if (st.output)
++                this.context.move_sink_input_by_index (st.index, target.index, null);
++            else
++                this.context.move_source_output_by_index (st.index, target.index, null);
++        }
++    }
++
++    private Gee.HashSet<uint32> moved_streams = new Gee.HashSet<uint32> ();
++
++    public void set_app_device (Kind kind, string key, string id)
++    {
++        bool output = kind == Kind.OUTPUT;
++        string group = output ? APP_OUTPUT : APP_INPUT;
++        if (id == "" || id == "default") {
++            try {
++                this.settings.remove_key (group, key);
++            } catch (GLib.Error e) {
++            }
++        } else {
++            this.settings.set_string (group, key, id);
++        }
++        foreach (var st in this.streams) {
++            if (st.key == key) {
++                this.settings.set_string (APP_NAMES, key, st.name);
++                if (st.icon != "")
++                    this.settings.set_string (APP_ICONS, key, st.icon);
++            }
++        }
++        this.save_settings ();
++
++        if (!this.ready)
++            return;
++        /* "Default": put the running streams back on the default device */
++        if (id == "" || id == "default") {
++            Node? def = this.node_by_name (output ? this.default_sink : this.default_source);
++            foreach (var st in this.streams) {
++                if (st.key != key || st.output != output || def == null || st.node == def.index)
++                    continue;
++                if (output)
++                    this.context.move_sink_input_by_index (st.index, def.index, null);
++                else
++                    this.context.move_source_output_by_index (st.index, def.index, null);
++            }
++        }
++        this.last_signature = "";
++        this.queue_refresh ();
++    }
++
++    /* Apps playing or recording now, plus the remembered ones */
++    public string apps_json ()
++    {
++        var keys = new Gee.ArrayList<string> ();
++        var names = new HashTable<string, string> (str_hash, str_equal);
++        var icons = new HashTable<string, string> (str_hash, str_equal);
++        var playing = new Gee.HashSet<string> ();
++        var recording = new Gee.HashSet<string> ();
++
++        foreach (var st in this.streams) {
++            if (!keys.contains (st.key))
++                keys.add (st.key);
++            names.insert (st.key, st.name);
++            if (st.icon != "")
++                icons.insert (st.key, st.icon);
++            if (!st.corked)
++                (st.output ? playing : recording).add (st.key);
++            else if (!st.output)
++                recording.add (st.key);
++        }
++        foreach (var group in new string[] { APP_OUTPUT, APP_INPUT }) {
++            try {
++                foreach (var k in this.settings.get_keys (group))
++                    if (!keys.contains (k))
++                        keys.add (k);
++            } catch (GLib.Error e) {
++            }
++        }
++
++        var b = new StringBuilder ("[");
++        bool first = true;
++        foreach (var k in keys) {
++            string name = names.lookup (k) ?? this.setting (APP_NAMES, k) ?? k;
++            string icon = icons.lookup (k) ?? this.setting (APP_ICONS, k) ?? "";
++            if (!first)
++                b.append (",");
++            first = false;
++            b.append_printf ("{\"key\":\"%s\",\"name\":\"%s\",\"icon\":\"%s\",\"playing\":%s,\"recording\":%s,\"output\":\"%s\",\"input\":\"%s\"}",
++                             json_escape (k), json_escape (name), json_escape (icon),
++                             playing.contains (k) ? "true" : "false",
++                             recording.contains (k) ? "true" : "false",
++                             json_escape (this.setting (APP_OUTPUT, k) ?? "default"),
++                             json_escape (this.setting (APP_INPUT, k) ?? "default"));
++        }
++        b.append ("]");
++        return b.str;
++    }
++
++    /* Selection */
++
++    private static string profile_family (Card card, string profile)
++    {
++        if (card.is_bluetooth ()) {
++            if (profile.has_prefix ("a2dp"))
++                return "a2dp";
++            if (profile.has_prefix ("headset-head-unit") || profile.has_prefix ("handsfree") || profile.has_prefix ("headset_head_unit"))
++                return "hfp";
++            return profile;
++        }
++        int paren = profile.index_of (" (");
++        return paren > 0 ? profile.substring (0, paren) : profile;
++    }
++
++    private string? best_profile (Card card, CardPort port)
++    {
++        string family = profile_family (card, card.active_profile);
++
++        /* Keep the device of the other direction on this card if possible */
++        string? keep = null;
++        Node? other = this.node_on_card (card.index, !port.output, null);
++        if (other != null && other.active_port != null)
++            keep = strip_ucm_prefix (other.active_port);
++
++        string? best = null;
++        int64 best_score = int64.MIN;
++        foreach (var prof in port.profiles) {
++            if (!card.profile_available.lookup (prof))
++                continue;
++            int64 score = (int64) card.profile_priority.lookup (prof);
++            if (card.is_bluetooth ()) {
++                bool hfp = profile_family (card, prof) == "hfp";
++                /* Calls and microphones need the headset profile, music wants A2DP */
++                if ((this.in_call || !port.output) == hfp)
++                    score += (int64) 1 << 40;
++            } else if (profile_family (card, prof) == family) {
++                score += (int64) 1 << 40;
++            }
++            if (keep != null && prof.contains (keep))
++                score += (int64) 1 << 36;
++            if (score > best_score) {
++                best_score = score;
++                best = prof;
++            }
++        }
++        return best;
++    }
++
++    private void restore_call_headsets ()
++    {
++        foreach (var name in this.call_headsets) {
++            Card? card = this.card_by_name (name);
++            if (card == null || profile_family (card, card.active_profile) != "hfp")
++                continue;
++            string? best = null;
++            uint32 best_prio = 0;
++            foreach (var prof in card.profile_priority.get_keys ()) {
++                if (profile_family (card, prof) != "a2dp" || !card.profile_available.lookup (prof))
++                    continue;
++                uint32 prio = card.profile_priority.lookup (prof);
++                if (best == null || prio > best_prio) {
++                    best = prof;
++                    best_prio = prio;
++                }
++            }
++            if (best != null) {
++                debug ("audio devices: call ended, %s back to '%s'", card.name, best);
++                this.context.set_card_profile_by_index (card.index, best, this.profile_set_cb);
++            }
++        }
++        this.call_headsets.clear ();
++    }
++
++    private void apply_node (Node node, string? port)
++    {
++        if (this.read_only)
++            return;
++        if (port != null && node.active_port != port) {
++            if (node.output)
++                this.context.set_sink_port_by_name (node.name, port, null);
++            else
++                this.context.set_source_port_by_name (node.name, port, null);
++        }
++        if (node.output) {
++            if (this.default_sink != node.name)
++                this.context.set_default_sink (node.name, null);
++        } else {
++            if (this.default_source != node.name)
++                this.context.set_default_source (node.name, null);
++        }
++    }
++
++    private void process_pending ()
++    {
++        int64 now = GLib.get_monotonic_time ();
++        var done = new Gee.ArrayList<Pending> ();
++        foreach (var p in this.pending) {
++            Node? node = this.node_on_card (p.card, p.output, p.port);
++            if (node != null) {
++                debug ("audio devices: %s ready on %s", p.port, node.name);
++                this.apply_node (node, p.port);
++                done.add (p);
++            } else if (now > p.deadline) {
++                warning ("audio devices: %s did not appear after the profile switch", p.port);
++                done.add (p);
++            }
++        }
++        this.pending.remove_all (done);
++    }
++
++    private void select_card_port (Card card, CardPort port)
++    {
++        Node? node = this.node_on_card (card.index, port.output, port.name);
++        if (node != null) {
++            this.apply_node (node, port.name);
++            return;
++        }
++
++        string? profile = this.best_profile (card, port);
++        if (profile == null) {
++            warning ("audio devices: no usable profile for %s on %s", port.name, card.name);
++            return;
++        }
++
++        debug ("audio devices: switching %s to profile '%s' for %s", card.name, profile, port.name);
++        var p = new Pending ();
++        p.output = port.output;
++        p.card = card.index;
++        p.port = port.name;
++        p.deadline = GLib.get_monotonic_time () + 5 * TimeSpan.SECOND;
++        this.pending.add (p);
++        this.context.set_card_profile_by_index (card.index, profile, this.profile_set_cb);
++    }
++
++    private void profile_set_cb (Context c, int success)
++    {
++        if (success == 0)
++            warning ("audio devices: a card profile switch failed");
++        this.queue_refresh ();
++    }
++
++    public void select (Kind kind, string id)
++    {
++        if (!this.ready || this.read_only)
++            return;
++
++        bool output = kind == Kind.OUTPUT;
++
++        if (id.has_prefix ("node|")) {
++            Node? node = this.node_by_name (id.substring (5));
++            if (node != null)
++                this.apply_node (node, null);
++            return;
++        }
++
++        int bar = id.index_of ("|");
++        if (bar <= 0)
++            return;
++        Card? card = this.card_by_name (id.substring (0, bar));
++        if (card == null)
++            return;
++        string port_name = id.substring (bar + 1);
++        CardPort? port = null;
++        foreach (var p in card.ports)
++            if (p.name == port_name && p.output == output)
++                port = p;
++        if (port == null)
++            return;
++
++        this.select_card_port (card, port);
++
++        /* A Bluetooth headset chosen during a call takes the call's microphone too */
++        if (output && this.in_call && card.is_bluetooth ()) {
++            this.call_headsets.add (card.name);
++            foreach (var p in card.ports) {
++                if (!p.output && !p.unavailable) {
++                    var pend = new Pending ();
++                    pend.output = false;
++                    pend.card = card.index;
++                    pend.port = p.name;
++                    pend.deadline = GLib.get_monotonic_time () + 5 * TimeSpan.SECOND;
++                    this.pending.add (pend);
++                    break;
++                }
++            }
++            this.process_pending ();
++        }
++    }
++
++    /* JSON for Settings > Sound (the QML side parses the action state) */
++    private static string json_escape (string s)
++    {
++        var b = new StringBuilder ();
++        unichar c;
++        int i = 0;
++        while (s.get_next_char (ref i, out c)) {
++            switch (c) {
++                case '"': b.append ("\\\""); break;
++                case '\\': b.append ("\\\\"); break;
++                case '\n': b.append ("\\n"); break;
++                case '\r': b.append ("\\r"); break;
++                case '\t': b.append ("\\t"); break;
++                default:
++                    if (c < 0x20)
++                        b.append_printf ("\\u%04x", (uint) c);
++                    else
++                        b.append_unichar (c);
++                    break;
++            }
++        }
++        return b.str;
++    }
++
++    public string to_json (Kind kind)
++    {
++        var list = kind == Kind.OUTPUT ? this.outputs : this.inputs;
++        string active = kind == Kind.OUTPUT ? this.active_output : this.active_input;
++        var b = new StringBuilder ("[");
++        bool first = true;
++        foreach (var d in list) {
++            if (!first)
++                b.append (",");
++            first = false;
++            b.append_printf ("{\"id\":\"%s\",\"label\":\"%s\",\"icon\":\"%s\",\"active\":%s}",
++                             json_escape (d.id), json_escape (d.label), json_escape (d.icon),
++                             d.id == active ? "true" : "false");
++        }
++        b.append ("]");
++        return b.str;
++    }
++}
+diff --git a/src/service.vala b/src/service.vala
+index fdc27fd..d25b54c 100644
+--- a/src/service.vala
++++ b/src/service.vala
+@@ -101,8 +101,10 @@ public class IndicatorSound.Service: Object {
+         this.menus = new HashTable<string, SoundMenu> (str_hash, str_equal);
+         this.menus.insert ("desktop_greeter", new SoundMenu (null, SoundMenu.DisplayFlags.SHOW_MUTE | SoundMenu.DisplayFlags.HIDE_PLAYERS | SoundMenu.DisplayFlags.GREETER_PLAYERS));
+         this.menus.insert ("phone_greeter", new SoundMenu (null, SoundMenu.DisplayFlags.SHOW_SILENT_MODE | SoundMenu.DisplayFlags.HIDE_INACTIVE_PLAYERS | SoundMenu.DisplayFlags.GREETER_PLAYERS));
+-        this.menus.insert ("desktop", new SoundMenu ("indicator.desktop-settings", SoundMenu.DisplayFlags.SHOW_MUTE | SoundMenu.DisplayFlags.HIDE_INACTIVE_PLAYERS_PLAY_CONTROLS | SoundMenu.DisplayFlags.ADD_PLAY_CONTROL_INACTIVE_PLAYER));
+-        this.menus.insert ("phone", new SoundMenu ("indicator.phone-settings", SoundMenu.DisplayFlags.SHOW_SILENT_MODE | SoundMenu.DisplayFlags.HIDE_INACTIVE_PLAYERS));
++        this.menus.insert ("desktop", new SoundMenu ("indicator.desktop-settings", SoundMenu.DisplayFlags.SHOW_MUTE | SoundMenu.DisplayFlags.HIDE_INACTIVE_PLAYERS_PLAY_CONTROLS | SoundMenu.DisplayFlags.ADD_PLAY_CONTROL_INACTIVE_PLAYER | SoundMenu.DisplayFlags.SHOW_DEVICES));
++        this.menus.insert ("phone", new SoundMenu ("indicator.phone-settings", SoundMenu.DisplayFlags.SHOW_SILENT_MODE | SoundMenu.DisplayFlags.HIDE_INACTIVE_PLAYERS | SoundMenu.DisplayFlags.SHOW_DEVICES));
++
++        this.setup_device_selection ();
+ 
+         this.menus.@foreach ( (profile, menu) => {
+             this.volume_control.bind_property ("active-mic", menu, "show-mic-volume", BindingFlags.SYNC_CREATE);
+@@ -176,6 +178,82 @@ public class IndicatorSound.Service: Object {
+         }
+     }
+ 
++    /* Output/input device selection (sections in the menu, actions for Settings > Sound) */
++    PulseAudio.GLibMainLoop devices_loop;
++    AudioDeviceSelector devices;
++    SimpleAction output_device_action;
++    SimpleAction input_device_action;
++    SimpleAction output_devices_action;
++    SimpleAction input_devices_action;
++    SimpleAction switch_new_action;
++    SimpleAction apps_action;
++
++    void setup_device_selection () {
++        this.devices_loop = new PulseAudio.GLibMainLoop ();
++        this.devices = new AudioDeviceSelector (this.devices_loop);
++
++        this.output_device_action = new SimpleAction.stateful ("output-device", VariantType.STRING, new Variant.string (""));
++        this.output_device_action.activate.connect ((action, param) => {
++            if (param != null)
++                this.devices.select (AudioDeviceSelector.Kind.OUTPUT, param.get_string ());
++        });
++        this.output_device_action.change_state.connect ((action, val) => {
++            this.devices.select (AudioDeviceSelector.Kind.OUTPUT, val.get_string ());
++        });
++        this.actions.add_action (this.output_device_action);
++
++        this.input_device_action = new SimpleAction.stateful ("input-device", VariantType.STRING, new Variant.string (""));
++        this.input_device_action.activate.connect ((action, param) => {
++            if (param != null)
++                this.devices.select (AudioDeviceSelector.Kind.INPUT, param.get_string ());
++        });
++        this.input_device_action.change_state.connect ((action, val) => {
++            this.devices.select (AudioDeviceSelector.Kind.INPUT, val.get_string ());
++        });
++        this.actions.add_action (this.input_device_action);
++
++        /* JSON lists [{id, label, icon, active}] for Settings > Sound */
++        this.output_devices_action = new SimpleAction.stateful ("output-devices", null, new Variant.string ("[]"));
++        this.actions.add_action (this.output_devices_action);
++        this.input_devices_action = new SimpleAction.stateful ("input-devices", null, new Variant.string ("[]"));
++        this.actions.add_action (this.input_devices_action);
++
++        /* Settings > Sound: "Automatically switch to new devices" */
++        this.switch_new_action = new SimpleAction.stateful ("switch-to-new-devices", VariantType.BOOLEAN, new Variant.boolean (this.devices.auto_switch));
++        this.switch_new_action.activate.connect ((action, param) => {
++            action.change_state (param ?? new Variant.boolean (!action.get_state ().get_boolean ()));
++        });
++        this.switch_new_action.change_state.connect ((action, val) => {
++            this.devices.set_switch_to_new_devices (val.get_boolean ());
++            action.set_state (val);
++        });
++        this.actions.add_action (this.switch_new_action);
++
++        /* Settings > Sound > App audio: JSON [{key, name, icon, playing,
++         * recording, output, input}] and "output|input <TAB> key <TAB> device id
++         * or default" to change one app's choice. */
++        this.apps_action = new SimpleAction.stateful ("app-streams", null, new Variant.string ("[]"));
++        this.actions.add_action (this.apps_action);
++        var set_app = new SimpleAction ("set-app-device", VariantType.STRING);
++        set_app.activate.connect ((action, param) => {
++            string[] f = param.get_string ().split ("\t", 3);
++            if (f.length != 3)
++                return;
++            this.devices.set_app_device (f[0] == "input" ? AudioDeviceSelector.Kind.INPUT : AudioDeviceSelector.Kind.OUTPUT, f[1], f[2]);
++        });
++        this.actions.add_action (set_app);
++
++        this.devices.changed.connect (() => {
++            this.switch_new_action.set_state (new Variant.boolean (this.devices.auto_switch));
++            this.apps_action.set_state (new Variant.string (this.devices.apps_json ()));
++            this.menus.@foreach ((profile, menu) => menu.update_devices (this.devices));
++            this.output_device_action.set_state (new Variant.string (this.devices.active_output));
++            this.input_device_action.set_state (new Variant.string (this.devices.active_input));
++            this.output_devices_action.set_state (new Variant.string (this.devices.to_json (AudioDeviceSelector.Kind.OUTPUT)));
++            this.input_devices_action.set_state (new Variant.string (this.devices.to_json (AudioDeviceSelector.Kind.INPUT)));
++        });
++    }
++
+     bool greeter_show_track () {
+         return export_to_accounts_service;
+     }
+diff --git a/src/sound-menu.vala b/src/sound-menu.vala
+index 574e849..4468e6c 100644
+--- a/src/sound-menu.vala
++++ b/src/sound-menu.vala
+@@ -29,7 +29,8 @@ public class SoundMenu: Object
+         GREETER_PLAYERS = 8,
+         SHOW_SILENT_MODE = 16,
+         HIDE_INACTIVE_PLAYERS_PLAY_CONTROLS = 32,
+-        ADD_PLAY_CONTROL_INACTIVE_PLAYER = 64
++        ADD_PLAY_CONTROL_INACTIVE_PLAYER = 64,
++        SHOW_DEVICES = 128
+     }
+ 
+     public enum PlayerSectionPosition {
+@@ -74,6 +75,14 @@ public class SoundMenu: Object
+         this.menu = new Menu ();
+         this.menu.append_section (null, volume_section);
+ 
++        /* Output and input device choice, right below the volume */
++        if ((flags & DisplayFlags.SHOW_DEVICES) != 0) {
++            this.output_section = new Menu ();
++            this.input_section = new Menu ();
++            this.menu.append_section (null, this.output_section);
++            this.menu.append_section (null, this.input_section);
++        }
++
+         if (settings_action != null) {
+             settings_shown = true;
+             this.menu.append (_("Sound Settings…"), settings_action);
+@@ -294,9 +303,36 @@ public class SoundMenu: Object
+         }
+     }
+ 
++    void fill_device_section (Menu section, string title, string action, Gee.List<AudioDeviceSelector.Device> devices)
++    {
++        section.remove_all ();
++        if (devices.size == 0)
++            return;
++
++        var header = new MenuItem (title, null);
++        header.set_attribute ("x-ayatana-type", "s", "org.ayatana.indicator.section");
++        section.append_item (header);
++
++        foreach (var dev in devices) {
++            var item = new MenuItem (dev.label, null);
++            item.set_action_and_target_value (action, new Variant.string (dev.id));
++            section.append_item (item);
++        }
++    }
++
++    public void update_devices (AudioDeviceSelector selector)
++    {
++        if (this.output_section == null)
++            return;
++        fill_device_section (this.output_section, _("Output"), "indicator.output-device", selector.outputs);
++        fill_device_section (this.input_section, _("Input"), "indicator.input-device", selector.inputs);
++    }
++
+     public Menu root;
+     public Menu menu;
+     Menu volume_section;
++    Menu? output_section = null;
++    Menu? input_section = null;
+     bool mic_volume_shown;
+     bool settings_shown = false;
+     bool high_volume_warning_shown = false;
+diff --git a/vapi/fp6-pulse-ports.vapi b/vapi/fp6-pulse-ports.vapi
+new file mode 100644
+index 0000000..4b7e531
+--- /dev/null
++++ b/vapi/fp6-pulse-ports.vapi
+@@ -0,0 +1,24 @@
++/* The libpulse vapi keeps pa_card_port_info.available/direction and
++ * pa_card_profile_info2.available private. These mirror the C members
++ * that src/audio-device-selector.vala reads. */
++[CCode (cheader_filename = "pulse/introspect.h")]
++namespace AudioDeviceSelectorPa {
++    [CCode (cname = "pa_card_profile_info2", has_type_id = false, destroy_function = "")]
++    public struct ProfileInfo2 {
++        public unowned string name;
++        public unowned string description;
++        public uint32 priority;
++        public int available;
++    }
++
++    [CCode (cname = "pa_card_port_info", has_type_id = false, destroy_function = "")]
++    public struct PortInfo {
++        public unowned string name;
++        public unowned string description;
++        public uint32 priority;
++        public int available;
++        public int direction;
++        [CCode (array_length_cname = "n_profiles", array_length_type = "uint32_t")]
++        public ProfileInfo2*[] profiles2;
++    }
++}

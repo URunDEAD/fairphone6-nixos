@@ -1,0 +1,172 @@
+--- a/plugins/sound/PageComponent.qml	2026-10-27 12:35:02.936250742 +0200
++++ b/plugins/sound/PageComponent.qml	2026-10-27 12:46:04.125489920 +0200
+@@ -91,6 +91,169 @@
+                 }
+             }
+ 
++            /* Output and input device choice (FP6). The list and the
++             * switching logic live in ayatana-indicator-sound; this page
++             * shows the same choices as the sound indicator menu. */
++            Column {
++                id: audioDevices
++                objectName: "audioDevices"
++                anchors.left: parent.left
++                anchors.right: parent.right
++
++                QDBusActionGroup {
++                    id: deviceActionGroup
++                    busType: DBus.SessionBus
++                    busName: "org.ayatana.indicator.sound"
++                    objectPath: "/org/ayatana/indicator/sound"
++
++                    property variant outputDevice: action("output-device")
++                    property variant inputDevice: action("input-device")
++                    property variant outputDevices: action("output-devices")
++                    property variant inputDevices: action("input-devices")
++                    property variant switchToNew: action("switch-to-new-devices")
++                    property variant appStreams: action("app-streams")
++
++                    Component.onCompleted: start()
++                }
++
++                function parseDevices(state) {
++                    if (!state)
++                        return []
++                    try {
++                        return JSON.parse(state)
++                    } catch (e) {
++                        return []
++                    }
++                }
++
++                property var outputs: parseDevices(deviceActionGroup.outputDevices.state)
++                property var inputs: parseDevices(deviceActionGroup.inputDevices.state)
++
++                Component {
++                    id: deviceDelegate
++
++                    ListItem {
++                        id: deviceItem
++                        property var device
++                        property var target
++                        height: deviceLayout.height + (divider.visible ? divider.height : 0)
++                        divider.visible: false
++
++                        ListItemLayout {
++                            id: deviceLayout
++                            title.text: deviceItem.device.label
++
++                            Icon {
++                                SlotsLayout.position: SlotsLayout.Leading
++                                width: units.gu(3)
++                                height: width
++                                name: deviceItem.device.icon
++                                color: theme.palette.normal.backgroundText
++                            }
++                            Icon {
++                                objectName: "activeTick"
++                                SlotsLayout.position: SlotsLayout.Trailing
++                                width: units.gu(2.5)
++                                height: width
++                                name: "tick"
++                                color: theme.palette.normal.activity
++                                visible: deviceItem.device.active === true
++                            }
++                        }
++
++                        onClicked: {
++                            if (!deviceItem.device.active)
++                                deviceItem.target.activate(deviceItem.device.id)
++                        }
++                    }
++                }
++
++                SettingsItemTitle {
++                    text: i18n.tr("Output:")
++                    visible: audioDevices.outputs.length > 0
++                }
++
++                Repeater {
++                    objectName: "outputDevices"
++                    model: audioDevices.outputs
++                    delegate: Loader {
++                        anchors.left: parent.left
++                        anchors.right: parent.right
++                        sourceComponent: deviceDelegate
++                        onLoaded: {
++                            item.device = Qt.binding(function() { return modelData })
++                            item.target = deviceActionGroup.outputDevice
++                        }
++                    }
++                }
++
++                SettingsItemTitle {
++                    text: i18n.tr("Input:")
++                    visible: audioDevices.inputs.length > 0
++                }
++
++                Repeater {
++                    objectName: "inputDevices"
++                    model: audioDevices.inputs
++                    delegate: Loader {
++                        anchors.left: parent.left
++                        anchors.right: parent.right
++                        sourceComponent: deviceDelegate
++                        onLoaded: {
++                            item.device = Qt.binding(function() { return modelData })
++                            item.target = deviceActionGroup.inputDevice
++                        }
++                    }
++                }
++
++                SettingsListItems.Standard {
++                    text: i18n.tr("Automatically switch to new devices")
++                    visible: audioDevices.outputs.length > 0
++                    divider.visible: false
++
++                    Switch {
++                        id: switchToNewSwitch
++                        objectName: "switchToNewDevices"
++                        property bool serverChecked: deviceActionGroup.switchToNew.state === true
++
++                        LSC.ServerPropertySynchroniser {
++                            userTarget: switchToNewSwitch
++                            userProperty: "checked"
++                            serverTarget: switchToNewSwitch
++                            serverProperty: "serverChecked"
++
++                            onSyncTriggered: function(arg) { deviceActionGroup.switchToNew.activate(arg) }
++                        }
++                    }
++                }
++
++                SettingsListItems.Standard {
++                    visible: audioDevices.outputs.length > 0
++                    text: switchToNewSwitch.checked
++                          ? i18n.tr("Bluetooth and USB devices are used as soon as they connect. A device you choose stays the default; while it is away the previous one is used. Each device keeps its own volume.")
++                          : i18n.tr("A device you choose stays the default; while it is away the previous one is used. Each device keeps its own volume.")
++                    layout.title.maximumLineCount: 5
++                    layout.title.wrapMode: Text.WordWrap
++                    layout.title.textSize: Label.Small
++                    layout.title.color: theme.palette.normal.backgroundSecondaryText
++                }
++
++                SettingsListItems.SingleValueProgression {
++                    objectName: "appAudio"
++                    visible: audioDevices.outputs.length > 0
++                    text: i18n.tr("App audio")
++                    value: {
++                        var apps = audioDevices.parseDevices(deviceActionGroup.appStreams.state)
++                        var pinned = 0
++                        for (var i = 0; i < apps.length; i++)
++                            if (apps[i].output !== "default" || apps[i].input !== "default")
++                                pinned++
++                        return pinned > 0 ? i18n.tr("%1 app", "%1 apps", pinned).arg(pinned) : i18n.tr("Default")
++                    }
++                    onClicked: pageStack.addPageToNextColumn(root, Qt.resolvedUrl("AppAudioPage.qml"))
++                }
++            }
++
+             Column  {
+                 anchors.left: parent.left
+                 anchors.right: parent.right
