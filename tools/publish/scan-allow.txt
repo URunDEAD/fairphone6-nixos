@@ -51,3 +51,9 @@ let mut password = String::new\(\);
 let ssid = ssid\.filter\(
 WifiNetwork \{ ssid: ssid\.into\(\), security, password: password\.into\(\)
 showPassword
+# ota: URL-rule tests and the address-field placeholder use generic private/test addresses
+for u in \["http://192\.168\.1\.10:8742", "http://10\.0\.0\.2"
+"ftp://10\.0\.0\.1", "10\.0\.0\.1:8742", "http://10\.0\.0\.1:0"
+"http://10\.0\.0\.1/\?x=1", "http://10\.0\.0\.1/a/\.\./b"
+Enter an address like https://host/path or http://192\.168\.1\.10:8742
+for bad in \["http://example\.org", "http://8\.8\.8\.8:8742"
