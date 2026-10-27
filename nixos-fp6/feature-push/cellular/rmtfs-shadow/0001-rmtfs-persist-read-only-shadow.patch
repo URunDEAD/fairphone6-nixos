@@ -1,0 +1,756 @@
+rmtfs: -D <dir>: persist the read-only (-r) RAM shadow as files
+
+With -r every modem EFS write stays in a RAM shadow and is lost at power-off,
+so the FP6 modem re-selects its platform MCFG and needs a reset on every
+boot. -D keeps -r's guarantee (the partitions are only ever opened
+O_RDONLY; -D without -r is refused) and additionally:
+ * at open: reads the partition as before, keeps a first-capture copy in
+   <dir>/original/<name>.img (0400, never replaced), and serves
+   <dir>/<name>.img instead when it is valid: exact size, magic, sha256 of
+   the data, and the sha256 of the same source partition contents;
+ * after modem writes: saves the shadow 2 s after the last write, on CLOSE
+   and at exit, as <name>.img.tmp -> fsync -> rename -> fsync(dir);
+ * <dir>/RESET present: stop saving until restart.
+
+--- a/Makefile
++++ b/Makefile
+@@ -9,7 +9,7 @@
+ 
+ RMTFS_EFS_PATH ?= /var/lib/rmtfs
+ 
+-SRCS := qmi_rmtfs.c rmtfs.c rproc.c sharedmem.c storage.c util.c
++SRCS := qmi_rmtfs.c rmtfs.c rproc.c shadow.c sharedmem.c storage.c util.c
+ OBJS := $(SRCS:.c=.o)
+ 
+ $(OUT): $(OBJS)
+--- a/rmtfs.c
++++ b/rmtfs.c
+@@ -1,5 +1,6 @@
+ #include <sys/mman.h>
+ #include <sys/socket.h>
++#include <sys/time.h>
+ #include <sys/types.h>
+ #include <ctype.h>
+ #include <dirent.h>
+@@ -425,6 +426,8 @@
+ static int run_rmtfs(int rprocfd)
+ {
+ 	bool sig_int_handled = false;
++	struct timeval tv;
++	int flush_ms;
+ 	int rmtfs_fd;
+ 	fd_set rfds;
+ 	char done;
+@@ -466,12 +469,21 @@
+ 			FD_SET(rprocfd, &rfds);
+ 		nfds = MAX(rmtfs_fd, rprocfd) + 1;
+ 
+-		ret = select(nfds, &rfds, NULL, NULL, NULL);
++		flush_ms = storage_next_flush_ms();
++		if (flush_ms >= 0) {
++			tv.tv_sec = flush_ms / 1000;
++			tv.tv_usec = (flush_ms % 1000) * 1000;
++		}
++		ret = select(nfds, &rfds, NULL, NULL, flush_ms >= 0 ? &tv : NULL);
+ 		if (ret < 0 && errno != EINTR)
+ 			break;
+ 		else if (ret < 0 && errno == EINTR)
+ 			continue;
+ 
++		storage_flush(false);
++		if (ret == 0)
++			continue;
++
+ 		if (rprocfd >= 0 && FD_ISSET(rprocfd, &rfds)) {
+ 			ret = read(rprocfd, &done, 1);
+ 			if (!ret || done == 'Y')
+@@ -504,8 +516,9 @@
+ 	int ret;
+ 	int option;
+ 	const char *storage_root = NULL;
++	const char *persist = NULL;
+ 
+-	while ((option = getopt(argc, argv, "o:S:Prsv")) != -1) {
++	while ((option = getopt(argc, argv, "o:D:S:Prsv")) != -1) {
+ 		switch (option) {
+ 		/*
+ 		 * -o sets the directory where EFS images are stored,
+@@ -516,6 +529,14 @@
+ 			storage_root = optarg;
+ 			break;
+ 
++		/*
++		 * -D <dir> (with -r only): persist the read-only RAM shadow
++		 * as files in <dir> and load them at the next start
++		 */
++		case 'D':
++			persist = optarg;
++			break;
++
+ 		/* -P to find and use raw EFS partitions */
+ 		case 'P':
+ 			use_partitions = true;
+@@ -568,6 +589,13 @@
+ 	sigaction(SIGINT, &action, NULL);
+ 	sigaction(SIGTERM, &action, NULL);
+ 
++	if (persist && !read_only) {
++		fprintf(stderr, "-D requires -r: the partitions are never written in persist mode\n");
++		return 1;
++	}
++	if (persist && storage_set_persist_dir(persist))
++		return 1;
++
+ 	rmem = rmtfs_mem_open();
+ 	if (!rmem)
+ 		return 1;
+--- a/rmtfs.h
++++ b/rmtfs.h
+@@ -1,6 +1,7 @@
+ #ifndef __RMTFS_H__
+ #define __RMTFS_H__
+ 
++#include <stdbool.h>
+ #include <stdint.h>
+ #include "qmi_rmtfs.h"
+ 
+@@ -36,6 +37,9 @@
+ ssize_t storage_pread(const struct rmtfd *rmtfd, void *buf, size_t nbyte, off_t offset);
+ ssize_t storage_pwrite(struct rmtfd *rmtfd, const void *buf, size_t nbyte, off_t offset);
+ int storage_sync(struct rmtfd *rmtfd);
++int storage_set_persist_dir(const char *dir);
++void storage_flush(bool force);
++int storage_next_flush_ms(void);
+ 
+ int rproc_init(void);
+ int rproc_start(void);
+--- /dev/null
++++ b/shadow.c
+@@ -0,0 +1,299 @@
++#include <sys/stat.h>
++#include <sys/types.h>
++#include <errno.h>
++#include <fcntl.h>
++#include <limits.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
++#include "shadow.h"
++
++static const char shadow_magic[16] = "FP6RMTFSSHADOW1";
++
++/* ---- SHA-256 (FIPS 180-4) ---------------------------------------------- */
++
++struct sha256_ctx {
++	uint32_t h[8];
++	uint64_t len;
++	uint8_t buf[64];
++	size_t fill;
++};
++
++static const uint32_t sha256_k[64] = {
++	0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
++	0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
++	0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
++	0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
++	0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
++	0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
++	0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
++	0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
++};
++
++#define ROR(x, n) (((x) >> (n)) | ((x) << (32 - (n))))
++
++static void sha256_block(struct sha256_ctx *c, const uint8_t *p)
++{
++	uint32_t w[64], a, b, d, e, f, g, h, cc, t1, t2;
++	int i;
++
++	for (i = 0; i < 16; i++)
++		w[i] = (uint32_t)p[4 * i] << 24 | (uint32_t)p[4 * i + 1] << 16 |
++		       (uint32_t)p[4 * i + 2] << 8 | p[4 * i + 3];
++	for (i = 16; i < 64; i++)
++		w[i] = (ROR(w[i - 2], 17) ^ ROR(w[i - 2], 19) ^ (w[i - 2] >> 10)) + w[i - 7] +
++		       (ROR(w[i - 15], 7) ^ ROR(w[i - 15], 18) ^ (w[i - 15] >> 3)) + w[i - 16];
++
++	a = c->h[0]; b = c->h[1]; cc = c->h[2]; d = c->h[3];
++	e = c->h[4]; f = c->h[5]; g = c->h[6]; h = c->h[7];
++	for (i = 0; i < 64; i++) {
++		t1 = h + (ROR(e, 6) ^ ROR(e, 11) ^ ROR(e, 25)) + ((e & f) ^ (~e & g)) + sha256_k[i] + w[i];
++		t2 = (ROR(a, 2) ^ ROR(a, 13) ^ ROR(a, 22)) + ((a & b) ^ (a & cc) ^ (b & cc));
++		h = g; g = f; f = e; e = d + t1;
++		d = cc; cc = b; b = a; a = t1 + t2;
++	}
++	c->h[0] += a; c->h[1] += b; c->h[2] += cc; c->h[3] += d;
++	c->h[4] += e; c->h[5] += f; c->h[6] += g; c->h[7] += h;
++}
++
++void shadow_sha256(const void *data, size_t len, uint8_t out[32])
++{
++	static const uint32_t init[8] = {
++		0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
++		0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
++	};
++	struct sha256_ctx c;
++	const uint8_t *p = data;
++	uint64_t bits;
++	int i;
++
++	memcpy(c.h, init, sizeof(init));
++	c.len = len;
++	c.fill = 0;
++
++	while (len >= 64) {
++		sha256_block(&c, p);
++		p += 64;
++		len -= 64;
++	}
++	memcpy(c.buf, p, len);
++	c.fill = len;
++	c.buf[c.fill++] = 0x80;
++	if (c.fill > 56) {
++		memset(c.buf + c.fill, 0, 64 - c.fill);
++		sha256_block(&c, c.buf);
++		c.fill = 0;
++	}
++	memset(c.buf + c.fill, 0, 56 - c.fill);
++	bits = c.len * 8;
++	for (i = 0; i < 8; i++)
++		c.buf[63 - i] = bits >> (8 * i);
++	sha256_block(&c, c.buf);
++
++	for (i = 0; i < 8; i++) {
++		out[4 * i] = c.h[i] >> 24;
++		out[4 * i + 1] = c.h[i] >> 16;
++		out[4 * i + 2] = c.h[i] >> 8;
++		out[4 * i + 3] = c.h[i];
++	}
++}
++
++/* ---- image files --------------------------------------------------------- */
++
++int shadow_check_name(const char *name)
++{
++	size_t n = strlen(name);
++	size_t i;
++
++	if (n == 0 || n >= SHADOW_NAME_MAX || name[0] == '.')
++		return -1;
++	for (i = 0; i < n; i++) {
++		char ch = name[i];
++
++		if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
++		      (ch >= '0' && ch <= '9') || ch == '_' || ch == '-' || ch == '.'))
++			return -1;
++	}
++	return 0;
++}
++
++static void put_le64(uint8_t *p, uint64_t v)
++{
++	int i;
++
++	for (i = 0; i < 8; i++)
++		p[i] = v >> (8 * i);
++}
++
++static uint64_t get_le64(const uint8_t *p)
++{
++	uint64_t v = 0;
++	int i;
++
++	for (i = 0; i < 8; i++)
++		v |= (uint64_t)p[i] << (8 * i);
++	return v;
++}
++
++static int read_full(int fd, void *buf, size_t len)
++{
++	size_t done = 0;
++	ssize_t n;
++
++	while (done < len) {
++		n = read(fd, (char *)buf + done, len - done);
++		if (n < 0 && errno == EINTR)
++			continue;
++		if (n <= 0)
++			return -1;
++		done += n;
++	}
++	return 0;
++}
++
++static int write_full(int fd, const void *buf, size_t len)
++{
++	size_t done = 0;
++	ssize_t n;
++
++	while (done < len) {
++		n = write(fd, (const char *)buf + done, len - done);
++		if (n < 0 && errno == EINTR)
++			continue;
++		if (n <= 0)
++			return -1;
++		done += n;
++	}
++	return 0;
++}
++
++int shadow_read_image(const char *path, size_t expect_len, const uint8_t src_sha[32],
++		      void **out, const char **why)
++{
++	uint8_t hdr[SHADOW_HDR_LEN];
++	uint8_t sha[32];
++	struct stat st;
++	const char *reason;
++	void *data = NULL;
++	int fd;
++
++	fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
++	if (fd < 0) {
++		reason = "missing";
++		goto fail;
++	}
++	if (fstat(fd, &st) || !S_ISREG(st.st_mode)) {
++		reason = "not a regular file";
++		goto fail;
++	}
++	if ((uint64_t)st.st_size != (uint64_t)SHADOW_HDR_LEN + expect_len) {
++		reason = "size mismatch";
++		goto fail;
++	}
++	if (read_full(fd, hdr, sizeof(hdr))) {
++		reason = "short header";
++		goto fail;
++	}
++	if (memcmp(hdr, shadow_magic, sizeof(shadow_magic))) {
++		reason = "bad magic";
++		goto fail;
++	}
++	if (get_le64(hdr + 16) != expect_len) {
++		reason = "length mismatch";
++		goto fail;
++	}
++	if (memcmp(hdr + 56, src_sha, 32)) {
++		reason = "source partition changed";
++		goto fail;
++	}
++	data = malloc(expect_len ? expect_len : 1);
++	if (!data) {
++		reason = "out of memory";
++		goto fail;
++	}
++	if (read_full(fd, data, expect_len)) {
++		reason = "short data";
++		goto fail;
++	}
++	shadow_sha256(data, expect_len, sha);
++	if (memcmp(hdr + 24, sha, 32)) {
++		reason = "checksum mismatch";
++		goto fail;
++	}
++
++	close(fd);
++	*out = data;
++	return 0;
++
++fail:
++	free(data);
++	if (fd >= 0)
++		close(fd);
++	if (why)
++		*why = reason;
++	return -1;
++}
++
++int shadow_write_image(const char *dir, const char *name, const void *data, size_t len,
++		       const uint8_t src_sha[32], mode_t mode, bool keep_existing)
++{
++	char path[PATH_MAX];
++	char tmp[PATH_MAX];
++	uint8_t hdr[SHADOW_HDR_LEN];
++	struct stat st;
++	int saved;
++	int dfd;
++	int fd;
++
++	if (shadow_check_name(name)) {
++		errno = EINVAL;
++		return -1;
++	}
++	if (snprintf(path, sizeof(path), "%s/%s.img", dir, name) >= (int)sizeof(path) ||
++	    snprintf(tmp, sizeof(tmp), "%s/%s.img.tmp", dir, name) >= (int)sizeof(tmp)) {
++		errno = ENAMETOOLONG;
++		return -1;
++	}
++	if (keep_existing && lstat(path, &st) == 0)
++		return 1;
++
++	memset(hdr, 0, sizeof(hdr));
++	memcpy(hdr, shadow_magic, sizeof(shadow_magic));
++	put_le64(hdr + 16, len);
++	shadow_sha256(data, len, hdr + 24);
++	memcpy(hdr + 56, src_sha, 32);
++
++	unlink(tmp);
++	fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
++	if (fd < 0)
++		return -1;
++	if (write_full(fd, hdr, sizeof(hdr)) || write_full(fd, data, len) ||
++	    fchmod(fd, mode) || fsync(fd)) {
++		saved = errno;
++		close(fd);
++		unlink(tmp);
++		errno = saved;
++		return -1;
++	}
++	if (close(fd)) {
++		saved = errno;
++		unlink(tmp);
++		errno = saved;
++		return -1;
++	}
++	if (rename(tmp, path)) {
++		saved = errno;
++		unlink(tmp);
++		errno = saved;
++		return -1;
++	}
++
++	dfd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
++	if (dfd >= 0) {
++		fsync(dfd);
++		close(dfd);
++	}
++
++	return 0;
++}
+--- /dev/null
++++ b/shadow.h
+@@ -0,0 +1,51 @@
++#ifndef __SHADOW_H__
++#define __SHADOW_H__
++
++/*
++ * Persistent EFS shadow for read-only rmtfs (-r -D <dir>).
++ *
++ * The real partitions are only ever read. The RAM shadow that -r keeps is
++ * saved to <dir>/<name>.img (header + data, written to <name>.img.tmp,
++ * fsync'd, renamed, directory fsync'd) and loaded at the next start when
++ * it is valid for the same source partition. A first-capture copy of each
++ * source partition is kept in <dir>/original/<name>.img (mode 0400, never
++ * replaced).
++ *
++ * Image layout (all integers little endian):
++ *   0   16  magic "FP6RMTFSSHADOW1\0"
++ *   16   8  data length
++ *   24  32  sha256(data)
++ *   56  32  sha256(source partition contents when this shadow was based on it)
++ *   88  40  zero
++ *   128     data
++ */
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++#include <sys/types.h>
++
++#define SHADOW_HDR_LEN 128
++#define SHADOW_NAME_MAX 64
++
++void shadow_sha256(const void *data, size_t len, uint8_t out[32]);
++
++/* 0 if name is a safe file name component. */
++int shadow_check_name(const char *name);
++
++/*
++ * Load <path> if it is a valid image of exactly expect_len data bytes whose
++ * source hash equals src_sha. Returns 0 and a malloc'd buffer in *out, or
++ * -1 (missing / invalid; reason in *why when non-NULL).
++ */
++int shadow_read_image(const char *path, size_t expect_len, const uint8_t src_sha[32],
++		      void **out, const char **why);
++
++/*
++ * Atomically write <dir>/<name>.img. With keep_existing, an existing image
++ * is left untouched (returns 1). Returns 0 on success, -1 on error (errno).
++ */
++int shadow_write_image(const char *dir, const char *name, const void *data, size_t len,
++		       const uint8_t src_sha[32], mode_t mode, bool keep_existing);
++
++#endif
+--- a/storage.c
++++ b/storage.c
+@@ -1,12 +1,15 @@
+ #include <sys/stat.h>
++#include <limits.h>
+ #include <sys/types.h>
+ #include <errno.h>
+ #include <fcntl.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
++#include <time.h>
+ #include <unistd.h>
+ #include "rmtfs.h"
++#include "shadow.h"
+ 
+ #define MAX_CALLERS 10
+ #define STORAGE_MAX_SIZE (16 * 1024 * 1024)
+@@ -30,12 +33,31 @@
+ 
+ 	void *shadow_buf;
+ 	size_t shadow_len;
++
++	/* -D: persistent shadow (read-only mode only) */
++	bool persist;
++	bool dirty;
++	char persist_name[SHADOW_NAME_MAX];
++	uint8_t src_sha[32];
++	size_t src_len;
++	struct timespec last_write;
+ };
+ 
+ static const char *storage_dir = "/boot";
+ static int storage_read_only;
+ static int storage_use_partitions;
+ 
++/*
++ * -D <dir>: the RAM shadow of -r is saved under <dir> and reloaded at the
++ * next start (see shadow.h). Only valid together with -r; the partitions
++ * themselves are never opened for writing in this mode.
++ */
++static const char *persist_dir;
++static char persist_original_dir[PATH_MAX];
++static bool persist_reset_logged;
++
++#define PERSIST_DEBOUNCE_MS 2000
++
+ static const struct partition partition_table[] = {
+ 	{ "/boot/modem_fs1", "modem_fs1", "modemst1" },
+ 	{ "/boot/modem_fs2", "modem_fs2", "modemst2" },
+@@ -55,6 +77,8 @@
+ static struct rmtfd rmtfds[MAX_CALLERS];
+ 
+ static int storage_populate_shadow_buf(struct rmtfd *rmtfd, const char *file);
++static void storage_persist_attach(struct rmtfd *rmtfd, const char *file);
++static void storage_persist_flush_one(struct rmtfd *rmtfd);
+ 
+ int storage_init(const char *storage_root, bool read_only, bool use_partitions)
+ {
+@@ -71,7 +95,13 @@
+ 
+ 	storage_read_only = read_only;
+ 
++	if (persist_dir && !storage_read_only) {
++		fprintf(stderr, "[storage] refusing -D without -r: the shadow is only persisted in read-only mode\n");
++		return -EINVAL;
++	}
++
+ 	for (i = 0; i < MAX_CALLERS; i++) {
++		memset(&rmtfds[i], 0, sizeof(rmtfds[i]));
+ 		rmtfds[i].id = i;
+ 		rmtfds[i].fd = -1;
+ 		rmtfds[i].shadow_buf = NULL;
+@@ -175,6 +205,11 @@
+ 
+ void storage_close(struct rmtfd *rmtfd)
+ {
++	if (rmtfd->persist && rmtfd->dirty)
++		storage_persist_flush_one(rmtfd);
++	rmtfd->persist = false;
++	rmtfd->dirty = false;
++
+ 	if (rmtfd->fd >= 0) {
+ 		close(rmtfd->fd);
+ 		rmtfd->fd = -1;
+@@ -215,6 +250,7 @@
+ {
+ 	int i;
+ 
++	storage_flush(true);
+ 	for (i = 0; i < MAX_CALLERS; i++)
+ 		storage_close(&rmtfds[i]);
+ }
+@@ -266,6 +302,11 @@
+ 
+ 	memcpy((char*)rmtfd->shadow_buf + offset, buf, nbyte);
+ 
++	if (rmtfd->persist) {
++		rmtfd->dirty = true;
++		clock_gettime(CLOCK_MONOTONIC, &rmtfd->last_write);
++	}
++
+ 	return nbyte;
+ }
+ 
+@@ -311,6 +352,11 @@
+ 
+ 	rmtfd->shadow_buf = buf;
+ 	rmtfd->shadow_len = n;
++	rmtfd->persist = false;
++	rmtfd->dirty = false;
++
++	if (persist_dir)
++		storage_persist_attach(rmtfd, file);
+ 
+ 	ret = 0;
+ 
+@@ -319,3 +365,156 @@
+ 
+ 	return ret;
+ }
++
++/* ---- -D: persistent shadow ---------------------------------------------- */
++
++int storage_set_persist_dir(const char *dir)
++{
++	struct stat st;
++	int ret;
++
++	persist_dir = NULL;
++	persist_reset_logged = false;
++	if (!dir)
++		return 0;
++
++	if (dir[0] != '/' || strncmp(dir, "/dev", 4) == 0) {
++		fprintf(stderr, "[storage] -D needs an absolute directory outside /dev\n");
++		return -EINVAL;
++	}
++	if (stat(dir, &st) || !S_ISDIR(st.st_mode)) {
++		fprintf(stderr, "[storage] -D %s: not a directory\n", dir);
++		return -ENOTDIR;
++	}
++	ret = snprintf(persist_original_dir, sizeof(persist_original_dir), "%s/original", dir);
++	if (ret >= (int)sizeof(persist_original_dir))
++		return -ENAMETOOLONG;
++	if (mkdir(persist_original_dir, 0700) && errno != EEXIST) {
++		fprintf(stderr, "[storage] cannot create %s: %s\n", persist_original_dir, strerror(errno));
++		return -errno;
++	}
++
++	persist_dir = dir;
++	return 0;
++}
++
++static long ms_since(const struct timespec *t)
++{
++	struct timespec now;
++
++	clock_gettime(CLOCK_MONOTONIC, &now);
++	return (now.tv_sec - t->tv_sec) * 1000L + (now.tv_nsec - t->tv_nsec) / 1000000L;
++}
++
++static void storage_persist_attach(struct rmtfd *rmtfd, const char *file)
++{
++	char path[PATH_MAX];
++	const char *name;
++	const char *why = NULL;
++	void *saved;
++	int ret;
++
++	name = strrchr(file, '/');
++	name = name ? name + 1 : file;
++	if (shadow_check_name(name)) {
++		fprintf(stderr, "[storage] persist: unusable name '%s', not persisted\n", name);
++		return;
++	}
++
++	snprintf(rmtfd->persist_name, sizeof(rmtfd->persist_name), "%s", name);
++	rmtfd->src_len = rmtfd->shadow_len;
++	shadow_sha256(rmtfd->shadow_buf, rmtfd->shadow_len, rmtfd->src_sha);
++
++	/* First capture: keep the untouched source partition contents. */
++	ret = shadow_write_image(persist_original_dir, name, rmtfd->shadow_buf, rmtfd->shadow_len,
++				 rmtfd->src_sha, 0400, true);
++	if (ret == 0)
++		fprintf(stderr, "[storage] persist: saved original %s (%zu bytes)\n", name, rmtfd->shadow_len);
++	else if (ret < 0)
++		fprintf(stderr, "[storage] persist: saving original %s failed: %s\n", name, strerror(errno));
++
++	snprintf(path, sizeof(path), "%s/%s.img", persist_dir, name);
++	if (shadow_read_image(path, rmtfd->src_len, rmtfd->src_sha, &saved, &why) == 0) {
++		free(rmtfd->shadow_buf);
++		rmtfd->shadow_buf = saved;
++		fprintf(stderr, "[storage] persist: loaded saved shadow for %s\n", name);
++	} else {
++		fprintf(stderr, "[storage] persist: no saved shadow for %s (%s), using the partition\n",
++			name, why ? why : "?");
++	}
++
++	rmtfd->persist = true;
++	rmtfd->dirty = false;
++}
++
++static bool storage_persist_reset_requested(void)
++{
++	char path[PATH_MAX];
++
++	snprintf(path, sizeof(path), "%s/RESET", persist_dir);
++	if (access(path, F_OK))
++		return false;
++	if (!persist_reset_logged)
++		fprintf(stderr, "[storage] persist: %s present, not saving until restart\n", path);
++	persist_reset_logged = true;
++	return true;
++}
++
++static void storage_persist_flush_one(struct rmtfd *rmtfd)
++{
++	if (!persist_dir || !rmtfd->persist || !rmtfd->dirty)
++		return;
++
++	if (storage_persist_reset_requested()) {
++		rmtfd->dirty = false;
++		return;
++	}
++	if (rmtfd->shadow_len != rmtfd->src_len) {
++		fprintf(stderr, "[storage] persist: %s grew to %zu bytes (partition %zu), not saved\n",
++			rmtfd->persist_name, rmtfd->shadow_len, rmtfd->src_len);
++		rmtfd->dirty = false;
++		return;
++	}
++	if (shadow_write_image(persist_dir, rmtfd->persist_name, rmtfd->shadow_buf,
++			       rmtfd->shadow_len, rmtfd->src_sha, 0600, false)) {
++		fprintf(stderr, "[storage] persist: saving %s failed: %s (retrying)\n",
++			rmtfd->persist_name, strerror(errno));
++		/* retry after another debounce period */
++		clock_gettime(CLOCK_MONOTONIC, &rmtfd->last_write);
++		return;
++	}
++	rmtfd->dirty = false;
++}
++
++void storage_flush(bool force)
++{
++	int i;
++
++	for (i = 0; i < MAX_CALLERS; i++) {
++		struct rmtfd *rmtfd = &rmtfds[i];
++
++		if (!rmtfd->persist || !rmtfd->dirty)
++			continue;
++		if (!force && ms_since(&rmtfd->last_write) < PERSIST_DEBOUNCE_MS)
++			continue;
++		storage_persist_flush_one(rmtfd);
++	}
++}
++
++int storage_next_flush_ms(void)
++{
++	long best = -1;
++	long left;
++	int i;
++
++	for (i = 0; i < MAX_CALLERS; i++) {
++		if (!rmtfds[i].persist || !rmtfds[i].dirty)
++			continue;
++		left = PERSIST_DEBOUNCE_MS - ms_since(&rmtfds[i].last_write);
++		if (left < 0)
++			left = 0;
++		if (best < 0 || left < best)
++			best = left;
++	}
++	return best;
++}

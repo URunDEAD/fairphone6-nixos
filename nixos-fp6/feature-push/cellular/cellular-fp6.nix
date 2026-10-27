@@ -51,6 +51,7 @@ in {
     ./messaging-fp6.nix                # SMS notifications + telepathy-ofono SQLite
     ./mms-fp6.nix                      # nuntium fixes (modem-removal panic, MMSC response text)
     ./agps/agps-fp6.nix                # assisted GPS (XTRA / time / coarse position)
+    ./rmtfs-shadow/rmtfs-shadow-fp6.nix # persistent read-only EFS shadow (hardware.fairphone6.modem.persistShadow, default off)
   ];
 
   options.services.fp6Cellular = {
