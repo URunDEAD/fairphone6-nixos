@@ -6,7 +6,6 @@
 #                       that file (generated from the stock ACDB)
 { lib, stdenvNoCC, fetchgit, gnum4, alsa-utils
 , voiceGraph ? null
-, allowExample ? false
 }:
 stdenvNoCC.mkDerivation {
   pname = "fp6-audioreach-topology" + lib.optionalString (voiceGraph != null) "-voice";
@@ -23,8 +22,7 @@ stdenvNoCC.mkDerivation {
     m4 -I . MILOS-Fairphone-Gen6.m4 > base.conf
     alsatplg -c base.conf -o base-tplg.bin
     ${lib.optionalString (voiceGraph != null) ''
-      m4 -I . ${lib.optionalString allowExample "-DFP6_VOICE_ALLOW_EXAMPLE"} \
-        -DFP6_VOICE_GRAPH=${voiceGraph} MILOS-Fairphone-Gen6.m4 > voice.conf
+      m4 -I . -DFP6_VOICE_GRAPH=${voiceGraph} MILOS-Fairphone-Gen6.m4 > voice.conf
       alsatplg -c voice.conf -o voice-tplg.bin
     ''}
     runHook postBuild
@@ -39,7 +37,10 @@ stdenvNoCC.mkDerivation {
       done
       # VCPM VOICE_CONFIG param id present as a little-endian word
       od -An -tx4 -v voice-tplg.bin | tr -s ' ' '\n' > words.txt
-      grep -qx 08001162 words.txt
+      grep -qx 08001162 words.txt   # VCPM VOICE_CONFIG
+      grep -qx 01001007 words.txt   # GRAPH_OPEN extra params blob
+      grep -qx 01001006 words.txt   # SET_CFG blob (VSID)
+      grep -qx 08001061 words.txt   # control links
     ''}
   '';
   installPhase = ''

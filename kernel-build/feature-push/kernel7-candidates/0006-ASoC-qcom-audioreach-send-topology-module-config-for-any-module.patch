@@ -7,8 +7,9 @@ payload to a module widget, but only MODULE_ID_SMECNS_V2 ever sends it.
 Send it for every module that has one, after the module's own media
 format, so topologies can carry calibration and the configuration of the
 static services a graph depends on (for a voice call graph: the VCPM
-VOICE_CONFIG/VSID/CAL_KEYS params on instance 4, which reference the
-module instance ids of the voice stream subgraphs).
+VSID param on instance 4). Hostless graphs (previous patch) get no media
+format, so their blobs are sent on their own at prepare
+(q6apm_graph_send_module_configs()).
 
 Also fix the parser: like every vendor array the blob's size covers its
 header, but the whole size was used as the payload length (16 bytes of
@@ -68,15 +69,37 @@ Signed-off-by: Paul Schuldesz <paulschuldesz@gmail.com>
  	dobj->private = mod;
 --- a/sound/soc/qcom/qdsp6/audioreach.c
 +++ b/sound/soc/qcom/qdsp6/audioreach.c
-@@ -1371,6 +1371,8 @@
+@@ -813,9 +813,8 @@
+ 					 EARLY_EOS_DELAY_MS);
+ }
+ 
+-static int audioreach_set_module_config(struct q6apm_graph *graph,
+-					const struct audioreach_module *module,
+-					const struct audioreach_module_config *cfg)
++int audioreach_send_module_config(struct q6apm_graph *graph,
++				  const struct audioreach_module *module)
+ {
+ 	int size = le32_to_cpu(module->data->size);
+ 	void *p;
+@@ -830,6 +829,7 @@
+ 
+ 	return q6apm_send_cmd_sync(graph->apm, pkt, 0);
+ }
++EXPORT_SYMBOL_GPL(audioreach_send_module_config);
+ 
+ static int audioreach_mfc_set_media_format(struct q6apm_graph *graph,
+ 					   const struct audioreach_module *module,
+@@ -1371,7 +1371,9 @@
  		rc = audioreach_display_port_set_media_format(graph, module, cfg);
  		break;
  	case  MODULE_ID_SMECNS_V2:
+-		rc = audioreach_set_module_config(graph, module, cfg);
 +		if (!module->data)
 +			return -EINVAL;
- 		rc = audioreach_set_module_config(graph, module, cfg);
++		rc = audioreach_send_module_config(graph, module);
  		break;
  	case MODULE_ID_I2S_SOURCE:
+ 	case MODULE_ID_I2S_SINK:
 @@ -1416,6 +1418,16 @@
  		rc = 0;
  	}
@@ -89,8 +112,81 @@ Signed-off-by: Paul Schuldesz <paulschuldesz@gmail.com>
 +	 */
 +	if (!rc && module->data && module->module_id != MODULE_ID_SMECNS_V2 &&
 +	    le32_to_cpu(module->data->size))
-+		rc = audioreach_set_module_config(graph, module, cfg);
++		rc = audioreach_send_module_config(graph, module);
 +
  	return rc;
  }
  EXPORT_SYMBOL_GPL(audioreach_set_media_format);
+--- a/sound/soc/qcom/qdsp6/audioreach.h
++++ b/sound/soc/qcom/qdsp6/audioreach.h
+@@ -935,6 +935,8 @@
+ 			     const struct gpr_pkt *pkt, uint32_t rsp_opcode);
+ int audioreach_graph_send_cmd_sync(struct q6apm_graph *graph, const struct gpr_pkt *pkt,
+ 				   uint32_t rsp_opcode);
++int audioreach_send_module_config(struct q6apm_graph *graph,
++				  const struct audioreach_module *module);
+ int audioreach_set_media_format(struct q6apm_graph *graph,
+ 				const struct audioreach_module *module,
+ 				const struct audioreach_module_config *cfg);
+--- a/sound/soc/qcom/qdsp6/q6apm.c
++++ b/sound/soc/qcom/qdsp6/q6apm.c
+@@ -710,6 +710,30 @@
+  * device). The front end then exchanges no data with the host; opening and
+  * starting it only builds and starts the graph (DPCM still starts the BEs).
+  */
++int q6apm_graph_send_module_configs(struct q6apm_graph *graph)
++{
++	struct audioreach_graph_info *info = graph->info;
++	struct audioreach_container *container;
++	struct audioreach_module *module;
++	struct audioreach_sub_graph *sgs;
++	int ret;
++
++	list_for_each_entry(sgs, &info->sg_list, node) {
++		list_for_each_entry(container, &sgs->container_list, node) {
++			list_for_each_entry(module, &container->modules_list, node) {
++				if (!module->data || !le32_to_cpu(module->data->size))
++					continue;
++				ret = audioreach_send_module_config(graph, module);
++				if (ret)
++					return ret;
++			}
++		}
++	}
++
++	return 0;
++}
++EXPORT_SYMBOL_GPL(q6apm_graph_send_module_configs);
++
+ bool q6apm_is_graph_hostless(struct q6apm_graph *graph)
+ {
+ 	static const uint32_t shmem_mids[] = {
+--- a/sound/soc/qcom/qdsp6/q6apm.h
++++ b/sound/soc/qcom/qdsp6/q6apm.h
+@@ -162,6 +162,7 @@
+ int q6apm_get_hw_pointer(struct q6apm_graph *graph, int dir);
+ bool q6apm_is_graph_in_push_pull_mode(struct q6apm_graph *graph);
+ bool q6apm_is_graph_hostless(struct q6apm_graph *graph);
++int q6apm_graph_send_module_configs(struct q6apm_graph *graph);
+ bool q6apm_is_graph_in_push_pull_mode_from_id(struct device *dev, unsigned int graph_id, int dir);
+ int q6apm_push_pull_config(struct q6apm_graph *graph, phys_addr_t bphys,
+ 			   phys_addr_t pphys, uint32_t size);
+--- a/sound/soc/qcom/qdsp6/q6apm-dai.c
++++ b/sound/soc/qcom/qdsp6/q6apm-dai.c
+@@ -250,8 +250,15 @@
+ 		/*
+ 		 * No host buffer, and the host PCM parameters say nothing about
+ 		 * the graph (a voice stream runs at the vocoder rate): no media
+-		 * format, just prepare and start it.
++		 * format, only the topology's module config blobs, then prepare
++		 * and start.
+ 		 */
++		ret = q6apm_graph_send_module_configs(prtd->graph);
++		if (ret) {
++			dev_err(dev, "Failed to configure hostless Graph %d\n", ret);
++			return ret;
++		}
++
+ 		ret = q6apm_graph_prepare(prtd->graph);
+ 		if (ret) {
+ 			dev_err(dev, "Failed to prepare hostless Graph %d\n", ret);

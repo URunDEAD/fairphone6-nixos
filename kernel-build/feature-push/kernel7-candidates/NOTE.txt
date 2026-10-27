@@ -114,8 +114,30 @@ kernel7 candidates (staged 2026-10-26; NOT in kernel6, whose pinned drv is uncha
   (git apply --check on the 63289f4 tree: all apply).
   Compile check (external modules/objects against kernel6 7.2.0-fp6-nixos6
   headers, W=1, no warnings in the changed files): cs-call-audio-compile-check.nix ->
-    /nix/store/h2nk9gb8qgv4ynqm7frzqa0mdffiq4pr-fp6-kernel7-candidate-cs-call-audio-compile-check-63289f441152-nixos6
+    (superseded: see the 0008 entry below for the current check of 0005-0008)
   To check on the first kernel7 boot (no call needed): the HiFi speaker and
   Mic1 still work (0005/0006 are no-ops for MultiMedia1/2); dmesg has no
   "bad module config blob"; qrtr-lookup unchanged. The call test is in the
   README (needs the ACDB-derived voice graph and the user present).
+
+0008-ASoC-qcom-audioreach-topology-graph-open-extra-params.patch
+  (cs-call-audio agent, 2026-10-27, Phase B; UNVERIFIED on hardware)
+  A module widget may carry SND_SOC_AR_TPLG_MODULE_OPEN_CFG_TYPE (new uapi
+  define 0x01001007): raw APM params appended to the GRAPH_OPEN of its
+  graph. The stock FP6 ACDB voice graphs need two things the topology
+  tokens cannot express: control links (APM_PARAM_ID_MODULE_CTRL_LINK_CFG,
+  voice timing links, also across the RX/TX stream subgraphs and to the
+  device endpoints) and the VCPM VOICE_CONFIG param, which the stock graph
+  manager sends inside the open. Blob = complete 8-byte aligned entries.
+  Also (0005/0006 revised the same day): hostless FEs no longer get a
+  media format from the host PCM params (a voice stream runs at the
+  vocoder rate; the placeholder encoder/decoder are swapped by VCPM); their
+  topology SET_CFG blobs (VSID) go out at prepare via
+  q6apm_graph_send_module_configs().
+  Order: 0005, 0006, 0007, 0008 (all apply to 63289f4; checked by
+  git apply in a worktree, result identical to the scratch tree).
+  Compile check now covers 0005-0008 (W=1, no warnings in changed files):
+    /nix/store/saif0s09a9dfhbz5mizl1awjpyv85p2p-fp6-kernel7-candidate-cs-call-audio-compile-check-63289f441152-nixos6
+  Test kernel (kernel6 recipe + 0005-0008, modDirVersion 7.2.0-fp6-nixos6,
+  for the supervised RAM boot only): cs-call-audio-kernel/default.nix,
+  used by nixos-fp6/feature-push/cs-call-audio/trial-lomiri-full-kernel6-csvoice-fp6.nix.

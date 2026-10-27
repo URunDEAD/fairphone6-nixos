@@ -4,6 +4,7 @@
 #   0005 q6apm-dai hostless front ends     -> snd-q6apm + q6apm-dai rebuilt as modules
 #   0006 audioreach generic module config  -> (same modules)
 #   0007 net: qrtr forwarding (Catcrafts)   -> af_qrtr.o / ns.o objects only
+#   0008 audioreach GRAPH_OPEN extra params -> (snd-q6apm)
 #        (QRTR is built in, so no module/modpost for it)
 # The .ko files are evidence only (renamed *_fp6check); never load them.
 #
@@ -39,6 +40,7 @@ llvm.stdenv.mkDerivation {
     ./0005-ASoC-qcom-q6apm-dai-support-hostless-front-ends.patch
     ./0006-ASoC-qcom-audioreach-send-topology-module-config-for-any-module.patch
     ./0007-net-qrtr-forward-data-packets-between-endpoints.patch
+    ./0008-ASoC-qcom-audioreach-topology-graph-open-extra-params.patch
   ];
   nativeBuildInputs = [ pkgs.flex pkgs.bison pkgs.perl pkgs.bc pkgs.openssl
                         llvm.lld llvm.llvm pkgs.kmod ];
@@ -56,6 +58,10 @@ llvm.stdenv.mkDerivation {
     mkdir -p m-q6apm/qdsp6 m-qrtr
     cp sound/soc/qcom/common.h m-q6apm/
     cp sound/soc/qcom/qdsp6/* m-q6apm/qdsp6/
+    # 0008 extends the uapi token header: use the patched copy, not the
+    # one in the kernel6 headers.
+    cp include/uapi/sound/snd_ar_tokens.h m-q6apm/qdsp6/
+    grep -rl 'uapi/sound/snd_ar_tokens.h' m-q6apm/qdsp6 | xargs sed -i 's|<uapi/sound/snd_ar_tokens.h>|"snd_ar_tokens.h"|'
     cat > m-q6apm/qdsp6/Makefile <<'MAKE'
     obj-m := snd-q6apm_fp6check.o q6apm-dai_fp6check.o
     snd-q6apm_fp6check-y := q6apm.o audioreach.o topology.o
@@ -81,15 +87,18 @@ llvm.stdenv.mkDerivation {
     done
     test -s m-qrtr/af_qrtr.o
     # The new hostless helper is exported and used by q6apm-dai.
-    ${llvm.llvm}/bin/llvm-nm m-q6apm/qdsp6/snd-q6apm_fp6check.ko | grep -q ' __ksymtab_q6apm_is_graph_hostless\|q6apm_is_graph_hostless'
-    ${llvm.llvm}/bin/llvm-nm m-q6apm/qdsp6/q6apm-dai_fp6check.ko | grep -q ' U q6apm_is_graph_hostless'
+    ${llvm.llvm}/bin/llvm-nm m-q6apm/qdsp6/snd-q6apm_fp6check.ko > apm.syms
+    ${llvm.llvm}/bin/llvm-nm m-q6apm/qdsp6/q6apm-dai_fp6check.ko > dai.syms
+    grep -E 'q6apm_is_graph_hostless|q6apm_graph_send_module_configs' apm.syms dai.syms | tee exports.txt
+    test "$(grep -c 'q6apm_is_graph_hostless' exports.txt)" -ge 2
+    test "$(grep -c 'q6apm_graph_send_module_configs' exports.txt)" -ge 2
     # No warnings in the changed files.
     ! grep -nE '(q6apm-dai|q6apm|topology|audioreach|af_qrtr)\.c:[0-9]+:[0-9]+: warning' build-q6apm.log build-qrtr.log
   '';
   installPhase = ''
     d=$out/share/fp6-kernel7-candidate-cs-call-audio
     mkdir -p $d
-    cp m-q6apm/qdsp6/*.ko build-q6apm.log build-qrtr.log $d/
+    cp m-q6apm/qdsp6/*.ko build-q6apm.log build-qrtr.log exports.txt $d/
     sha256sum sound/soc/qcom/qdsp6/{q6apm.c,q6apm-dai.c,topology.c,audioreach.c} net/qrtr/af_qrtr.c > $d/patched-source-sha256.txt
   '';
   dontStrip = true;

@@ -1,0 +1,159 @@
+From: Paul Schuldesz <paulschuldesz@gmail.com>
+Date: Tue, 27 Oct 2026 15:00:00 +0200
+Subject: [PATCH] ASoC: qcom: audioreach: topology GRAPH_OPEN extra params
+
+A module widget may carry a SND_SOC_AR_TPLG_MODULE_OPEN_CFG_TYPE blob:
+raw APM params appended to the GRAPH_OPEN of the graph that contains the
+module. Graphs from a device ACDB need params the topology tokens cannot
+express: APM_PARAM_ID_MODULE_CTRL_LINK_CFG (control links between voice
+timing modules, also across the RX and TX voice stream subgraphs) and the
+voice call processing manager's VOICE_CONFIG (instance 4), which the
+stock graph manager sends inside the open. The blob must consist of
+complete 8-byte aligned param entries; the sizes are added to the open
+packet and the bytes are copied after the module connections.
+
+Applies on top of "audioreach: send topology module config for any
+module" (shares its blob parser).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Signed-off-by: Paul Schuldesz <paulschuldesz@gmail.com>
+---
+--- a/include/uapi/sound/snd_ar_tokens.h
++++ b/include/uapi/sound/snd_ar_tokens.h
+@@ -241,6 +241,14 @@
+ #define AR_TKN_U32_MODULE_LOG_MODE		261
+ 
+ #define SND_SOC_AR_TPLG_MODULE_CFG_TYPE 0x01001006
++/*
++ * Raw APM GRAPH_OPEN params (each an apm_module_param_data + payload, 8-byte
++ * aligned) appended to the GRAPH_OPEN of the graph that contains the
++ * module: control links between modules (APM_PARAM_ID_MODULE_CTRL_LINK_CFG)
++ * or static-service configuration that must arrive with the open, such as
++ * the voice call processing manager's VOICE_CONFIG.
++ */
++#define SND_SOC_AR_TPLG_MODULE_OPEN_CFG_TYPE 0x01001007
+ struct audioreach_module_priv_data {
+ 	__le32 size;	/* size in bytes of the array, including all elements */
+ 	__le32 type;	/* SND_SOC_AR_TPLG_MODULE_CFG_TYPE */
+--- a/sound/soc/qcom/qdsp6/audioreach.h
++++ b/sound/soc/qcom/qdsp6/audioreach.h
+@@ -893,6 +893,7 @@
+ 	struct audioreach_container *container;
+ 	struct snd_soc_dapm_widget *widget;
+ 	struct audioreach_module_priv_data *data;
++	struct audioreach_module_priv_data *open_data;
+ };
+ 
+ struct audioreach_module_config {
+--- a/sound/soc/qcom/qdsp6/topology.c
++++ b/sound/soc/qcom/qdsp6/topology.c
+@@ -306,7 +306,7 @@
+ }
+ 
+ static struct audioreach_module_priv_data *
+-audioreach_get_module_priv_data(const struct snd_soc_tplg_private *private)
++audioreach_get_module_priv_data(const struct snd_soc_tplg_private *private, u32 type)
+ {
+ 	int sz;
+ 
+@@ -314,7 +314,7 @@
+ 		const struct snd_soc_tplg_vendor_array *mod_array;
+ 
+ 		mod_array = (struct snd_soc_tplg_vendor_array *)((u8 *)private->array + sz);
+-		if (le32_to_cpu(mod_array->type) == SND_SOC_AR_TPLG_MODULE_CFG_TYPE) {
++		if (le32_to_cpu(mod_array->type) == type) {
+ 			struct audioreach_module_priv_data *pdata;
+ 			u32 total = le32_to_cpu(mod_array->size);
+ 			u32 len;
+@@ -621,7 +621,8 @@
+ 	if (IS_ERR_OR_NULL(mod))
+ 		return mod ? PTR_ERR(mod) : -ENODEV;
+ 
+-	mod->data = audioreach_get_module_priv_data(&tplg_w->priv);
++	mod->data = audioreach_get_module_priv_data(&tplg_w->priv,
++						    SND_SOC_AR_TPLG_MODULE_CFG_TYPE);
+ 	if (IS_ERR(mod->data)) {
+ 		int ret = PTR_ERR(mod->data);
+ 
+@@ -630,6 +631,22 @@
+ 		return ret;
+ 	}
+ 
++	mod->open_data = audioreach_get_module_priv_data(&tplg_w->priv,
++							 SND_SOC_AR_TPLG_MODULE_OPEN_CFG_TYPE);
++	if (IS_ERR(mod->open_data)) {
++		int ret = PTR_ERR(mod->open_data);
++
++		dev_err(component->dev, "widget %s: bad graph open blob\n", w->name);
++		mod->open_data = NULL;
++		return ret;
++	}
++	if (mod->open_data && le32_to_cpu(mod->open_data->size) % 8) {
++		dev_err(component->dev, "widget %s: graph open blob not 8-byte aligned\n", w->name);
++		kfree(mod->open_data);
++		mod->open_data = NULL;
++		return -EINVAL;
++	}
++
+ 	dobj = &w->dobj;
+ 	dobj->private = mod;
+ 
+@@ -990,6 +1007,7 @@
+ 
+ 	list_del(&mod->node);
+ 	kfree(mod->data);
++	kfree(mod->open_data);
+ 	kfree(mod);
+ 	/* Graph Info has N sub-graphs, sub-graph has N containers, Container has N Modules */
+ 	if (list_empty(&cont->modules_list)) { /* if no modules in the container then remove it */
+--- a/sound/soc/qcom/qdsp6/audioreach.c
++++ b/sound/soc/qcom/qdsp6/audioreach.c
+@@ -468,7 +468,7 @@
+ void *audioreach_alloc_graph_pkt(struct q6apm *apm,
+ 				 const struct audioreach_graph_info *info)
+ {
+-	int payload_size, sg_sz, cont_sz, ml_sz, mp_sz, mc_sz;
++	int payload_size, sg_sz, cont_sz, ml_sz, mp_sz, mc_sz, xo_sz = 0;
+ 	struct apm_module_param_data  *param_data;
+ 	struct apm_container_params *cont_params;
+ 	struct audioreach_container *container;
+@@ -505,6 +505,8 @@
+ 
+ 			list_for_each_entry(module, &container->modules_list, node) {
+ 				num_connections += module->num_connections;
++				if (module->open_data)
++					xo_sz += le32_to_cpu(module->open_data->size);
+ 			}
+ 		}
+ 	}
+@@ -518,7 +520,7 @@
+ 	mp_sz = APM_MOD_PROP_PSIZE(mprop, num_modules);
+ 	mc_sz =	APM_MOD_CONN_PSIZE(mcon, num_connections);
+ 
+-	payload_size = sg_sz + cont_sz + ml_sz + mp_sz + mc_sz;
++	payload_size = sg_sz + cont_sz + ml_sz + mp_sz + mc_sz + xo_sz;
+ 	pkt = audioreach_alloc_apm_cmd_pkt(payload_size, APM_CMD_GRAPH_OPEN, 0);
+ 	if (IS_ERR(pkt))
+ 		return pkt;
+@@ -570,6 +572,21 @@
+ 	params.mod_conn_list_data->num_connections = num_connections;
+ 	p += mc_sz;
+ 
++	/* Topology supplied extra GRAPH_OPEN params (control links, VCPM...) */
++	list_for_each_entry(sgs, sg_list, node) {
++		list_for_each_entry(container, &sgs->container_list, node) {
++			list_for_each_entry(module, &container->modules_list, node) {
++				u32 sz;
++
++				if (!module->open_data)
++					continue;
++				sz = le32_to_cpu(module->open_data->size);
++				memcpy(p, module->open_data->data, sz);
++				p += sz;
++			}
++		}
++	}
++
+ 	audioreach_populate_graph(apm, info, &params, sg_list, num_sub_graphs);
+ 
+ 	return pkt;

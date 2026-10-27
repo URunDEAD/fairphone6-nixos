@@ -18,10 +18,9 @@ in
   ofono = cellular.ofono;
   # Base graphs only: proves the patch leaves the running topology unchanged.
   topology = pkgs.callPackage ./topology/package.nix { };
-  # Format example (module ids 0): proves the m4/alsatplg side of the voice graph.
-  topologyExample = pkgs.callPackage ./topology/package.nix {
-    voiceGraph = ./topology/milos-voice-graph.example.m4;
-    allowExample = true;
+  # The real voice graph (generated from the stock ACDB by topology/acdb2m4.py).
+  topologyVoice = pkgs.callPackage ./topology/package.nix {
+    voiceGraph = ./topology/milos-voice-graph.m4;
   };
   # The kernel6 target with the feature enabled in its default dry-run
   # mode: the generated unit, config and the oFono actually used by the
