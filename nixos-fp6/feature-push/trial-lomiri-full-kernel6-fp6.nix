@@ -40,6 +40,9 @@ let
       # Text recognition (offline OCR, English/Romanian), built by a Codex worker:
       # nixos-fp6/feature-push/ocr/README.md
       ({ ... }: { imports = [ ./ocr/module.nix ]; hardware.fairphone6.ocr.enable = true; })
+      # Bug report (privacy-redacted diagnostics bundle), built by a Codex worker:
+      # nixos-fp6/feature-push/bugreport/README.md
+      ({ ... }: { imports = [ ./bugreport/module.nix ]; hardware.fairphone6.bugreport.enable = true; })
       # USB preferences: System Settings > USB (USB network / file transfer /
       # USB drive / ADB toggles, power role), "Charging via USB" notification.
       # Developer build: usb0 (172.16.42.1) is always kept for SSH over USB.

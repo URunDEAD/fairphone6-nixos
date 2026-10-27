@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Create bug report
+Comment=Choose and save private diagnostics for this phone
+Exec=@SYSTEMCTL@ --user start fp6-bugreport.service
+Icon=fp6-bugreport
+Terminal=false
+Categories=Settings;System;
+X-Lomiri-Touch=true
+StartupNotify=false

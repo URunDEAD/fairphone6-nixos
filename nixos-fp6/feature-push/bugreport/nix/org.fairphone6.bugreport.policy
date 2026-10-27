@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN" "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>Fairphone 6 community port</vendor>
+  <action id="org.fairphone6.bugreport.read-restricted">
+    <description>Read restricted diagnostics for a bug report</description>
+    <message>Administrator authorization is needed to read the selected kernel and system logs.</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">@HELPER@</annotate>
+  </action>
+</policyconfig>
