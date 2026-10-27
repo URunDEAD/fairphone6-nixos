@@ -35,10 +35,10 @@ index 4c57477..2d6b7ce 100644
      options
 diff --git a/src/audio-device-selector.vala b/src/audio-device-selector.vala
 new file mode 100644
-index 0000000..2b0daa1
+index 0000000..95ee316
 --- /dev/null
 +++ b/src/audio-device-selector.vala
-@@ -0,0 +1,1177 @@
+@@ -0,0 +1,1193 @@
 +/*
 + * Copyright 2026 Paul Schuldesz
 + *
@@ -255,8 +255,8 @@ index 0000000..2b0daa1
 +
 +    /* Names and types the Bluetooth settings page lets the user choose:
 +     * $XDG_CONFIG_HOME/fp6-bluetooth/devices.ini, one group per address
-+     * ("AA:BB:CC:DD:EE:FF") with optional keys name= and type=
-+     * (car, headphones, headset, speaker, hifi, portable, phone, other). */
++     * ("AA:BB:CC:DD:EE:FF") with optional keys name= and type= (car, speaker,
++     * hifi, portable, headphones, earbuds, headset, phone, computer, tv, other). */
 +    private void load_bt_names ()
 +    {
 +        string path = Path.build_filename (Environment.get_user_config_dir (), "fp6-bluetooth", "devices.ini");
@@ -643,16 +643,32 @@ index 0000000..2b0daa1
 +        if (card.is_bluetooth ()) {
 +            if (!port.output)
 +                return "audio-input-microphone-symbolic";
++            /* Types as chosen on Settings > Bluetooth (fp6-bluetooth/devices.ini),
++             * else PipeWire's device.form_factor; same icons as that page. */
 +            switch (this.bt_value (card, "type") ?? card.form_factor) {
 +                case "car":
-+                    return "audio-car";
++                    return "audio-carkit-symbolic";
 +                case "speaker":
 +                case "hifi":
 +                case "portable":
 +                    return "audio-speakers-symbolic";
++                case "headphones":
++                case "headphone":
++                    return "audio-headphones-symbolic";
++                case "earbuds":
++                    return "fp6-audio-earbuds-symbolic";
++                case "headset":
++                case "handsfree":
++                    return "audio-headset-symbolic";
 +                case "phone":
 +                case "handset":
-+                    return "phone-symbolic";
++                    return "phone-smartphone-symbolic";
++                case "computer":
++                    return "computer-symbolic";
++                case "tv":
++                    return "video-display-symbolic";
++                case "other":
++                    return "bluetooth-active";
 +                default:
 +                    return "audio-headphones-symbolic";
 +            }
