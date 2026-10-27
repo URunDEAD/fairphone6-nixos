@@ -255,8 +255,15 @@ fn run() -> i32 {
     let (tx, rx) = mpsc::channel::<Event>();
     {
         let tx = tx.clone();
+        let status_file = status_file.clone();
         settings.connect_changed(None, move |s, key| match key {
-            "installed-apps" | "status-file" | "saver-freeze" => {}
+            // A reset (gsettings reset-recursively) must not leave the page without the path.
+            "status-file" => {
+                if s.string("status-file") != status_file.as_str() {
+                    let _ = s.set_string("status-file", &status_file);
+                }
+            }
+            "installed-apps" | "saver-freeze" => {}
             "app-list-request" => publish_apps(s),
             _ => {
                 let _ = tx.send(Event::Config(read_config(s)));

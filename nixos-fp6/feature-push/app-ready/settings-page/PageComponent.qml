@@ -47,9 +47,10 @@ ItemPage {
             anchors.right: parent.right
             spacing: units.gu(1)
 
+            Item { width: 1; height: units.gu(1) }
+
             Label {
-                anchors { left: parent.left; right: parent.right; margins: units.gu(2) }
-                topPadding: units.gu(1)
+                anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
                 wrapMode: Text.WordWrap
                 fontSize: "small"
                 text: i18n.tr("Apps you choose here open almost instantly: they stay in memory, suspended (no CPU, no battery) while you use other apps, they can start hidden when you log in, and their files are kept in the cache.")
@@ -110,7 +111,7 @@ ItemPage {
             }
 
             SettingsListItems.Standard {
-                text: i18n.tr("Close background apps when memory runs low")
+                text: i18n.tr("Close apps when memory is low")
                 Switch {
                     objectName: "lmkSwitch"
                     property bool serverChecked: gs.lowMemoryKiller
@@ -213,7 +214,7 @@ ItemPage {
                 text: (keptUsage.count > 0
                         ? i18n.tr("Apps kept ready now use %1 of RAM and %2 of compressed memory.").arg(ar.mb(keptUsage.ram)).arg(ar.mb(keptUsage.swap)) + " "
                         : "")
-                    + i18n.tr("Memory: a kept app holds its memory (typically 100–400 MB; a browser with tabs more). Battery: suspended apps use no CPU; on this phone 3 suspended apps added no measurable idle drain (see the notes). Starting apps at login costs a few seconds of CPU once; preloading reads up to the preload budget from storage at login and every two hours (a fraction of a mAh). Cached files are given back as soon as other apps need the memory.")
+                    + i18n.tr("Memory: a kept app holds its memory (typically 100–400 MB; a browser with tabs more). Battery: suspended apps use no CPU; on this phone, 3 apps kept ready used 83 % less CPU in the background than the same apps running (4 s instead of 25 s in 5 minutes with the screen off). Starting apps at login costs a few seconds of CPU once; preloading reads up to the preload budget from storage at login and every two hours (a fraction of a mAh). Cached files are given back as soon as other apps need the memory.")
             }
 
             SettingsListItems.Standard {

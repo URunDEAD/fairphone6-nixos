@@ -11,7 +11,7 @@ pinfile=$XDG_RUNTIME_DIR/fp6-ar-pin
 ( umask 077; cat > "$pinfile" )
 mkdir -p "$here/out"
 envs=()
-for v in SETUP TEARDOWN BUDGET APPREADY OTHER LOMIRI_ENV RESUME_WAIT KEEP APPS SECONDS_IDLE; do [ -n "${!v:-}" ] && envs+=("-E" "$v=${!v}"); done
+for v in SETUP TEARDOWN BUDGET APPREADY OTHER LOMIRI_ENV RESUME_WAIT KEEP APPS SECONDS_IDLE QML_DIR; do [ -n "${!v:-}" ] && envs+=("-E" "$v=${!v}"); done
 args=$(printf '%q ' "$@")
 systemd-run --user --unit="fp6-ar-$name" --collect "${envs[@]}" \
   bash -c "\"$here/round.sh\" $args < \"$pinfile\" > \"$here/out/$name.log\" 2>&1 & sleep 2; rm -f \"$pinfile\"; wait"
