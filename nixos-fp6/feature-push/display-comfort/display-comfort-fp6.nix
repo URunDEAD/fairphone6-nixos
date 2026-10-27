@@ -18,7 +18,18 @@
 #    full-window quad in the shell's render pass. Night light alone =
 #    multiplicative blend (dst * white point), which stays in Adreno's tile
 #    memory; greyscale = 3x3 matrix via framebuffer fetch or a copy. While
-#    neutral there is no scene-graph node at all (no cost). It covers apps,
+#    neutral there is no scene-graph node at all (no cost).
+#    Night light cost (reviewed 2026-10-27, no change): +34 % shell GPU time,
+#    but only while the screen animates (120 Hz full-screen load; ~0 when
+#    static). This is the fragment work of one more full-screen layer.
+#    Qt clears every frame, so freedreno already uses GMEM without the
+#    filter, and the blend adds no DRAM pass. The cheaper ideas do not work:
+#    there is no extra pass to remove (no FBO/layer/ShaderEffect). Skipping
+#    the filter on small-damage frames would flash unfiltered frames, because
+#    Qt 5 QSG/qtmir have no partial update and redraw the whole window every
+#    frame. Folding the multiply into qtmir's surface material would leave
+#    the shell's own Qt Quick items unfiltered. Details: "Night light cost"
+#    in the results README. It covers apps,
 #    OSK, panel, lock screen. Screenshots (ItemGrabber on the Shell item)
 #    keep true colours; screen recordings (frame read-back) include it.
 #  * fp6-display-comfort (Rust user service) computes the temperature from
