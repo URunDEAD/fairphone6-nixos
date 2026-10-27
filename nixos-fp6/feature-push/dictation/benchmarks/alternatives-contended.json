@@ -1,0 +1,70 @@
+[
+  {
+    "load_average": [
+      67.00830078125,
+      63.33642578125,
+      47.41845703125
+    ],
+    "engine": "vosk-small-en-us-0.15",
+    "clip": "en-note",
+    "language": "en",
+    "audio_seconds": 3.91,
+    "wall_seconds": 10.5,
+    "real_time_factor": 2.685,
+    "peak_rss_mib": 175.7,
+    "wer": 0.1,
+    "reference": "Please remind me to buy bread and milk tomorrow morning.",
+    "hypothesis": "please remind me to my bread and milk tomorrow morning"
+  },
+  {
+    "load_average": [
+      65.16796875,
+      63.0615234375,
+      47.50048828125
+    ],
+    "engine": "vosk-small-en-us-0.15",
+    "clip": "en-message",
+    "language": "en",
+    "audio_seconds": 4.822,
+    "wall_seconds": 20.22,
+    "real_time_factor": 4.193,
+    "peak_rss_mib": 181.9,
+    "wer": 0.214,
+    "reference": "The train arrives at the station in ten minutes. I will meet you there.",
+    "hypothesis": "the train arrived to the station in ten minutes i will meet you"
+  },
+  {
+    "load_average": [
+      64.3125,
+      62.9951171875,
+      47.810546875
+    ],
+    "engine": "moonshine-tiny-en-v2-2026-02-27",
+    "clip": "en-note",
+    "language": "en",
+    "audio_seconds": 3.91,
+    "wall_seconds": 10.13,
+    "real_time_factor": 2.591,
+    "peak_rss_mib": 152.6,
+    "wer": 0.2,
+    "reference": "Please remind me to buy bread and milk tomorrow morning.",
+    "hypothesis": "Please remind me to my red and milk tomorrow morning."
+  },
+  {
+    "load_average": [
+      66.55810546875,
+      63.52197265625,
+      48.1455078125
+    ],
+    "engine": "moonshine-tiny-en-v2-2026-02-27",
+    "clip": "en-message",
+    "language": "en",
+    "audio_seconds": 4.822,
+    "wall_seconds": 9.1,
+    "real_time_factor": 1.887,
+    "peak_rss_mib": 153.5,
+    "wer": 0.357,
+    "reference": "The train arrives at the station in ten minutes. I will meet you there.",
+    "hypothesis": "The trainer I've met the station in 10 minutes. I will meet you here."
+  }
+]

@@ -1,0 +1,42 @@
+{
+  "platform": "Linux-6.18.34-x86_64-with-glibc2.44",
+  "build": "native-x86",
+  "threads": 8,
+  "tts": "espeak-ng, speed 145, resampled to mono PCM16 16kHz",
+  "runs": [
+    {
+      "load_average": [
+        38.60009765625,
+        46.64599609375,
+        48.33251953125
+      ],
+      "model": "tiny-q5_1",
+      "clip": "en-note",
+      "language": "en",
+      "audio_seconds": 3.91,
+      "wall_seconds": 36.49,
+      "real_time_factor": 9.332,
+      "peak_rss_mib": 170.8,
+      "wer": 0.1,
+      "reference": "Please remind me to buy bread and milk tomorrow morning.",
+      "hypothesis": "Please remind me to my bread and milk tomorrow morning."
+    },
+    {
+      "load_average": [
+        39.70556640625,
+        46.08447265625,
+        48.08544921875
+      ],
+      "model": "tiny-q5_1",
+      "clip": "en-message",
+      "language": "en",
+      "audio_seconds": 4.822,
+      "wall_seconds": 65.23,
+      "real_time_factor": 13.526,
+      "peak_rss_mib": 170.7,
+      "wer": 0.143,
+      "reference": "The train arrives at the station in ten minutes. I will meet you there.",
+      "hypothesis": "The train arrive at the station in 10 minutes. I will meet you there."
+    }
+  ]
+}

@@ -46,6 +46,9 @@ let
       # KDE Connect (desktop/Android integration), built by a Codex worker:
       # nixos-fp6/feature-push/kdeconnect/README.md
       ({ ... }: { imports = [ ./kdeconnect/module.nix ]; hardware.fairphone6.kdeconnect.enable = true; hardware.fairphone6.kdeconnect.user = "user"; })
+      # Offline voice dictation service (Whisper; model downloaded on demand), built by a Codex worker:
+      # nixos-fp6/feature-push/dictation/README.md
+      ({ ... }: { imports = [ ./dictation/module.nix ]; hardware.fairphone6.dictation.enable = true; })
       # USB preferences: System Settings > USB (USB network / file transfer /
       # USB drive / ADB toggles, power role), "Charging via USB" notification.
       # Developer build: usb0 (172.16.42.1) is always kept for SSH over USB.

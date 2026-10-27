@@ -1,0 +1,8 @@
+/target/
+/.cargo-home/
+/result*
+/benchmarks/work/
+*.part
+
+/task-commits.bundle
+/scripts/__pycache__/

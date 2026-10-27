@@ -1,0 +1,11 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN" "https://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<node name="/com/fairphone6/Dictation1">
+  <interface name="com.fairphone6.Dictation1">
+    <method name="Start"><arg name="id" type="t" direction="out"/></method>
+    <method name="Stop"><arg name="id" type="t" direction="in"/><arg name="text" type="s" direction="out"/></method>
+    <method name="Cancel"><arg name="id" type="t" direction="in"/></method>
+    <property name="State" type="s" access="read"><annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="false"/></property>
+    <property name="MicActive" type="b" access="read"><annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="false"/></property>
+    <signal name="StatusChanged"><arg name="state" type="s"/><arg name="mic_active" type="b"/></signal>
+  </interface>
+</node>

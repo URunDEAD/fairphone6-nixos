@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Voice Dictation
+Comment=Offline voice typing preferences
+Exec=fp6-dictation-settings
+Icon=audio-input-microphone
+Terminal=false
+Categories=Settings;Accessibility;
+X-Lomiri-Touch=true

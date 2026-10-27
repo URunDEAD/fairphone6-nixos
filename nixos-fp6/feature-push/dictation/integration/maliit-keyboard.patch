@@ -1,0 +1,65 @@
+# PATCH SKETCH: review and adapt to the target Lomiri fork; not an apply-ready patch.
+# The QObject implementation belongs in the existing C++ host, while recognition
+# and IPC service code remain Rust. Add declarations/MOC sources and Qt5::DBus.
+--- a/src/plugin/inputmethod.cpp
++++ b/src/plugin/inputmethod.cpp
+@@ InputMethod::InputMethod(MAbstractInputMethodHost *host)
++    d->dictation = new DictationBridge(QDBusConnection::sessionBus(), this);
++    d->view->rootContext()->setContextProperty("dictation", d->dictation);
++    connect(d->dictation, &DictationBridge::finalText, this,
++            [this, d](quint64 generation, const QString &text) {
++        if (generation != d->inputContextGeneration || !d->mayDictate()) return;
++        if (text.isEmpty()) return;
++        d->editor.commitPreedit();
++        d->host->sendCommitString(text);
++    });
+@@ void InputMethod::reset()
++    ++d->inputContextGeneration;
++    d->dictation->invalidate();
+@@ void InputMethod::handleClientChange()
++    ++d->inputContextGeneration;
++    d->dictation->invalidate();
+@@ void InputMethod::handleFocusChange(bool focusIn)
++    if (!focusIn) {
++        ++d->inputContextGeneration;
++        d->dictation->invalidate();
++    }
+--- a/qml/keys/DictationKey.qml
++++ b/qml/keys/DictationKey.qml
+@@ new key (place in the layout beside the space key)
++Item {
++    width: units.gu(6); height: units.gu(6)
++    visible: dictation.allowed
++    // Use the fork's themed microphone Icon and ordinary keyboard key background.
++    Accessible.name: qsTr("Voice dictation")
++    MouseArea {
++        anchors.fill: parent
++        onPressed: dictation.begin(inputMethod.inputContextGeneration)
++        onReleased: dictation.finish()
++        onCanceled: dictation.invalidate()
++    }
++}
+
+// DictationBridge state-machine pseudocode (Qt5 APIs; all async):
+// Holds: QDBusInterface api(BUS, PATH, BUS, persistentSessionBus), id, generation,
+//        phase, stopWhenStarted, invalidated. Set api.setTimeout(100000).
+// begin(g): guard allowed && phase==idle; snapshot g; phase=starting;
+//   watch api.asyncCall("Start") as QDBusPendingReply<qulonglong>.
+//   On error: reset and surface a sanitized error, never log speech.
+//   On reply: if generation invalidated, asyncCall("Cancel", reply.id).
+//             else store id; phase=recording; if stopWhenStarted finish().
+// finish(): if starting: stopWhenStarted=true; return.
+//   if recording: phase=transcribing;
+//     watch api.asyncCall("Stop", QVariant::fromValue<qulonglong>(id))
+//       as QDBusPendingReply<QString>.
+//     if success && original generation is current && allowed:
+//       emit finalText(generation, reply.value());
+//     reset, including pending stop flag. No duplicate commit on repeated release.
+// invalidate(): bump bridge generation; mark outstanding Start as invalidated;
+//   if id exists asyncCall("Cancel", QVariant::fromValue<qulonglong>(id)); reset.
+// on StatusChanged(idle,false): reset visible recording state; do not invalidate a
+//   pending Stop generation, since idle precedes its successful method reply.
+// on service disappearance: invalidate, clear indicator and surface unavailable.
+// Watchers deleteLater() on every completion, including errors and stale replies.
+// Also call invalidate() from keyboard hide, session lock, input hint changes.
+// mayDictate() must reject hidden text, password, PIN, no focus and locked session.

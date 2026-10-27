@@ -1,0 +1,118 @@
+{
+  "Piper": [
+    {
+      "model": "tiny-q5_1",
+      "language": "en",
+      "rtf": 0.28,
+      "peak_rss_mib": 170.6,
+      "wer": 0.0417
+    },
+    {
+      "model": "tiny-q5_1",
+      "language": "ro",
+      "rtf": 0.211,
+      "peak_rss_mib": 171.1,
+      "wer": 0.8636
+    },
+    {
+      "model": "base-q5_1",
+      "language": "en",
+      "rtf": 0.453,
+      "peak_rss_mib": 242.4,
+      "wer": 0.0417
+    },
+    {
+      "model": "base-q5_1",
+      "language": "ro",
+      "rtf": 0.404,
+      "peak_rss_mib": 242.5,
+      "wer": 0.4091
+    },
+    {
+      "model": "small-q5_1",
+      "language": "en",
+      "rtf": 1.834,
+      "peak_rss_mib": 481.2,
+      "wer": 0.0417
+    },
+    {
+      "model": "small-q5_1",
+      "language": "ro",
+      "rtf": 1.591,
+      "peak_rss_mib": 481.3,
+      "wer": 0.5909
+    },
+    {
+      "model": "vosk-small-en-us-0.15",
+      "language": "en",
+      "rtf": 0.666,
+      "peak_rss_mib": 173.0,
+      "wer": 0.0
+    },
+    {
+      "model": "moonshine-tiny-en-v2-2026-02-27",
+      "language": "en",
+      "rtf": 0.369,
+      "peak_rss_mib": 153.4,
+      "wer": 0.0
+    }
+  ],
+  "espeak-ng": [
+    {
+      "model": "tiny-q5_1",
+      "language": "en",
+      "rtf": 2.321,
+      "peak_rss_mib": 171.2,
+      "wer": 0.2083
+    },
+    {
+      "model": "tiny-q5_1",
+      "language": "ro",
+      "rtf": 2.096,
+      "peak_rss_mib": 171.6,
+      "wer": 1.1364
+    },
+    {
+      "model": "base-q5_1",
+      "language": "en",
+      "rtf": 0.845,
+      "peak_rss_mib": 242.3,
+      "wer": 0.1667
+    },
+    {
+      "model": "base-q5_1",
+      "language": "ro",
+      "rtf": 0.424,
+      "peak_rss_mib": 242.7,
+      "wer": 0.9091
+    },
+    {
+      "model": "small-q5_1",
+      "language": "en",
+      "rtf": 2.703,
+      "peak_rss_mib": 481.5,
+      "wer": 0.0417
+    },
+    {
+      "model": "small-q5_1",
+      "language": "ro",
+      "rtf": 1.378,
+      "peak_rss_mib": 482.2,
+      "wer": 0.6818
+    },
+    {
+      "model": "vosk-small-en-us-0.15",
+      "language": "en",
+      "rtf": 0.639,
+      "peak_rss_mib": 181.5,
+      "wer": 0.1667
+    },
+    {
+      "model": "moonshine-tiny-en-v2-2026-02-27",
+      "language": "en",
+      "rtf": 0.309,
+      "peak_rss_mib": 153.5,
+      "wer": 0.2917
+    }
+  ]
+}

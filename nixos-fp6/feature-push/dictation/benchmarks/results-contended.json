@@ -1,0 +1,212 @@
+{
+  "platform": "Linux-6.18.34-x86_64-with-glibc2.44",
+  "build": "avx2-x86",
+  "threads": 8,
+  "tts": "espeak-ng, speed 145, resampled to mono PCM16 16kHz",
+  "runs": [
+    {
+      "load_average": [
+        43.91064453125,
+        46.29931640625,
+        47.28955078125
+      ],
+      "model": "tiny-q5_1",
+      "clip": "en-note",
+      "language": "en",
+      "audio_seconds": 3.91,
+      "wall_seconds": 22.12,
+      "real_time_factor": 5.657,
+      "peak_rss_mib": 170.7,
+      "wer": 0.1,
+      "reference": "Please remind me to buy bread and milk tomorrow morning.",
+      "hypothesis": "Please remind me to my bread and milk tomorrow morning."
+    },
+    {
+      "load_average": [
+        41.69677734375,
+        45.5576171875,
+        47.015625
+      ],
+      "model": "tiny-q5_1",
+      "clip": "en-message",
+      "language": "en",
+      "audio_seconds": 4.822,
+      "wall_seconds": 44.66,
+      "real_time_factor": 9.261,
+      "peak_rss_mib": 170.7,
+      "wer": 0.286,
+      "reference": "The train arrives at the station in ten minutes. I will meet you there.",
+      "hypothesis": "The trainer I've met the station in 10 minutes. I will meet you there."
+    },
+    {
+      "load_average": [
+        40.7900390625,
+        44.880859375,
+        46.7275390625
+      ],
+      "model": "tiny-q5_1",
+      "clip": "ro-note",
+      "language": "ro",
+      "audio_seconds": 4.721,
+      "wall_seconds": 38.2,
+      "real_time_factor": 8.092,
+      "peak_rss_mib": 171.5,
+      "wer": 1.0,
+      "reference": "Te rog să îmi amintești să cumpăr pâine și lapte mâine dimineață.",
+      "hypothesis": "De ronță am in feste să cum pe vine și la femine nimine ată."
+    },
+    {
+      "load_average": [
+        36.51123046875,
+        43.32861328125,
+        46.12890625
+      ],
+      "model": "tiny-q5_1",
+      "clip": "ro-message",
+      "language": "ro",
+      "audio_seconds": 5.033,
+      "wall_seconds": 11.13,
+      "real_time_factor": 2.211,
+      "peak_rss_mib": 171.6,
+      "wer": 1.3,
+      "reference": "Trenul ajunge în gară peste zece minute. Ne întâlnim acolo.",
+      "hypothesis": "Pentru la un gen, care pe este ne-a cemi nu de... Pentru nimacolo."
+    },
+    {
+      "load_average": [
+        34.193359375,
+        42.60888671875,
+        45.8642578125
+      ],
+      "model": "base-q5_1",
+      "clip": "en-note",
+      "language": "en",
+      "audio_seconds": 3.91,
+      "wall_seconds": 3.04,
+      "real_time_factor": 0.777,
+      "peak_rss_mib": 242.1,
+      "wer": 0.1,
+      "reference": "Please remind me to buy bread and milk tomorrow morning.",
+      "hypothesis": "Please remind me to my bread and milk tomorrow morning."
+    },
+    {
+      "load_average": [
+        32.3359375,
+        42.083984375,
+        45.6767578125
+      ],
+      "model": "base-q5_1",
+      "clip": "en-message",
+      "language": "en",
+      "audio_seconds": 4.822,
+      "wall_seconds": 2.51,
+      "real_time_factor": 0.52,
+      "peak_rss_mib": 242.6,
+      "wer": 0.214,
+      "reference": "The train arrives at the station in ten minutes. I will meet you there.",
+      "hypothesis": "a train arrives at the station in 10 minutes. I will meet you here."
+    },
+    {
+      "load_average": [
+        32.3359375,
+        42.083984375,
+        45.6767578125
+      ],
+      "model": "base-q5_1",
+      "clip": "ro-note",
+      "language": "ro",
+      "audio_seconds": 4.721,
+      "wall_seconds": 2.42,
+      "real_time_factor": 0.513,
+      "peak_rss_mib": 242.5,
+      "wer": 0.75,
+      "reference": "Te rog să îmi amintești să cumpăr pâine și lapte mâine dimineață.",
+      "hypothesis": "Te rog să în amintești să cum perbine și la te mene din mine ață."
+    },
+    {
+      "load_average": [
+        30.787109375,
+        41.60107421875,
+        45.5009765625
+      ],
+      "model": "base-q5_1",
+      "clip": "ro-message",
+      "language": "ro",
+      "audio_seconds": 5.033,
+      "wall_seconds": 2.47,
+      "real_time_factor": 0.491,
+      "peak_rss_mib": 243.2,
+      "wer": 1.1,
+      "reference": "Trenul ajunge în gară peste zece minute. Ne întâlnim acolo.",
+      "hypothesis": "Trebuie-n un gen, dar pe steme ce minute, ne întâni ma colo."
+    },
+    {
+      "load_average": [
+        30.787109375,
+        41.60107421875,
+        45.5009765625
+      ],
+      "model": "small-q5_1",
+      "clip": "en-note",
+      "language": "en",
+      "audio_seconds": 3.91,
+      "wall_seconds": 8.08,
+      "real_time_factor": 2.066,
+      "peak_rss_mib": 481.2,
+      "wer": 0.0,
+      "reference": "Please remind me to buy bread and milk tomorrow morning.",
+      "hypothesis": "Please remind me to buy bread and milk tomorrow morning."
+    },
+    {
+      "load_average": [
+        27.35693359375,
+        40.51025390625,
+        45.10400390625
+      ],
+      "model": "small-q5_1",
+      "clip": "en-message",
+      "language": "en",
+      "audio_seconds": 4.822,
+      "wall_seconds": 8.16,
+      "real_time_factor": 1.692,
+      "peak_rss_mib": 481.7,
+      "wer": 0.071,
+      "reference": "The train arrives at the station in ten minutes. I will meet you there.",
+      "hypothesis": "The train arrives at the station in 10 minutes. I will meet you there."
+    },
+    {
+      "load_average": [
+        25.0947265625,
+        39.58837890625,
+        44.75390625
+      ],
+      "model": "small-q5_1",
+      "clip": "ro-note",
+      "language": "ro",
+      "audio_seconds": 4.721,
+      "wall_seconds": 8.75,
+      "real_time_factor": 1.854,
+      "peak_rss_mib": 481.2,
+      "wer": 0.5,
+      "reference": "Te rog să îmi amintești să cumpăr pâine și lapte mâine dimineață.",
+      "hypothesis": "Te rog să îmi amintesti să cumpărbine și lapte mei de diminață."
+    },
+    {
+      "load_average": [
+        24.6865234375,
+        39.2626953125,
+        44.62060546875
+      ],
+      "model": "small-q5_1",
+      "clip": "ro-message",
+      "language": "ro",
+      "audio_seconds": 5.033,
+      "wall_seconds": 9.2,
+      "real_time_factor": 1.828,
+      "peak_rss_mib": 481.7,
+      "wer": 0.9,
+      "reference": "Trenul ajunge în gară peste zece minute. Ne întâlnim acolo.",
+      "hypothesis": "Trebuie să le-aiungem în capă pe stele ce minute. Ne-ntâlnim acolo."
+    }
+  ]
+}

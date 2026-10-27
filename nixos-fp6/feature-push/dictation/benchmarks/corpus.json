@@ -1,0 +1,6 @@
+[
+  {"id":"en-note","language":"en","text":"Please remind me to buy bread and milk tomorrow morning."},
+  {"id":"en-message","language":"en","text":"The train arrives at the station in ten minutes. I will meet you there."},
+  {"id":"ro-note","language":"ro","text":"Te rog să îmi amintești să cumpăr pâine și lapte mâine dimineață."},
+  {"id":"ro-message","language":"ro","text":"Trenul ajunge în gară peste zece minute. Ne întâlnim acolo."}
+]
