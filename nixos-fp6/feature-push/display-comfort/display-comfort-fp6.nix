@@ -49,7 +49,9 @@
 #    keeps its integer buffer scale and 8 logical px per grid unit and the
 #    shell scales the surfaces; 24 = exactly the previous setup.
 #  * Text size: UITK_FONT_SCALE (uitk-font-scale.patch: FontUtils and Label
-#    pixel sizes), QT_WAYLAND_FORCE_DPI = 96 * ceil(GU/8) * text% (point
+#    pixel sizes; with fontScaleUitk a patched libLomiriToolkit.so.5 is put
+#    first on LD_LIBRARY_PATH instead of rebuilding ~50 UITK dependants),
+#    QT_WAYLAND_FORCE_DPI = 96 * ceil(GU/8) * text% (point
 #    fonts), GTK text-scaling-factor / gtk-xft-dpi (also Firefox's UI and
 #    page scale through GTK's font DPI).
 #
@@ -67,6 +69,24 @@ let
   qmlPlugin = pkgs.callPackage ./qml-plugin/package.nix { };
   lssPlugin = pkgs.callPackage ./lomiri-system-settings-display-comfort.nix { };
   user = config.services.fp6LomiriSensors.user or "user";
+  # UITK font scale without rebuilding UITK's dependants: the system's own
+  # UITK (all overlays applied) plus uitk-font-scale.patch, built once. Only
+  # libLomiriToolkit.so.5 is exposed. Every UITK consumer (QML plugin
+  # libLomiriComponents.so, lomiri, Settings, ...) finds it through RUNPATH
+  # (--enable-new-dtags), which LD_LIBRARY_PATH precedes; glibc then reuses
+  # the loaded object by soname. The patch adds only a static function, so
+  # the ABI and the QML files of the stock UITK stay valid. AppArmor: the FP6
+  # profiles attach from unconfined and exec with ix, so no AT_SECURE scrub.
+  uitkFontScale = pkgs.lomiri.lomiri-ui-toolkit.overrideAttrs (old: {
+    patches = (old.patches or [ ]) ++ [ ./uitk-font-scale.patch ];
+  });
+  uitkFontScaleLib = pkgs.runCommand "fp6-uitk-font-scale-lib" { } ''
+    mkdir -p $out/lib
+    ln -s ${uitkFontScale}/lib/libLomiriToolkit.so.5 $out/lib/libLomiriToolkit.so.5
+    test -e $out/lib/libLomiriToolkit.so.5
+  '';
+  # Offscreen pixel-size check of the above (build it to run it).
+  uitkFontScaleTest = pkgs.callPackage ./uitk-font-scale-test { inherit uitkFontScaleLib; };
 in {
   options.hardware.fairphone6.displayComfort = {
     enable = lib.mkEnableOption ''
@@ -74,12 +94,15 @@ in {
       Lomiri (System Settings > Display Comfort)'';
     fontScaleUitk = lib.mkOption {
       type = lib.types.bool;
-      # Off for now: it rebuilds lomiri-ui-toolkit and every UITK app. Without
-      # it the text size reaches point-sized Qt fonts and GTK/Firefox only.
-      default = false;
+      # On: one extra UITK build, no app rebuilds; offscreen-checked by
+      # uitkFontScaleTest (1.00 = pixel-identical to stock).
+      default = true;
       description = ''
-        Patch lomiri-ui-toolkit so its label sizes follow UITK_FONT_SCALE
-        (the Settings text size). Rebuilds every UITK app once.
+        Let UITK label sizes (shell and Lomiri apps) follow UITK_FONT_SCALE
+        (the Settings text size). A libLomiriToolkit.so.5 built with
+        uitk-font-scale.patch is put first on LD_LIBRARY_PATH by
+        lomiri-session; the stock UITK and every app keep their store paths,
+        so nothing else is rebuilt.
       '';
     };
   };
@@ -87,7 +110,7 @@ in {
   config = lib.mkIf cfg.enable (lib.mkMerge [
     {
       environment.systemPackages = [ package ];
-      system.build.fp6-display-comfort = { inherit package schema qmlPlugin lssPlugin; lomiri = pkgs.lomiri.lomiri; };
+      system.build.fp6-display-comfort = { inherit package schema qmlPlugin lssPlugin uitkFontScale uitkFontScaleLib uitkFontScaleTest; lomiri = pkgs.lomiri.lomiri; };
 
       nixpkgs.overlays = lib.mkOrder 2700 [ (_final: prev: {
         lomiri = prev.lomiri.overrideScope (_lfinal: lprev: {
@@ -100,10 +123,18 @@ in {
           });
           lomiri-session = lprev.lomiri-session.overrideAttrs (old: {
             patches = (old.patches or [ ]) ++ [ ./lomiri-session-display-scale.patch ];
+            # The shell (exec'd below) and, through the systemd/D-Bus
+            # activation environment, every app load the font-scale UITK.
+            # Set at every login whatever the scale (1.00 = stock sizes), so
+            # no stale value can survive in a running user manager.
+            postPatch = (old.postPatch or "") + lib.optionalString cfg.fontScaleUitk ''
+              substituteInPlace lomiri-session.in --replace-fail \
+                'dbus-update-activation-environment --systemd UITK_FONT_SCALE=''${UITK_FONT_SCALE}' \
+                'dbus-update-activation-environment --systemd UITK_FONT_SCALE=''${UITK_FONT_SCALE}
+                export LD_LIBRARY_PATH=${uitkFontScaleLib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+                dbus-update-activation-environment --systemd LD_LIBRARY_PATH="$LD_LIBRARY_PATH"'
+            '';
           });
-          lomiri-ui-toolkit = if cfg.fontScaleUitk then lprev.lomiri-ui-toolkit.overrideAttrs (old: {
-            patches = (old.patches or [ ]) ++ [ ./uitk-font-scale.patch ];
-          }) else lprev.lomiri-ui-toolkit;
           lomiri-system-settings = lprev.lomiri-system-settings.override (old: {
             plugins = (old.plugins or [ ]) ++ [ lssPlugin ];
           });
