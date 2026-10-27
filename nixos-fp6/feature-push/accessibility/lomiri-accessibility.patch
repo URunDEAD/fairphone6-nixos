@@ -1,0 +1,149 @@
+--- a/qml/ShellScreen.qml
++++ b/qml/ShellScreen.qml
+@@ -20,6 +20,7 @@
+ import Cursor 1.1
+ import GSettings 1.0
+ import FP6.DisplayComfort 1.0 as FP6DisplayComfort
++import FP6.Accessibility 1.0 as FP6A11y
+ import "Components"
+ 
+ ScreenWindow {
+@@ -48,6 +49,12 @@
+         id: loader
+         width: screenWindow.width
+         height: screenWindow.height
++        // fp6 accessibility: screen magnification of the whole scene (apps,
++        // panel, launcher, OSK, lock screen). Identity while not zoomed.
++        transform: [
++            Scale { xScale: fp6Magnifier.zoom; yScale: fp6Magnifier.zoom },
++            Translate { x: -fp6Magnifier.originX * fp6Magnifier.zoom; y: -fp6Magnifier.originY * fp6Magnifier.zoom }
++        ]
+ 
+         sourceComponent: {
+             if (deviceConfiguration.category == "phone" && Screens.count > 1 && screenIndex === 0) {
+@@ -90,6 +97,45 @@
+         Behavior on temperature { NumberAnimation { duration: 1500; easing.type: Easing.InOutQuad } }
+         greyscale: fp6DisplayComfortSettings.greyscaleActive ? 1 : 0
+         Behavior on greyscale { NumberAnimation { duration: 1000; easing.type: Easing.InOutQuad } }
++        // fp6 accessibility: inversion / colour correction, applied before
++        // greyscale and night light in the same pass (empty = none).
++        preMatrix: fp6A11yColour.matrix
++    }
++
++    // fp6 accessibility (Settings > Accessibility, com.fairphone6.accessibility)
++    GSettings {
++        id: fp6A11ySettings
++        schema.id: "com.fairphone6.accessibility"
++    }
++    FP6A11y.ColourMatrix {
++        id: fp6A11yColour
++        inversion: fp6A11ySettings.colourInversion === true
++        correction: fp6A11ySettings.colourCorrection || "none"
++        strength: fp6A11ySettings.colourCorrectionStrength !== undefined ? fp6A11ySettings.colourCorrectionStrength : 1
++    }
++    // Gestures and the view of the magnification (the Loader's transform).
++    // No event filter while every trigger is off and the screen is not zoomed.
++    FP6A11y.Magnifier {
++        id: fp6Magnifier
++        objectName: "fp6Magnifier"
++        anchors.fill: parent
++        tapEnabled: fp6A11ySettings.magnificationTap === true
++        tapCount: fp6A11ySettings.magnificationTapCount || 3
++        holdEnabled: fp6A11ySettings.magnificationHold !== false
++        keyShortcut: fp6A11ySettings.magnificationShortcut === true
++        level: fp6A11ySettings.magnificationLevel || 2
++        slop: units.gu(1)
++        tapDistance: units.gu(10)
++        onLevelCommitted: fp6A11ySettings.magnificationLevel = level
++    }
++    // While magnified: an outline around the screen (as on Android).
++    Rectangle {
++        anchors.fill: parent
++        z: 999999
++        visible: fp6Magnifier.zoomed
++        color: "transparent"
++        border.width: units.dp(3)
++        border.color: "#E95420"
+     }
+ 
+     Component {
+--- a/qml/Panel/Panel.qml
++++ b/qml/Panel/Panel.qml
+@@ -122,6 +122,7 @@
+             findIndicator: function(identifier) { return __indicators.fp6FindIndicator(identifier); }
+             shown: __indicators.fp6OverlayShown && !__indicators.fullyClosed
+             onScreenshotRequested: root.fp6ScreenshotRequested()
++            onFp6HideRequested: __indicators.hide()
+         }
+     }
+     Component {
+--- a/qml/Panel/QuickSettings/QsBackend.qml
++++ b/qml/Panel/QuickSettings/QsBackend.qml
+@@ -7,6 +7,7 @@
+ import QtQuick 2.15
+ import GSettings 1.0
+ import QMenuModel 1.0
++import FP6.Accessibility 1.0 as FP6A11y
+ import "QsLayout.js" as QsLayout
+ 
+ Item {
+@@ -20,6 +21,8 @@
+     // bumped by the panel when the indicator list may have changed
+     property int indicatorsRevision: 0
+     signal screenshotRequested()
++    // FP6 accessibility: close the panel (before the magnification starts)
++    signal fp6HideRequested()
+ 
+     // ---- settings of the control centre itself
+     readonly property alias settings: qsSettings
+@@ -52,6 +55,7 @@
+     // ---- other modules' settings
+     GSettings { id: displayComfort; schema.id: "com.fairphone6.display-comfort" }
+     GSettings { id: notificationSettings; schema.id: "com.fairphone6.notifications" }
++    GSettings { id: a11ySettings; schema.id: "com.fairphone6.accessibility" }
+ 
+     // ---- indicator action groups (each is one D-Bus signal subscription)
+     function on(a) { return !!(a && a.valid && a.state); }
+@@ -185,7 +189,7 @@
+     readonly property var catalogue: [wifi, bluetooth, mobileData, flashlight, dnd, rotationLock,
+         airplane, location, batterySaver, nightLight, hotspot, screenRecord, darkTheme, silent,
+         screenshot, batteryPage, soundPage, timeDatePage, messagesPage, systemPage, privacyPage,
+-        usbDrivePage, usbModesPage, keyboardPage, bedtime, stayAwake, greyscale, scanQr]
++        usbDrivePage, usbModesPage, keyboardPage, bedtime, stayAwake, greyscale, scanQr, colourInversion, magnification]
+     function tile(id) {
+         for (var i = 0; i < catalogue.length; i++) if (catalogue[i].tileId === id) return catalogue[i];
+         return null;
+@@ -386,6 +390,33 @@
+         toggle: function() { if (backend.valid(net.scanQr)) net.scanQr.activate(); }
+     }
+ 
++    // ---- FP6 accessibility (Settings > Accessibility)
++    QsTileDef {
++        id: colourInversion
++        tileId: "colour-inversion"; label: i18n.tr("Colour inversion")
++        iconOn: "display-brightness-symbolic"
++        available: a11ySettings.colourInversion !== undefined
++        active: !!a11ySettings.colourInversion
++        canWide: false
++        settingsUrl: "settings:///system/accessibility"
++        toggle: function() { a11ySettings.colourInversion = !a11ySettings.colourInversion; }
++    }
++    QsTileDef {
++        id: magnification
++        tileId: "magnification"; label: i18n.tr("Magnification")
++        iconOn: "zoom-out"; iconOff: "zoom-in"
++        available: FP6A11y.MagnifierControl.available
++        active: FP6A11y.MagnifierControl.zoomed
++        canWide: false
++        settingsUrl: "settings:///system/accessibility"
++        // zoom in at the screen centre once the panel is closed / zoom out
++        toggle: function() {
++            var zoomed = FP6A11y.MagnifierControl.zoomed;
++            backend.fp6HideRequested();
++            FP6A11y.MagnifierControl.toggle(zoomed ? 0 : 450);
++        }
++    }
++
+     // ---- page tiles: the indicator pages that have no switch tile of their own
+     QsTileDef {
+         id: batteryPage

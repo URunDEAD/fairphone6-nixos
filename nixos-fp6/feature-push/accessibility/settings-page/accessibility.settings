@@ -1,0 +1,40 @@
+{
+    "icon": "preferences-desktop-accessibility-symbolic",
+    "name": "Accessibility",
+    "translations": "lomiri-system-settings",
+    "category": "system",
+    "priority": 2,
+    "form-factors": [
+        "phone",
+        "tablet"
+    ],
+    "keywords": [
+        "accessibility",
+        "a11y",
+        "magnification",
+        "magnifier",
+        "zoom",
+        "triple tap",
+        "colour inversion",
+        "color inversion",
+        "invert",
+        "colour correction",
+        "color correction",
+        "colour blind",
+        "color blind",
+        "daltonize",
+        "deuteranomaly",
+        "protanomaly",
+        "tritanomaly",
+        "greyscale",
+        "grayscale",
+        "mono audio",
+        "mono",
+        "balance",
+        "hearing",
+        "vision"
+    ],
+    "has-dynamic-keywords": false,
+    "has-dynamic-visibility": false,
+    "page-component": "PageComponent.qml"
+}

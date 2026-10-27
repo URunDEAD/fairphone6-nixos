@@ -14,8 +14,12 @@
 //  * Greyscale (any non-diagonal matrix): the quad reads the destination with
 //    GL_EXT_shader_framebuffer_fetch when the driver offers it, otherwise it
 //    copies the framebuffer into a texture first (glCopyTexSubImage2D).
+//  * preMatrix (accessibility module: colour inversion / correction): an
+//    affine 3x4 colour transform applied before greyscale and night light,
+//    folded into the same single pass (fetch or copy path).
 #pragma once
 
+#include <QtCore/QVariantList>
 #include <QtGui/QVector3D>
 #include <QtQuick/QQuickItem>
 
@@ -31,6 +35,10 @@ class ColorFilter : public QQuickItem
     // Colour temperature helper: sets red/green/blue for a white point in
     // Kelvin (6500 = neutral). Read back gives the last value set.
     Q_PROPERTY(int temperature READ temperature WRITE setTemperature NOTIFY temperatureChanged)
+    // Affine colour transform applied first: 12 numbers, row-major 3x4
+    // (r' = m00 r + m01 g + m02 b + o0, ...). Empty (default) = identity.
+    // Set by the accessibility module (inversion, colour correction).
+    Q_PROPERTY(QVariantList preMatrix READ preMatrix WRITE setPreMatrix NOTIFY preMatrixChanged)
     // True while a node is drawn (anything but the identity).
     Q_PROPERTY(bool active READ active NOTIFY activeChanged)
     // "blend", "fetch", "copy" or "" (not drawn yet); for tests/diagnostics.
@@ -46,12 +54,14 @@ public:
     int temperature() const { return m_temperature; }
     bool active() const { return m_active; }
     QString path() const { return m_path; }
+    QVariantList preMatrix() const { return m_preList; }
 
     void setRed(qreal v) { setChannel(0, v); }
     void setGreen(qreal v) { setChannel(1, v); }
     void setBlue(qreal v) { setChannel(2, v); }
     void setGreyscale(qreal v);
     void setTemperature(int kelvin);
+    void setPreMatrix(const QVariantList &m);
 
     // White point multipliers for a colour temperature, normalised so that
     // 6500 K = (1, 1, 1). Exposed for the unit test and the Settings preview.
@@ -59,6 +69,9 @@ public:
 
     // The 3x3 row-major matrix applied to (r, g, b).
     static void matrix(const float rgb[3], float grey, float out[9]);
+    // The full row-major 3x4 affine transform: diag(rgb) * grey * pre.
+    // pre: 12 numbers (row-major 3x4) or nullptr for the identity.
+    static void affine(const float rgb[3], float grey, const float *pre, float out[12]);
 
 Q_SIGNALS:
     void redChanged();
@@ -66,6 +79,7 @@ Q_SIGNALS:
     void blueChanged();
     void greyscaleChanged();
     void temperatureChanged();
+    void preMatrixChanged();
     void activeChanged();
     void pathChanged();
 
@@ -80,6 +94,9 @@ private:
     qreal m_rgb[3] { 1, 1, 1 };
     qreal m_grey = 0;
     int m_temperature = 6500;
+    bool m_hasPre = false;
+    float m_pre[12] { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0 };
+    QVariantList m_preList;
     bool m_active = false;
     QString m_path;
     friend class ColorFilterNode;

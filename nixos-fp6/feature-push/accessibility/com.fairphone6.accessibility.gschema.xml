@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- FP6 accessibility (System Settings > Accessibility). Read live by the
+     Lomiri shell (magnification, colour filter), the quick-settings tiles and
+     fp6-accessibility-audio (mono audio, balance). b/s/d/i keys only:
+     gsettings-qt in Lomiri cannot read integer arrays. -->
+<schemalist>
+  <schema id="com.fairphone6.accessibility" path="/com/fairphone6/accessibility/">
+    <!-- Magnification -->
+    <key name="magnification-tap" type="b">
+      <default>false</default>
+      <summary>Tap the screen several times to magnify</summary>
+      <description>Tapping magnification-tap-count times toggles the zoom at the tapped point. While on, single taps reach apps about 0.3 s later (they could be the start of the gesture).</description>
+    </key>
+    <key name="magnification-tap-count" type="i">
+      <range min="2" max="4"/>
+      <default>3</default>
+      <summary>Number of taps that toggle magnification</summary>
+    </key>
+    <key name="magnification-hold" type="b">
+      <default>true</default>
+      <summary>Magnify while held</summary>
+      <description>Tap one time less than the tap count, then keep the finger down: the screen is magnified until the finger is lifted, and moving the finger pans.</description>
+    </key>
+    <key name="magnification-shortcut" type="b">
+      <default>false</default>
+      <summary>Hold both volume keys to toggle magnification</summary>
+    </key>
+    <key name="magnification-level" type="d">
+      <range min="1.25" max="8.0"/>
+      <default>2.0</default>
+      <summary>Zoom level (pinching with two fingers while magnified changes it)</summary>
+    </key>
+    <!-- Colour -->
+    <key name="colour-inversion" type="b">
+      <default>false</default>
+      <summary>Colour inversion (light becomes dark, hues are kept)</summary>
+    </key>
+    <key name="colour-correction" type="s">
+      <choices>
+        <choice value="none"/>
+        <choice value="deuteranomaly"/>
+        <choice value="protanomaly"/>
+        <choice value="tritanomaly"/>
+        <choice value="greyscale"/>
+      </choices>
+      <default>'none'</default>
+      <summary>Colour correction: none, deuteranomaly (red-green), protanomaly (red-green), tritanomaly (blue-yellow) or greyscale</summary>
+    </key>
+    <key name="colour-correction-strength" type="d">
+      <range min="0.0" max="1.0"/>
+      <default>1.0</default>
+      <summary>Strength of the colour correction</summary>
+    </key>
+    <!-- Audio -->
+    <key name="mono-audio" type="b">
+      <default>false</default>
+      <summary>Mono audio: play the same sound on both channels</summary>
+    </key>
+    <key name="audio-balance" type="d">
+      <range min="-1.0" max="1.0"/>
+      <default>0.0</default>
+      <summary>Left/right balance (-1 = left only, 0 = centre, 1 = right only)</summary>
+    </key>
+  </schema>
+</schemalist>

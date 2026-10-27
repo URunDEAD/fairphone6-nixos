@@ -16,11 +16,13 @@ namespace {
 
 constexpr float kEps = 0.002f;
 
-bool isIdentity(const float rgb[3], float grey)
+bool isIdentity(const float rgb[3], float grey, bool hasPre = false)
 {
-    return grey < kEps && std::fabs(rgb[0] - 1) < kEps && std::fabs(rgb[1] - 1) < kEps
+    return !hasPre && grey < kEps && std::fabs(rgb[0] - 1) < kEps && std::fabs(rgb[1] - 1) < kEps
         && std::fabs(rgb[2] - 1) < kEps;
 }
+
+const float kIdentity12[12] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0 };
 
 const char *kVertex =
     "attribute highp vec2 pos;\n"
@@ -36,17 +38,19 @@ const char *kFetchFragment =
     "#extension GL_EXT_shader_framebuffer_fetch : require\n"
     "precision mediump float;\n"
     "uniform mat3 m;\n"
+    "uniform vec3 o;\n"
     "void main() {\n"
     "    vec4 d = gl_LastFragData[0];\n"
-    "    gl_FragColor = vec4(clamp(m * d.rgb, 0.0, 1.0), d.a);\n"
+    "    gl_FragColor = vec4(clamp(m * d.rgb + o, 0.0, 1.0), d.a);\n"
     "}\n";
 
 const char *kCopyFragment =
     "#ifdef GL_ES\nprecision mediump float;\n#endif\n"
     "uniform sampler2D tex;\n"
     "uniform mat3 m;\n"
+    "uniform vec3 o;\n"
     "varying highp vec2 uv;\n"
-    "void main() { gl_FragColor = vec4(clamp(m * texture2D(tex, uv).rgb, 0.0, 1.0), 1.0); }\n";
+    "void main() { gl_FragColor = vec4(clamp(m * texture2D(tex, uv).rgb + o, 0.0, 1.0), 1.0); }\n";
 
 enum Path { PathNone = 0, PathBlend, PathFetch, PathCopy };
 
@@ -69,10 +73,12 @@ public:
         : m_lastPath(std::move(lastPath)) {}
     ~ColorFilterNode() override { releaseResources(); }
 
-    void set(const float rgb[3], float grey, const QRectF &rect)
+    void set(const float rgb[3], float grey, const float *pre, const QRectF &rect)
     {
         for (int i = 0; i < 3; ++i) m_rgb[i] = rgb[i];
         m_grey = grey;
+        m_hasPre = pre != nullptr;
+        for (int i = 0; i < 12; ++i) m_pre[i] = pre ? pre[i] : kIdentity12[i];
         m_rect = rect;
     }
 
@@ -119,12 +125,12 @@ public:
             m_gl->glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STATIC_DRAW);
         }
 
-        const bool diagonal = m_grey < kEps;
-        float mtx[9];
-        ColorFilter::matrix(m_rgb, m_grey, mtx);
-        // GLSL mat3 uniforms are column-major.
-        const GLfloat colMajor[9] = { mtx[0], mtx[3], mtx[6], mtx[1], mtx[4], mtx[7],
-                                      mtx[2], mtx[5], mtx[8] };
+        const bool diagonal = m_grey < kEps && !m_hasPre;
+        float mtx[12];
+        ColorFilter::affine(m_rgb, m_grey, m_hasPre ? m_pre : nullptr, mtx);
+        // GLSL mat3 uniforms are column-major; mtx is row-major 3x4.
+        const GLfloat colMajor[9] = { mtx[0], mtx[4], mtx[8], mtx[1], mtx[5], mtx[9],
+                                      mtx[2], mtx[6], mtx[10] };
 
         m_gl->glDisable(GL_SCISSOR_TEST);
         m_gl->glDisable(GL_STENCIL_TEST);
@@ -158,6 +164,7 @@ public:
         } else {
             m_gl->glDisable(GL_BLEND);
             m_gl->glUniformMatrix3fv(prog->uniformLocation("m"), 1, GL_FALSE, colMajor);
+            prog->setUniformValue("o", QVector3D(mtx[3], mtx[7], mtx[11]));
             if (path == PathCopy) {
                 GLint vp[4];
                 m_gl->glGetIntegerv(GL_VIEWPORT, vp);
@@ -217,6 +224,8 @@ private:
     std::shared_ptr<std::atomic<int>> m_lastPath;
     float m_rgb[3] { 1, 1, 1 };
     float m_grey = 0;
+    bool m_hasPre = false;
+    float m_pre[12] { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0 };
     QRectF m_rect;
     QOpenGLContext *m_ctx = nullptr;
     QOpenGLFunctions *m_gl = nullptr;
@@ -269,10 +278,38 @@ void ColorFilter::setTemperature(int kelvin)
     Q_EMIT temperatureChanged();
 }
 
+void ColorFilter::setPreMatrix(const QVariantList &m)
+{
+    float v[12];
+    bool valid = m.size() == 12;
+    for (int i = 0; valid && i < 12; ++i) {
+        bool ok = false;
+        v[i] = float(m.at(i).toDouble(&ok));
+        valid = ok && std::isfinite(v[i]);
+    }
+    bool identity = true;
+    for (int i = 0; valid && i < 12; ++i)
+        identity = identity && std::fabs(v[i] - kIdentity12[i]) < kEps;
+    const bool hasPre = valid && !identity;
+    bool same = hasPre == m_hasPre;
+    for (int i = 0; same && hasPre && i < 12; ++i)
+        same = v[i] == m_pre[i];
+    m_preList = m;
+    if (same) {
+        Q_EMIT preMatrixChanged();
+        return;
+    }
+    m_hasPre = hasPre;
+    for (int i = 0; i < 12; ++i)
+        m_pre[i] = hasPre ? v[i] : kIdentity12[i];
+    Q_EMIT preMatrixChanged();
+    changed();
+}
+
 void ColorFilter::changed()
 {
     const float rgb[3] = { float(m_rgb[0]), float(m_rgb[1]), float(m_rgb[2]) };
-    const bool a = !isIdentity(rgb, float(m_grey));
+    const bool a = !isIdentity(rgb, float(m_grey), m_hasPre);
     if (a != m_active) {
         m_active = a;
         Q_EMIT activeChanged();
@@ -324,6 +361,24 @@ void ColorFilter::matrix(const float rgb[3], float grey, float out[9])
             out[r * 3 + c] = rgb[r] * ((r == c ? 1 - grey : 0) + grey * L[c]);
 }
 
+void ColorFilter::affine(const float rgb[3], float grey, const float *pre, float out[12])
+{
+    // out = M * pre, M = the 3x3 above, pre = [A | t] (row-major 3x4):
+    // M (A x + t) = (M A) x + M t.
+    float m[9];
+    matrix(rgb, grey, m);
+    if (!pre)
+        pre = kIdentity12;
+    for (int r = 0; r < 3; ++r) {
+        for (int c = 0; c < 4; ++c) {
+            float sum = 0;
+            for (int k = 0; k < 3; ++k)
+                sum += m[r * 3 + k] * pre[k * 4 + c];
+            out[r * 4 + c] = sum;
+        }
+    }
+}
+
 QSGNode *ColorFilter::updatePaintNode(QSGNode *old, UpdatePaintNodeData *)
 {
     auto *node = static_cast<ColorFilterNode *>(old);
@@ -333,7 +388,7 @@ QSGNode *ColorFilter::updatePaintNode(QSGNode *old, UpdatePaintNodeData *)
         QMetaObject::invokeMethod(this, [this, p] { reportPath(p); }, Qt::QueuedConnection);
     }
     const float rgb[3] = { float(m_rgb[0]), float(m_rgb[1]), float(m_rgb[2]) };
-    if (isIdentity(rgb, float(m_grey)) || !isVisible() || width() <= 0 || height() <= 0) {
+    if (isIdentity(rgb, float(m_grey), m_hasPre) || !isVisible() || width() <= 0 || height() <= 0) {
         // Fully bypassed: no node, nothing drawn.
         delete node;
         if (old)
@@ -342,7 +397,7 @@ QSGNode *ColorFilter::updatePaintNode(QSGNode *old, UpdatePaintNodeData *)
     }
     if (!node)
         node = new ColorFilterNode(std::make_shared<std::atomic<int>>(PathNone));
-    node->set(rgb, float(m_grey), QRectF(0, 0, width(), height()));
+    node->set(rgb, float(m_grey), m_hasPre ? m_pre : nullptr, QRectF(0, 0, width(), height()));
     node->markDirty(QSGNode::DirtyMaterial);
     return node;
 }

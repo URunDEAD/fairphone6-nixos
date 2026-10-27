@@ -29,14 +29,16 @@ static void check(bool ok, const char *what)
     if (!ok) ++failures;
 }
 
+static const float *g_pre = nullptr;   // current preMatrix (row-major 3x4) or identity
+
 static QColor expected(QColor in, const float rgb[3], float grey)
 {
-    float m[9];
-    ColorFilter::matrix(rgb, grey, m);
+    float m[12];
+    ColorFilter::affine(rgb, grey, g_pre, m);
     const float v[3] = { float(in.redF()), float(in.greenF()), float(in.blueF()) };
     float o[3];
     for (int r = 0; r < 3; ++r)
-        o[r] = qBound(0.f, m[r * 3] * v[0] + m[r * 3 + 1] * v[1] + m[r * 3 + 2] * v[2], 1.f);
+        o[r] = qBound(0.f, m[r * 4] * v[0] + m[r * 4 + 1] * v[1] + m[r * 4 + 2] * v[2] + m[r * 4 + 3], 1.f);
     return QColor::fromRgbF(o[0], o[1], o[2]);
 }
 
@@ -138,6 +140,30 @@ int main(int argc, char **argv)
     filter->setGreyscale(0);
     grabAndCheck(id, 0, "back to identity");
     check(!filter->active(), "inactive again");
+
+    // preMatrix (accessibility): affine transforms folded into the same pass.
+    static const float invert[12] = { -1, 0, 0, 1, 0, -1, 0, 1, 0, 0, -1, 1 };
+    QVariantList inv;
+    for (float f : invert) inv << double(f);
+    filter->setPreMatrix(inv);
+    g_pre = invert;
+    check(filter->active(), "inversion preMatrix is active");
+    grabAndCheck(id, 0, "inversion");
+    check(filter->path() != QLatin1String("blend"), "inversion does not use the multiply blend");
+    filter->setTemperature(3400);
+    grabAndCheck(warm, 0, "inversion + night light 3400 K (night light applied last)");
+    filter->setTemperature(6500);
+    // A non-trivial correction-like matrix with mixing between channels.
+    static const float mix[12] = { 0.8f, 0.2f, 0, 0, 0.1f, 0.7f, 0.2f, 0, 0, 0.3f, 0.7f, 0.05f };
+    QVariantList ml;
+    for (float f : mix) ml << double(f);
+    filter->setPreMatrix(ml);
+    g_pre = mix;
+    grabAndCheck(id, 0, "mixing preMatrix");
+    filter->setPreMatrix(QVariantList());
+    g_pre = nullptr;
+    grabAndCheck(id, 0, "preMatrix cleared");
+    check(!filter->active(), "inactive after clearing preMatrix");
 
     std::printf("%s (%d failures)\n", failures ? "FAILED" : "ALL PASS", failures);
     return failures ? 1 : 0;

@@ -1,0 +1,15 @@
+[package]
+name = "fp6-accessibility-audio"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Mono audio / balance bridge (GSettings -> WirePlumber settings) for the Fairphone 6"
+
+[dependencies]
+gio = "0.20"
+glib = "0.20"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
