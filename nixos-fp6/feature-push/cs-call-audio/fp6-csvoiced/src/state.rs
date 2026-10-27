@@ -47,6 +47,10 @@ pub trait VoicePath {
 pub struct Controller {
     pub active: bool,
     routes_on: bool,
+    /// A start failed during the current call: do not reopen the graphs
+    /// until the call is over (each voice-graph open can crash the FP6
+    /// modem's voice service, 2026-10-27).
+    failed_this_call: bool,
     applied_mute: Option<bool>,
     applied_volume: Option<u8>,
 }
@@ -62,7 +66,12 @@ impl Controller {
     pub fn apply(&mut self, cfg: &Config, snap: &Snapshot, dev: &mut dyn VoicePath) -> Vec<String> {
         let mut log = Vec::new();
         let want = snap.wants_voice(cfg);
-        if want && !self.active {
+        if !want {
+            self.failed_this_call = false;
+        }
+        if want && !self.active && self.failed_this_call {
+            // one attempt per call; see failed_this_call
+        } else if want && !self.active {
             // DPCM: the FE->BE routes must exist before the hostless FE is
             // opened, otherwise it starts with no back end (q6voiced2 makes
             // the same point: stream strictly after the mixer routes).
@@ -77,7 +86,10 @@ impl Controller {
                     self.active = true;
                     log.push("voice path started".to_string());
                 }
-                Err(e) => log.push(format!("voice path start failed (will retry): {e}")),
+                Err(e) => {
+                    self.failed_this_call = true;
+                    log.push(format!("voice path start failed (no retry during this call): {e}"));
+                }
             }
         } else if !want && (self.active || self.routes_on) {
             if self.active {
@@ -197,13 +209,16 @@ mod tests {
     }
 
     #[test]
-    fn start_failure_retries() {
+    fn start_failure_retries_only_on_next_call() {
         let cfg = Config::default();
         let (mut c, mut d) = (Controller::default(), Fake { fail_start: true, ..Default::default() });
         let log = c.apply(&cfg, &snap(&["active"]), &mut d);
-        assert!(log[0].contains("retry"));
+        assert!(log[0].contains("no retry"));
         assert!(!c.active);
         d.fail_start = false;
+        c.apply(&cfg, &snap(&["active"]), &mut d);
+        assert!(!c.active, "must not reopen during the same call");
+        c.apply(&cfg, &snap(&[]), &mut d);
         c.apply(&cfg, &snap(&["active"]), &mut d);
         assert!(c.active);
     }
