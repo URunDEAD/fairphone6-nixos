@@ -1,0 +1,969 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 3aa0516..474b283 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -77,6 +77,8 @@ set(WESTERNSUPPORT_SOURCES
+         plugins/westernsupport/spellchecker.h
+         plugins/westernsupport/spellpredictworker.cpp
+         plugins/westernsupport/spellpredictworker.h
++        plugins/westernsupport/ngrampredictor.cpp
++        plugins/westernsupport/ngrampredictor.h
+         plugins/westernsupport/westernlanguagefeatures.cpp
+         plugins/westernsupport/westernlanguagefeatures.h
+         plugins/westernsupport/westernlanguagesplugin.cpp
+diff --git a/plugins/westernsupport/ngrampredictor.cpp b/plugins/westernsupport/ngrampredictor.cpp
+new file mode 100644
+index 0000000..f858c60
+--- /dev/null
++++ b/plugins/westernsupport/ngrampredictor.cpp
+@@ -0,0 +1,501 @@
++/*
++ * Word n-gram prediction for the western language plugins (Fairphone 6).
++ * See ngrampredictor.h.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU Lesser General Public License as published by
++ * the Free Software Foundation; version 3.
++ */
++
++#include "ngrampredictor.h"
++
++#include <QDir>
++#include <QFile>
++#include <QFileInfo>
++#include <QSaveFile>
++#include <QTextStream>
++
++#include <algorithm>
++
++const double NgramModel::BackoffBigram = 0.4;
++const double NgramModel::BackoffUnigram = 0.16;
++const double NgramModel::UserWeight = 4.0;
++
++namespace NgramText {
++
++const QString SentenceStart = QStringLiteral("<s>");
++
++QString normalize(const QString &lang, const QString &text)
++{
++    const bool ro = (lang == QLatin1String("ro"));
++    QString out;
++    out.reserve(text.size());
++    for (int i = 0; i < text.size(); ++i) {
++        QChar c = text.at(i);
++        const ushort u = c.unicode();
++        if (u == 0x2019 || u == 0x2018 || u == 0x02BC)
++            c = QLatin1Char('\'');
++        else if (u == 0x2010 || u == 0x2011)
++            c = QLatin1Char('-');
++        if (ro) {
++            // s/t + combining comma below (U+0326) or cedilla (U+0327)
++            if ((c == QLatin1Char('s') || c == QLatin1Char('t') || c == QLatin1Char('S') || c == QLatin1Char('T'))
++                    && i + 1 < text.size()
++                    && (text.at(i + 1).unicode() == 0x0326 || text.at(i + 1).unicode() == 0x0327)) {
++                static const QString commaBelow = QString::fromUtf8("șțȘȚ");
++                out.append(commaBelow.at(QStringLiteral("stST").indexOf(c)));
++                ++i;
++                continue;
++            }
++            switch (c.unicode()) {
++            case 0x015F: c = QChar(0x0219); break; // ş -> ș
++            case 0x0163: c = QChar(0x021B); break; // ţ -> ț
++            case 0x015E: c = QChar(0x0218); break; // Ş -> Ș
++            case 0x0162: c = QChar(0x021A); break; // Ţ -> Ț
++            case 0x00E3: c = QChar(0x0103); break; // ã -> ă
++            case 0x00C3: c = QChar(0x0102); break; // Ã -> Ă
++            case 0x00E0: c = QLatin1Char('a'); break; // old stress marks
++            case 0x00E8: c = QLatin1Char('e'); break;
++            case 0x00EC: c = QLatin1Char('i'); break;
++            case 0x00F2: c = QLatin1Char('o'); break;
++            case 0x00F9: c = QLatin1Char('u'); break;
++            case 0x00C0: c = QLatin1Char('A'); break;
++            case 0x00C8: c = QLatin1Char('E'); break;
++            case 0x00CC: c = QLatin1Char('I'); break;
++            case 0x00D2: c = QLatin1Char('O'); break;
++            case 0x00D9: c = QLatin1Char('U'); break;
++            case '\'': c = QLatin1Char('-'); break;
++            default: break;
++            }
++        }
++        out.append(c);
++    }
++    return out;
++}
++
++QChar foldChar(QChar c)
++{
++    static const struct { const char *from; char to; } table[] = {
++        { "àáâãäåāăą", 'a' }, { "çćĉċč", 'c' }, { "ďđ", 'd' },
++        { "èéêëēĕėęě", 'e' }, { "ĝğġģ", 'g' }, { "ìíîïĩīĭįı", 'i' },
++        { "łľĺļ", 'l' }, { "ñńňņ", 'n' }, { "òóôõöøōŏő", 'o' },
++        { "ŕř", 'r' }, { "śŝşšș", 's' }, { "ţťț", 't' },
++        { "ùúûüũūŭůűų", 'u' }, { "ýÿ", 'y' }, { "źżž", 'z' },
++    };
++    static QHash<QChar, QChar> map;
++    if (map.isEmpty()) {
++        QHash<QChar, QChar> m;
++        for (const auto &row : table) {
++            const QString from = QString::fromUtf8(row.from);
++            for (QChar f : from)
++                m.insert(f, QLatin1Char(row.to));
++        }
++        map = m;
++    }
++    if (c.unicode() < 0x80)
++        return c;
++    return map.value(c, c);
++}
++
++QString fold(const QString &s)
++{
++    QString out(s);
++    for (int i = 0; i < out.size(); ++i)
++        out[i] = foldChar(out.at(i));
++    return out;
++}
++
++bool isSentenceBreak(QChar c)
++{
++    switch (c.unicode()) {
++    case '.': case '!': case '?': case ';': case ':': case '\n': case '\r': case 0x2026:
++        return true;
++    default:
++        return false;
++    }
++}
++
++static bool isJoiner(QChar c)
++{
++    return c == QLatin1Char('-') || c == QLatin1Char('\'');
++}
++
++QList<QStringList> sentences(const QString &text)
++{
++    QList<QStringList> out;
++    QStringList cur;
++    QString word;
++    bool junk = false;
++    auto flush = [&]() {
++        int b = 0, e = word.size();
++        while (b < e && isJoiner(word.at(b))) ++b;
++        while (e > b && isJoiner(word.at(e - 1))) --e;
++        const QString w = word.mid(b, e - b);
++        if (!junk && !w.isEmpty())
++            cur.append(w);
++        word.clear();
++        junk = false;
++    };
++    for (int i = 0; i < text.size(); ++i) {
++        const QChar c = text.at(i);
++        if (c.isLetter()) {
++            word.append(c);
++        } else if (isJoiner(c) && !word.isEmpty() && i + 1 < text.size() && text.at(i + 1).isLetter()) {
++            word.append(c);
++        } else if (c.isDigit() && !word.isEmpty()) {
++            junk = true;
++            word.append(c);
++        } else {
++            flush();
++            if (isSentenceBreak(c) && !cur.isEmpty()) {
++                out.append(cur);
++                cur.clear();
++            }
++        }
++    }
++    flush();
++    if (!cur.isEmpty())
++        out.append(cur);
++    return out;
++}
++
++static QString currentSentence(const QString &norm)
++{
++    for (int i = norm.size() - 1; i >= 0; --i) {
++        if (isSentenceBreak(norm.at(i)))
++            return norm.mid(i + 1);
++    }
++    return norm;
++}
++
++static QStringList lastTwo(const QStringList &words)
++{
++    QStringList ctx { SentenceStart, SentenceStart };
++    for (const QString &w : words)
++        ctx.append(w.toLower());
++    return ctx.mid(ctx.size() - 2);
++}
++
++QStringList contextOf(const QString &lang, const QString &left)
++{
++    const QString tail = currentSentence(normalize(lang, left));
++    QStringList words;
++    for (const QStringList &s : sentences(tail))
++        words += s;
++    return lastTwo(words);
++}
++
++QStringList lastCompletedWord(const QString &lang, const QString &left)
++{
++    if (left.isEmpty() || left.at(left.size() - 1).isLetter()
++            || isJoiner(left.at(left.size() - 1)) || left.at(left.size() - 1).isDigit())
++        return QStringList();
++    const QString norm = normalize(lang, left);
++    // Drop trailing separators, then look at the sentence that ends there.
++    int end = norm.size();
++    while (end > 0 && !norm.at(end - 1).isLetter())
++        --end;
++    if (end == 0)
++        return QStringList();
++    const QString tail = currentSentence(norm.left(end));
++    QStringList words;
++    for (const QStringList &s : sentences(tail))
++        words += s;
++    if (words.isEmpty())
++        return QStringList();
++    const QString word = words.takeLast();
++    return lastTwo(words) << word;
++}
++
++} // namespace NgramText
++
++using namespace NgramText;
++
++QString NgramModel::triKey(const QString &h2, const QString &h1)
++{
++    return h2 + QChar(0x1f) + h1;
++}
++
++void NgramModel::clear()
++{
++    m_uni.clear();
++    m_bi.clear();
++    m_tri.clear();
++    m_biCtx.clear();
++    m_triCtx.clear();
++    m_total = 0;
++    m_indexDirty = true;
++}
++
++int NgramModel::entries() const
++{
++    int n = m_uni.size();
++    for (const auto &m : m_bi) n += m.size();
++    for (const auto &m : m_tri) n += m.size();
++    return n;
++}
++
++bool NgramModel::load(const QString &path, QString *error)
++{
++    clear();
++    QFile f(path);
++    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
++        if (error) *error = f.errorString();
++        return false;
++    }
++    QTextStream in(&f);
++    in.setCodec("UTF-8");
++    QString line = in.readLine();
++    if (line != QLatin1String("#fp6-ngram\t1")) {
++        if (error) *error = QStringLiteral("not an fp6-ngram v1 file");
++        return false;
++    }
++    int lineNo = 1;
++    bool ok = true;
++    while (!in.atEnd()) {
++        line = in.readLine();
++        ++lineNo;
++        if (line.isEmpty() || line.startsWith(QLatin1Char('#')))
++            continue;
++        const QStringList f = line.split(QLatin1Char('\t'));
++        bool numOk = false;
++        if (f.at(0) == QLatin1String("1") && f.size() == 4) {
++            const quint64 c = f.at(3).toULongLong(&numOk);
++            m_uni.insert(f.at(1), Uni { f.at(2), c });
++            m_total += c;
++        } else if (f.at(0) == QLatin1String("2") && f.size() == 4) {
++            const quint64 c = f.at(3).toULongLong(&numOk);
++            m_bi[f.at(1)].insert(f.at(2), c);
++            m_biCtx[f.at(1)] += c;
++        } else if (f.at(0) == QLatin1String("3") && f.size() == 5) {
++            const quint64 c = f.at(4).toULongLong(&numOk);
++            const QString k = triKey(f.at(1), f.at(2));
++            m_tri[k].insert(f.at(3), c);
++            m_triCtx[k] += c;
++        }
++        if (!numOk) {
++            ok = false;
++            break;
++        }
++    }
++    if (!ok) {
++        if (error) *error = QStringLiteral("malformed record on line %1").arg(lineNo);
++        clear();
++        return false;
++    }
++    m_indexDirty = true;
++    return true;
++}
++
++bool NgramModel::save(const QString &path, const QString &lang) const
++{
++    QDir().mkpath(QFileInfo(path).absolutePath());
++    QSaveFile f(path);
++    if (!f.open(QIODevice::WriteOnly | QIODevice::Text))
++        return false;
++    QTextStream out(&f);
++    out.setCodec("UTF-8");
++    out << "#fp6-ngram\t1\n#lang\t" << lang << "\n#source\tlearned on this device\n";
++    QStringList keys = m_uni.keys();
++    std::sort(keys.begin(), keys.end());
++    for (const QString &k : keys)
++        out << "1\t" << k << '\t' << m_uni.value(k).surface << '\t' << m_uni.value(k).count << '\n';
++    QStringList ctxs = m_bi.keys();
++    std::sort(ctxs.begin(), ctxs.end());
++    for (const QString &h : ctxs) {
++        QStringList ws = m_bi.value(h).keys();
++        std::sort(ws.begin(), ws.end());
++        for (const QString &w : ws)
++            out << "2\t" << h << '\t' << w << '\t' << m_bi.value(h).value(w) << '\n';
++    }
++    ctxs = m_tri.keys();
++    std::sort(ctxs.begin(), ctxs.end());
++    for (const QString &k : ctxs) {
++        const QStringList hs = k.split(QChar(0x1f));
++        QStringList ws = m_tri.value(k).keys();
++        std::sort(ws.begin(), ws.end());
++        for (const QString &w : ws)
++            out << "3\t" << hs.value(0) << '\t' << hs.value(1) << '\t' << w << '\t' << m_tri.value(k).value(w) << '\n';
++    }
++    out.flush();
++    return f.commit();
++}
++
++void NgramModel::learn(const QStringList &context, const QString &word)
++{
++    const QString l = word.toLower();
++    if (l.isEmpty() || l.contains(QLatin1Char('\t')) || l == SentenceStart)
++        return;
++    const QString h1 = context.value(context.size() - 1, SentenceStart);
++    auto it = m_uni.find(l);
++    if (it == m_uni.end()) {
++        // Keep the typed capitalisation of words seen mid-sentence (names).
++        m_uni.insert(l, Uni { h1 != SentenceStart ? word : l, 1 });
++        m_indexDirty = true;
++    } else {
++        it->count += 1;
++    }
++    m_total += 1;
++    m_bi[h1][l] += 1;
++    m_biCtx[h1] += 1;
++    if (h1 != SentenceStart) {
++        const QString h2 = context.size() >= 2 ? context.at(context.size() - 2) : SentenceStart;
++        const QString k = triKey(h2, h1);
++        m_tri[k][l] += 1;
++        m_triCtx[k] += 1;
++    }
++}
++
++void NgramModel::pruneSingletons()
++{
++    for (auto it = m_tri.begin(); it != m_tri.end();) {
++        for (auto w = it->begin(); w != it->end();)
++            w = (w.value() <= 1) ? it->erase(w) : std::next(w);
++        it = it->isEmpty() ? m_tri.erase(it) : std::next(it);
++    }
++    for (auto it = m_bi.begin(); it != m_bi.end();) {
++        for (auto w = it->begin(); w != it->end();)
++            w = (w.value() <= 1) ? it->erase(w) : std::next(w);
++        it = it->isEmpty() ? m_bi.erase(it) : std::next(it);
++    }
++    for (auto it = m_uni.begin(); it != m_uni.end();)
++        it = (it->count <= 1) ? m_uni.erase(it) : std::next(it);
++    m_total = 0;
++    for (const Uni &u : m_uni) m_total += u.count;
++    m_biCtx.clear();
++    for (auto it = m_bi.constBegin(); it != m_bi.constEnd(); ++it)
++        for (quint64 c : it.value()) m_biCtx[it.key()] += c;
++    m_triCtx.clear();
++    for (auto it = m_tri.constBegin(); it != m_tri.constEnd(); ++it)
++        for (quint64 c : it.value()) m_triCtx[it.key()] += c;
++    m_indexDirty = true;
++}
++
++void NgramModel::reindex() const
++{
++    if (!m_indexDirty)
++        return;
++    m_byExact.clear();
++    m_byFolded.clear();
++    m_byExact.reserve(m_uni.size());
++    m_byFolded.reserve(m_uni.size());
++    for (auto it = m_uni.constBegin(); it != m_uni.constEnd(); ++it) {
++        m_byExact.append(it.key());
++        m_byFolded.append(qMakePair(fold(it.key()), it.key()));
++    }
++    std::sort(m_byExact.begin(), m_byExact.end());
++    std::sort(m_byFolded.begin(), m_byFolded.end());
++    m_indexDirty = false;
++}
++
++QVector<QString> NgramModel::withPrefix(const QString &prefix, bool folded) const
++{
++    reindex();
++    QVector<QString> out;
++    if (folded) {
++        auto it = std::lower_bound(m_byFolded.constBegin(), m_byFolded.constEnd(), prefix,
++                                   [](const QPair<QString, QString> &a, const QString &p) { return a.first < p; });
++        for (; it != m_byFolded.constEnd() && it->first.startsWith(prefix); ++it)
++            out.append(it->second);
++    } else {
++        auto it = std::lower_bound(m_byExact.constBegin(), m_byExact.constEnd(), prefix);
++        for (; it != m_byExact.constEnd() && it->startsWith(prefix); ++it)
++            out.append(*it);
++    }
++    return out;
++}
++
++quint64 NgramModel::biCount(const QString &h, const QString &w) const
++{
++    auto it = m_bi.constFind(h);
++    return it == m_bi.constEnd() ? 0 : it->value(w, 0);
++}
++
++quint64 NgramModel::triCount(const QString &k, const QString &w) const
++{
++    auto it = m_tri.constFind(k);
++    return it == m_tri.constEnd() ? 0 : it->value(w, 0);
++}
++
++QStringList NgramModel::predict(const NgramModel *user, const QStringList &context,
++                                const QString &prefix, int limit) const
++{
++    const QString pl = prefix.toLower();
++    if (pl.isEmpty() || limit <= 0)
++        return QStringList();
++    static const NgramModel empty;
++    if (!user)
++        user = &empty;
++    const bool foldedMode = (fold(pl) == pl);
++    auto matches = [&](const QString &w) {
++        return foldedMode ? fold(w).startsWith(pl) : w.startsWith(pl);
++    };
++    const double uw = UserWeight;
++    QHash<QString, double> scores;
++    auto bump = [&](const QString &w, double s) {
++        auto it = scores.find(w);
++        if (it == scores.end())
++            scores.insert(w, s);
++        else if (s > *it)
++            *it = s;
++    };
++    const QString h1 = context.value(context.size() - 1, SentenceStart);
++    const QString h2 = context.size() >= 2 ? context.at(context.size() - 2) : SentenceStart;
++
++    const QString k3 = triKey(h2, h1);
++    const double d3 = m_triCtx.value(k3, 0) + uw * user->m_triCtx.value(k3, 0);
++    if (d3 > 0) {
++        for (const NgramModel *m : { this, user }) {
++            auto it = m->m_tri.constFind(k3);
++            if (it == m->m_tri.constEnd())
++                continue;
++            for (auto w = it->constBegin(); w != it->constEnd(); ++w)
++                if (matches(w.key()))
++                    bump(w.key(), (triCount(k3, w.key()) + uw * user->triCount(k3, w.key())) / d3);
++        }
++    }
++    const double d2 = m_biCtx.value(h1, 0) + uw * user->m_biCtx.value(h1, 0);
++    if (d2 > 0) {
++        for (const NgramModel *m : { this, user }) {
++            auto it = m->m_bi.constFind(h1);
++            if (it == m->m_bi.constEnd())
++                continue;
++            for (auto w = it->constBegin(); w != it->constEnd(); ++w)
++                if (matches(w.key()))
++                    bump(w.key(), BackoffBigram * (biCount(h1, w.key()) + uw * user->biCount(h1, w.key())) / d2);
++        }
++    }
++    const double d1 = m_total + uw * user->m_total;
++    if (d1 > 0) {
++        for (const NgramModel *m : { this, user })
++            for (const QString &w : m->withPrefix(pl, foldedMode))
++                bump(w, BackoffUnigram * (uniCount(w) + uw * user->uniCount(w)) / d1);
++    }
++    scores.remove(pl);
++
++    QVector<QPair<double, QString>> ranked;
++    ranked.reserve(scores.size());
++    for (auto it = scores.constBegin(); it != scores.constEnd(); ++it)
++        ranked.append(qMakePair(it.value(), it.key()));
++    std::sort(ranked.begin(), ranked.end(), [](const QPair<double, QString> &a, const QPair<double, QString> &b) {
++        if (a.first != b.first)
++            return a.first > b.first;
++        return a.second < b.second;
++    });
++    QStringList out;
++    for (const auto &r : ranked) {
++        if (out.size() >= limit)
++            break;
++        QString surface = r.second;
++        auto u = m_uni.constFind(r.second);
++        if (u != m_uni.constEnd()) {
++            surface = u->surface;
++        } else {
++            auto v = user->m_uni.constFind(r.second);
++            if (v != user->m_uni.constEnd())
++                surface = v->surface;
++        }
++        out.append(surface);
++    }
++    return out;
++}
+diff --git a/plugins/westernsupport/ngrampredictor.h b/plugins/westernsupport/ngrampredictor.h
+new file mode 100644
+index 0000000..5a138ac
+--- /dev/null
++++ b/plugins/westernsupport/ngrampredictor.h
+@@ -0,0 +1,90 @@
++/*
++ * Word n-gram prediction for the western language plugins (Fairphone 6).
++ *
++ * Replaces the presage-based prediction that upstream removed in 2.3.1
++ * ("Remove text prediction feature for now", #146). Models are plain TSV
++ * files ("fp6-ngram 1") built by fp6-kbd-ngram from public-domain/CC0
++ * corpora and installed next to each language plugin as ngram_<lang>.tsv.
++ * Words the user types are learned into a per-language user model.
++ *
++ * Scoring is stupid backoff over trigram/bigram/unigram counts, with
++ * diacritic-insensitive prefix matching while the typed prefix has no
++ * diacritics ("fata" -> "față"). Keep in sync with
++ * nixos-fp6/feature-push/keyboard/ngram/src/lib.rs.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU Lesser General Public License as published by
++ * the Free Software Foundation; version 3.
++ */
++
++#ifndef NGRAMPREDICTOR_H
++#define NGRAMPREDICTOR_H
++
++#include <QHash>
++#include <QPair>
++#include <QString>
++#include <QStringList>
++#include <QVector>
++
++namespace NgramText {
++extern const QString SentenceStart; // "<s>"
++QString normalize(const QString &lang, const QString &text);
++QChar foldChar(QChar c);
++QString fold(const QString &s);
++bool isSentenceBreak(QChar c);
++// Words of the text, split into sentences (keyboard mode: every newline breaks).
++QList<QStringList> sentences(const QString &text);
++// Last two lowercase words of the current sentence left of the cursor,
++// padded with "<s>".
++QStringList contextOf(const QString &lang, const QString &left);
++// If `left` ends after a complete word (followed by space/punctuation),
++// returns {h2, h1, word} (word in its typed form); otherwise empty.
++QStringList lastCompletedWord(const QString &lang, const QString &left);
++}
++
++class NgramModel
++{
++public:
++    static const double BackoffBigram;
++    static const double BackoffUnigram;
++    static const double UserWeight;
++
++    bool load(const QString &path, QString *error = nullptr);
++    bool save(const QString &path, const QString &lang) const;
++    void clear();
++    bool isEmpty() const { return m_uni.isEmpty(); }
++    int vocabulary() const { return m_uni.size(); }
++    int entries() const;
++    bool contains(const QString &lowerWord) const { return m_uni.contains(lowerWord); }
++    quint64 total() const { return m_total; }
++
++    // Learn `word` after context {h2, h1} (lowercase, "<s>" padded).
++    void learn(const QStringList &context, const QString &word);
++    // Drop entries seen only once (keeps learned models bounded).
++    void pruneSingletons();
++
++    QStringList predict(const NgramModel *user, const QStringList &context,
++                        const QString &prefix, int limit) const;
++
++private:
++    struct Uni { QString surface; quint64 count; };
++    static QString triKey(const QString &h2, const QString &h1);
++    void reindex() const;
++    // Unigram keys whose (folded) form starts with prefix.
++    QVector<QString> withPrefix(const QString &prefix, bool folded) const;
++    quint64 uniCount(const QString &w) const { auto it = m_uni.constFind(w); return it == m_uni.constEnd() ? 0 : it->count; }
++    quint64 biCount(const QString &h, const QString &w) const;
++    quint64 triCount(const QString &k, const QString &w) const;
++
++    QHash<QString, Uni> m_uni;
++    QHash<QString, QHash<QString, quint64>> m_bi;
++    QHash<QString, QHash<QString, quint64>> m_tri; // key h2 \x1f h1
++    quint64 m_total = 0;
++    QHash<QString, quint64> m_biCtx;
++    QHash<QString, quint64> m_triCtx;
++    mutable bool m_indexDirty = true;
++    mutable QVector<QString> m_byExact;
++    mutable QVector<QPair<QString, QString>> m_byFolded;
++};
++
++#endif // NGRAMPREDICTOR_H
+diff --git a/plugins/westernsupport/spellpredictworker.cpp b/plugins/westernsupport/spellpredictworker.cpp
+index d7c721a..9346760 100644
+--- a/plugins/westernsupport/spellpredictworker.cpp
++++ b/plugins/westernsupport/spellpredictworker.cpp
+@@ -28,12 +28,79 @@
+ #include "spellpredictworker.h"
+ 
+ #include <QDebug>
++#include <QDir>
++#include <QFile>
++#include <QStandardPaths>
++
++namespace {
++// Candidates shown after the typed word itself.
++const int PredictionLimit = 5;
++// Learned models are pruned of one-off entries beyond this size.
++const int UserModelMaxEntries = 60000;
++}
+ 
+ SpellPredictWorker::SpellPredictWorker(QObject *parent)
+     : QObject(parent)
+     , m_spellChecker()
+     , m_limit(5)
++    , m_unsavedLearns(0)
++    , m_saveTimer(new QTimer(this))
++{
++    m_saveTimer->setSingleShot(true);
++    m_saveTimer->setInterval(2000);
++    connect(m_saveTimer, &QTimer::timeout, this, &SpellPredictWorker::saveUserModel);
++}
++
++SpellPredictWorker::~SpellPredictWorker()
++{
++    saveUserModel();
++}
++
++QString SpellPredictWorker::userModelPath() const
++{
++    // Next to the spell checker's <lang>_userDictionary.dic.
++    return QStandardPaths::writableLocation(QStandardPaths::DataLocation)
++            + QDir::separator() + m_language + QStringLiteral("_ngram_user.tsv");
++}
++
++void SpellPredictWorker::saveUserModel()
++{
++    m_saveTimer->stop();
++    if (m_unsavedLearns == 0 || m_language.isEmpty())
++        return;
++    if (m_userModel.entries() > UserModelMaxEntries)
++        m_userModel.pruneSingletons();
++    if (!m_userModel.save(userModelPath(), m_language))
++        qWarning() << "fp6 ngram: could not save" << userModelPath();
++    m_unsavedLearns = 0;
++}
++
++void SpellPredictWorker::learnFrom(const QString& surroundingLeft)
+ {
++    // Implicit learning, like presage did: once the next word starts, the
++    // word before it is complete. Only words the shipped model or the
++    // spell checker (incl. the user dictionary) know are learned, so typos
++    // are not. Nothing is learned while prediction is off (password, email,
++    // URL fields: the word engine is disabled there).
++    const QStringList w = NgramText::lastCompletedWord(m_language, surroundingLeft);
++    if (w.size() != 3)
++        return;
++    const QString key = surroundingLeft.right(80);
++    if (key == m_lastLearnKey)
++        return;
++    m_lastLearnKey = key;
++    const QString word = w.at(2);
++    if (word.size() > 40)
++        return;
++    const bool known = m_baseModel.contains(word.toLower())
++            || (m_spellChecker.enabled() && m_spellChecker.spell(word));
++    if (!known)
++        return;
++    m_userModel.learn(w.mid(0, 2), word);
++    if (++m_unsavedLearns >= 20)
++        saveUserModel();
++    else
++        m_saveTimer->start();
+ }
+ 
+ void SpellPredictWorker::parsePredictionText(const QString& surroundingLeft, const QString& origPreedit)
+@@ -54,6 +121,30 @@ void SpellPredictWorker::parsePredictionText(const QString& surroundingLeft, con
+         list << preedit;
+     }
+ 
++    if (!m_language.isEmpty()) {
++        learnFrom(surroundingLeft);
++        const QStringList context = NgramText::contextOf(m_language, surroundingLeft);
++        const QStringList predictions = m_baseModel.predict(&m_userModel, context,
++                                                            NgramText::normalize(m_language, origPreedit),
++                                                            PredictionLimit * 3);
++        int added = 0;
++        for (const QString &prediction : predictions) {
++            if (added >= PredictionLimit)
++                break;
++            if (list.contains(prediction))
++                continue;
++            // As with presage: only offer words the spell checker accepts
++            // (the corpora are old books; this drops archaic spellings).
++            QString titleCase = prediction;
++            titleCase[0] = prediction.at(0).toUpper();
++            if (m_spellChecker.spell(prediction) || m_spellChecker.spell(titleCase)
++                    || m_userModel.contains(prediction.toLower())) {
++                list << prediction;
++                ++added;
++            }
++        }
++    }
++
+     Q_EMIT newPredictionSuggestions(origPreedit, list);
+ }
+ 
+@@ -72,6 +163,27 @@ void SpellPredictWorker::setLanguage(QString locale, QString pluginPath)
+ 
+     m_spellChecker.setLanguage(baseLocale);
+     m_spellChecker.setEnabled(true);
++
++    saveUserModel();
++    m_language = baseLocale;
++    m_lastLearnKey.clear();
++    m_userModel.clear();
++    m_baseModel.clear();
++    QString modelPath = pluginPath + QDir::separator() + QStringLiteral("ngram_") + baseLocale + QStringLiteral(".tsv");
++    if (!QFile::exists(modelPath)) {
++        // fr-ch, en@dv: fall back to the main language's plugin directory
++        QString parent = pluginPath;
++        parent.truncate(parent.lastIndexOf(QDir::separator()));
++        modelPath = parent + QDir::separator() + baseLocale + QDir::separator()
++                + QStringLiteral("ngram_") + baseLocale + QStringLiteral(".tsv");
++    }
++    QString error;
++    if (!m_baseModel.load(modelPath, &error))
++        qWarning() << "fp6 ngram: no word prediction model for" << baseLocale << modelPath << error;
++    else
++        qDebug() << "fp6 ngram: loaded" << modelPath << m_baseModel.vocabulary() << "words";
++    if (QFile::exists(userModelPath()) && !m_userModel.load(userModelPath(), &error))
++        qWarning() << "fp6 ngram: ignoring unreadable learned model" << userModelPath() << error;
+ }
+ 
+ void SpellPredictWorker::suggest(const QString& word, int limit)
+diff --git a/plugins/westernsupport/spellpredictworker.h b/plugins/westernsupport/spellpredictworker.h
+index 7ba24f4..3a7b0a1 100644
+--- a/plugins/westernsupport/spellpredictworker.h
++++ b/plugins/westernsupport/spellpredictworker.h
+@@ -30,10 +30,12 @@
+ 
+ #include "spellchecker.h"
+ #include "languageplugininterface.h"
++#include "ngrampredictor.h"
+ 
+ #include <QObject>
+ #include <QStringList>
+ #include <QMap>
++#include <QTimer>
+ 
+ class SpellPredictWorker : public QObject
+ {
+@@ -41,6 +43,7 @@ class SpellPredictWorker : public QObject
+ 
+ public:
+     SpellPredictWorker(QObject *parent = 0);
++    ~SpellPredictWorker() override;
+     void suggest(const QString& word, int limit);
+ 
+ public slots:
+@@ -58,9 +61,20 @@ signals:
+                                   int strategy = UpdateCandidateListStrategy::ClearWhenNeeded);
+ 
+ private:
++    void learnFrom(const QString& surroundingLeft);
++    void saveUserModel();
++    QString userModelPath() const;
++
+     SpellChecker m_spellChecker;
+     int m_limit;
+     QMap<QString, QString> m_overrides;
++    // FP6: n-gram word prediction (see ngrampredictor.h)
++    QString m_language;
++    NgramModel m_baseModel;
++    NgramModel m_userModel;
++    QString m_lastLearnKey;
++    int m_unsavedLearns;
++    QTimer *m_saveTimer;
+ };
+ 
+ #endif // SPELLPREDICTWORKER_H
+diff --git a/tests/fp6/ngrampredictor_test.cpp b/tests/fp6/ngrampredictor_test.cpp
+new file mode 100644
+index 0000000..7e567a8
+--- /dev/null
++++ b/tests/fp6/ngrampredictor_test.cpp
+@@ -0,0 +1,158 @@
++// Unit test for plugins/westernsupport/ngrampredictor.{h,cpp} (FP6).
++// Build: c++ -std=c++17 -fPIC -I../plugins/westernsupport ngrampredictor_test.cpp
++//        ../plugins/westernsupport/ngrampredictor.cpp $(pkg-config --cflags --libs Qt5Core)
++// Run:   ./ngrampredictor_test [MODEL.tsv PARITY.tsv]...
++// The optional pairs check that C++ predictions equal those of the Rust
++// model builder (fp6-kbd-ngram parity output: left \t prefix \t a|b|c).
++#include "ngrampredictor.h"
++
++#include <QCoreApplication>
++#include <QDir>
++#include <QFile>
++#include <QTemporaryDir>
++#include <QTextStream>
++
++#include <cstdio>
++
++static int failures = 0;
++#define CHECK_EQ(a, b) do { const auto _a = (a); const auto _b = (b); if (!(_a == _b)) { \
++    ++failures; fprintf(stderr, "FAIL %s:%d: %s\n  got:      %s\n  expected: %s\n", __FILE__, __LINE__, #a, \
++    qPrintable(QVariant::fromValue(_a).toStringList().join(QLatin1Char('|')) + QVariant::fromValue(_a).toString()), \
++    qPrintable(QVariant::fromValue(_b).toStringList().join(QLatin1Char('|')) + QVariant::fromValue(_b).toString())); } } while (0)
++#define CHECK(c) do { if (!(c)) { ++failures; fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); } } while (0)
++
++static QString u(const char *s) { return QString::fromUtf8(s); }
++static QStringList ul(std::initializer_list<const char *> l) { QStringList r; for (auto s : l) r << u(s); return r; }
++
++static NgramModel modelFrom(const QString &tsv)
++{
++    QTemporaryDir dir;
++    const QString p = dir.path() + QStringLiteral("/m.tsv");
++    QFile f(p);
++    f.open(QIODevice::WriteOnly);
++    f.write(tsv.toUtf8());
++    f.close();
++    NgramModel m;
++    QString err;
++    CHECK(m.load(p, &err));
++    return m;
++}
++
++int main(int argc, char **argv)
++{
++    QCoreApplication app(argc, argv);
++    using namespace NgramText;
++
++    // Romanian normalisation: cedilla -> comma below, old marks.
++    CHECK_EQ(normalize(u("ro"), u("şi ţară ŞI ŢARĂ")), u("și țară ȘI ȚARĂ"));
++    CHECK_EQ(normalize(u("ro"), u("şi țara")), u("și țara"));
++    CHECK_EQ(normalize(u("ro"), u("mãr făcù s’a")), u("măr făcu s-a"));
++    CHECK_EQ(normalize(u("tr"), u("şeker")), u("şeker"));
++    CHECK_EQ(fold(u("ăâîșțşţ")), u("aaistst"));
++
++    // Tokenising and context.
++    QList<QStringList> s = sentences(u("Ș-apoi într-o zi, s-au dus. Ce-i? 12 mere"));
++    CHECK_EQ(s.size(), 3);
++    CHECK_EQ(s.value(0), ul({"Ș-apoi", "într-o", "zi", "s-au", "dus"}));
++    CHECK_EQ(s.value(2), ul({"mere"}));
++    CHECK_EQ(contextOf(u("ro"), u("")), ul({"<s>", "<s>"}));
++    CHECK_EQ(contextOf(u("ro"), u("Bună ziua. Ce ")), ul({"<s>", "ce"}));
++    CHECK_EQ(contextOf(u("ro"), u("Mă duc acasă, şi ")), ul({"acasă", "și"}));
++    CHECK_EQ(contextOf(u("en"), u("Hello!\n")), ul({"<s>", "<s>"}));
++
++    // Completed-word detection for learning.
++    CHECK_EQ(lastCompletedWord(u("ro"), u("Mă duc acasă ")), ul({"mă", "duc", "acasă"}));
++    CHECK_EQ(lastCompletedWord(u("ro"), u("Bună ziua. ")), ul({"<s>", "bună", "ziua"}));
++    CHECK_EQ(lastCompletedWord(u("ro"), u("Ana ")), ul({"<s>", "<s>", "Ana"}));
++    CHECK(lastCompletedWord(u("ro"), u("Mă duc aca")).isEmpty());
++    CHECK(lastCompletedWord(u("ro"), u("   ")).isEmpty());
++    CHECK(lastCompletedWord(u("ro"), u("")).isEmpty());
++
++    // Prediction over a small model (same fixture as the Rust tests).
++    const QString tsv = u("#fp6-ngram\t1\n#lang\tro\n"
++        "1\tfață\tfață\t2\n1\tfată\tfată\t1\n1\tfata\tfata\t1\n1\tștergi\tștergi\t1\n"
++        "2\t<s>\tfață\t1\n2\tfață\tfață\t1\n2\tfață\tfată\t1\n2\tfată\tfata\t1\n2\tfata\tștergi\t1\n");
++    NgramModel m = modelFrom(tsv);
++    CHECK_EQ(m.vocabulary(), 4);
++    CHECK_EQ(m.total(), quint64(5));
++    const QStringList ctx = contextOf(u("ro"), u(""));
++    CHECK_EQ(m.predict(nullptr, ctx, u("fat"), 5), ul({"față", "fata", "fată"}));
++    CHECK(m.predict(nullptr, ctx, u("fă"), 5).isEmpty());
++    CHECK_EQ(m.predict(nullptr, ctx, u("ster"), 5), ul({"ștergi"}));
++    CHECK_EQ(m.predict(nullptr, ctx, u("ș"), 5), ul({"ștergi"}));
++    CHECK(m.predict(nullptr, ctx, u("fata"), 5).isEmpty() || !m.predict(nullptr, ctx, u("fata"), 5).contains(u("fata")));
++
++    // Learning, persistence, user weight.
++    NgramModel user;
++    user.learn(ctx, u("fată"));
++    CHECK_EQ(m.predict(&user, ctx, u("fat"), 1), ul({"fată"}));
++    user.learn(ul({"<s>", "ion"}), u("Calculator"));
++    CHECK_EQ(m.predict(&user, ul({"<s>", "ion"}), u("calc"), 3), ul({"Calculator"}));
++    QTemporaryDir dir;
++    const QString up = dir.path() + QStringLiteral("/sub/ro_ngram_user.tsv");
++    CHECK(user.save(up, u("ro")));
++    NgramModel back;
++    CHECK(back.load(up));
++    CHECK_EQ(back.entries(), user.entries());
++    CHECK_EQ(m.predict(&back, ul({"<s>", "ion"}), u("calc"), 3), ul({"Calculator"}));
++    back.pruneSingletons();
++    CHECK_EQ(back.entries(), 0);
++
++    // Malformed files are rejected.
++    {
++        QTemporaryDir d;
++        QFile f(d.path() + QStringLiteral("/bad.tsv"));
++        f.open(QIODevice::WriteOnly);
++        f.write("#fp6-ngram\t1\n2\ta\tb\tq\n");
++        f.close();
++        NgramModel bad;
++        QString err;
++        CHECK(!bad.load(f.fileName(), &err));
++        CHECK(bad.isEmpty());
++        CHECK(!bad.load(d.path() + QStringLiteral("/missing.tsv")));
++    }
++
++    // Parity with the Rust builder on real models.
++    int parity = 0;
++    for (int i = 1; i + 1 < argc; i += 2) {
++        NgramModel real;
++        QString err;
++        if (!real.load(QString::fromLocal8Bit(argv[i]), &err)) {
++            ++failures;
++            fprintf(stderr, "FAIL cannot load %s: %s\n", argv[i], qPrintable(err));
++            continue;
++        }
++        QFile pf(QString::fromLocal8Bit(argv[i + 1]));
++        CHECK(pf.open(QIODevice::ReadOnly | QIODevice::Text));
++        QTextStream in(&pf);
++        in.setCodec("UTF-8");
++        QString lang;
++        {
++            QFile mf(QString::fromLocal8Bit(argv[i]));
++            mf.open(QIODevice::ReadOnly);
++            mf.readLine();
++            lang = QString::fromUtf8(mf.readLine()).trimmed().section(QLatin1Char('\t'), 1);
++        }
++        while (!in.atEnd()) {
++            const QStringList f = in.readLine().split(QLatin1Char('\t'));
++            if (f.size() != 3)
++                continue;
++            const QStringList expected = f.at(2).isEmpty() ? QStringList() : f.at(2).split(QLatin1Char('|'));
++            const QStringList got = real.predict(nullptr, contextOf(lang, f.at(0)), normalize(lang, f.at(1)), 5);
++            if (got != expected) {
++                ++failures;
++                fprintf(stderr, "FAIL parity %s [%s|%s]\n  c++:  %s\n  rust: %s\n", qPrintable(lang),
++                        qPrintable(f.at(0)), qPrintable(f.at(1)), qPrintable(got.join(QLatin1Char('|'))),
++                        qPrintable(expected.join(QLatin1Char('|'))));
++            }
++            ++parity;
++        }
++    }
++
++    if (failures) {
++        fprintf(stderr, "ngrampredictor_test: %d failure(s)\n", failures);
++        return 1;
++    }
++    printf("ngrampredictor_test: ok (%d parity queries)\n", parity);
++    return 0;
++}

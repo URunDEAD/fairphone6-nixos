@@ -1,0 +1,19 @@
+[package]
+name = "fp6-kbd-ngram"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Builds and evaluates word n-gram models for maliit-keyboard prediction on the Fairphone 6"
+
+[lib]
+name = "fp6_kbd_ngram"
+path = "src/lib.rs"
+
+[[bin]]
+name = "fp6-kbd-ngram"
+path = "src/main.rs"
+
+[dependencies]
+
+[profile.release]
+opt-level = 2

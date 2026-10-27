@@ -1,0 +1,151 @@
+diff --git a/plugins/en/qml/Keyboard_en.qml b/plugins/en/qml/Keyboard_en.qml
+index 4cb851b..a90c890 100644
+--- a/plugins/en/qml/Keyboard_en.qml
++++ b/plugins/en/qml/Keyboard_en.qml
+@@ -85,7 +85,9 @@ KeyPad {
+ 
+             SymbolShiftKey { id: symShiftKey;                            anchors.left: parent.left; height: parent.height; }
+             LanguageKey    { id: languageMenuButton;                     anchors.left: symShiftKey.right; height: parent.height; }
+-            CharKey        { id: commaKey;    label: ","; shifted: ","; extended: ["'", "\"", ";", ":", "@", "&", "(", ")"]; extendedShifted: ["'", "\"", ";", ":", "@", "&", "(", ")"]; anchors.left: languageMenuButton.right; height: parent.height; }
++            // FP6: zero-width until a dictation service is available (MicKey.qml)
++            MicKey         { id: micKey;                                 anchors.left: languageMenuButton.right; height: parent.height; }
++            CharKey        { id: commaKey;    label: ","; shifted: ","; extended: ["'", "\"", ";", ":", "@", "&", "(", ")"]; extendedShifted: ["'", "\"", ";", ":", "@", "&", "(", ")"]; anchors.left: micKey.right; height: parent.height; }
+             SpaceKey       { id: spaceKey;                               anchors.left: commaKey.right; anchors.right: dotKey.left; noMagnifier: true; height: parent.height; }
+             CharKey        { id: dotKey;      label: "."; shifted: "."; extended: ["?", "-", "_", "!", "+", "%","#","/"];  extendedShifted: ["?", "-", "_", "!", "+", "%","#","/"]; anchors.right: enterKey.left; height: parent.height; }
+             ReturnKey      { id: enterKey;                               anchors.right: parent.right; height: parent.height; }
+diff --git a/plugins/ro/qml/Keyboard_ro.qml b/plugins/ro/qml/Keyboard_ro.qml
+index 7425d74..a6dddf5 100644
+--- a/plugins/ro/qml/Keyboard_ro.qml
++++ b/plugins/ro/qml/Keyboard_ro.qml
+@@ -39,10 +39,10 @@ KeyPad {
+             CharKey { label: "w"; shifted: "W"; extended: ["2"]; extendedShifted: ["2"] }
+             CharKey { label: "e"; shifted: "E"; extended: ["3", "è", "é", "ê", "ë", "€"]; extendedShifted: ["3", "È","É", "Ê", "Ë", "€"] }
+             CharKey { label: "r"; shifted: "R"; extended: ["4"]; extendedShifted: ["4"] }
+-            CharKey { label: "t"; shifted: "T"; extended: ["5", "ț"]; extendedShifted: ["5", "Ț"] }
++            CharKey { label: "t"; shifted: "T"; extended: ["ț", "5"]; extendedShifted: ["Ț", "5"] }
+             CharKey { label: "y"; shifted: "Y"; extended: ["6", "ý", "¥"]; extendedShifted: ["6", "Ý", "¥"] }
+             CharKey { label: "u"; shifted: "U"; extended: ["7", "û","ù","ú","ü"]; extendedShifted: ["7", "Û","Ù","Ú","Ü"] }
+-            CharKey { label: "i"; shifted: "I"; extended: ["8", "î","ï","ì","í"]; extendedShifted: ["8", "Î","Ï","Ì","Í"] }
++            CharKey { label: "i"; shifted: "I"; extended: ["î", "8", "ï","ì","í"]; extendedShifted: ["Î", "8", "Ï","Ì","Í"] }
+             CharKey { label: "o"; shifted: "O"; extended: ["9", "ö","ô","ò","ó"]; extendedShifted: ["9", "Ö","Ô","Ò","Ó"] }
+             CharKey { label: "p"; shifted: "P"; extended: ["0"]; extendedShifted: ["0"]; rightSide: true; }
+         }
+@@ -85,7 +85,9 @@ KeyPad {
+ 
+             SymbolShiftKey { id: symShiftKey;                            anchors.left: parent.left; height: parent.height; }
+             LanguageKey    { id: languageMenuButton;                     anchors.left: symShiftKey.right; height: parent.height; }
+-            CharKey        { id: commaKey;    label: ","; shifted: ","; extended: ["'", "\"", ";", ":", "@", "&", "(", ")"]; extendedShifted: ["'", "\"", ";", ":", "@", "&", "(", ")"]; anchors.left: languageMenuButton.right; height: parent.height; }
++            // FP6: zero-width until a dictation service is available (MicKey.qml)
++            MicKey         { id: micKey;                                 anchors.left: languageMenuButton.right; height: parent.height; }
++            CharKey        { id: commaKey;    label: ","; shifted: ","; extended: ["'", "\"", ";", ":", "@", "&", "(", ")", "„", "”"]; extendedShifted: ["'", "\"", ";", ":", "@", "&", "(", ")", "„", "”"]; anchors.left: micKey.right; height: parent.height; }
+             SpaceKey       { id: spaceKey;                               anchors.left: commaKey.right; anchors.right: dotKey.left; noMagnifier: true; height: parent.height; }
+             CharKey        { id: dotKey;      label: "."; shifted: "."; extended: ["?", "-", "_", "!", "+", "%","#","/"];  extendedShifted: ["?", "-", "_", "!", "+", "%","#","/"]; anchors.right: enterKey.left; height: parent.height; }
+             ReturnKey      { id: enterKey;                               anchors.right: parent.right; height: parent.height; }
+diff --git a/qml/keys/MicKey.qml b/qml/keys/MicKey.qml
+new file mode 100644
+index 0000000..b2bb821
+--- /dev/null
++++ b/qml/keys/MicKey.qml
+@@ -0,0 +1,50 @@
++/*
++ * FP6: reserved slot for a dictation (microphone) key.
++ *
++ * Zero width and invisible until a "dictation" context object exists and
++ * reports available === true. The dictation bridge (com.fairphone6.Dictation1,
++ * ~/Desktop/fp6-codex/dictation/integration) is expected to expose that object
++ * from InputMethod and implement start()/stop()/cancel() there; this key only
++ * forwards press/release. Nothing calls D-Bus from here.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU Lesser General Public License as published by
++ * the Free Software Foundation; version 3.
++ */
++
++import QtQuick 2.4
++import MaliitKeyboard 2.0
++
++ActionKey {
++    id: micKey
++
++    readonly property bool available: typeof dictation !== "undefined" && dictation !== null
++                                      && dictation.available === true
++    property bool held: false
++
++    visible: available
++    width: available ? panel.keyWidth : 0
++    iconNormal: available ? "audio-input-microphone-symbolic" : ""
++    iconShifted: iconNormal
++    iconCapsLock: iconNormal
++    label: ""
++    shifted: ""
++    noMagnifier: true
++    padding: 0
++    overridePressArea: true
++    action: "dictation"
++
++    onPressed: {
++        if (!available)
++            return;
++        Feedback.keyPressed();
++        held = true;
++        dictation.start();
++    }
++    onReleased: {
++        if (!available || !held)
++            return;
++        held = false;
++        dictation.stop();
++    }
++}
+diff --git a/qml/keys/SpaceKey.qml b/qml/keys/SpaceKey.qml
+index c3e8140..513b682 100644
+--- a/qml/keys/SpaceKey.qml
++++ b/qml/keys/SpaceKey.qml
+@@ -52,6 +52,21 @@ ActionKey {
+         id: swipeArea
+         anchors.fill: parent
+ 
++        // FP6: a quick horizontal swipe on the space bar switches between the
++        // enabled languages (right: next, left: previous). Press-and-hold
++        // still starts cursor movement.
++        property real pressX: 0
++        readonly property real languageSwipeDistance: Math.max(panel.keyWidth * 1.5, width * 0.3)
++
++        function switchLanguage(step) {
++            var langs = Keyboard.enabledLanguages;
++            if (langs.length < 2)
++                return false;
++            var i = langs.indexOf(Keyboard.activeLanguage);
++            Keyboard.activeLanguage = langs[(i + step + langs.length) % langs.length];
++            return true;
++        }
++
+         onPressAndHold: {
+             fullScreenItem.prevSwipePositionX = mouseX
+             fullScreenItem.prevSwipePositionY = mouseY
+@@ -61,12 +76,16 @@ ActionKey {
+ 
+         onPressed: {
+             Feedback.keyPressed()
++            pressX = mouseX
+             spaceKey.currentlyPressed = true
+             fullScreenItem.timerSwipe.stop()
+         }
+         onReleased: {
+             if (fullScreenItem.cursorSwipe) {
+                 fullScreenItem.timerSwipe.restart()
++            } else if (Math.abs(mouseX - pressX) >= languageSwipeDistance
++                       && switchLanguage(mouseX > pressX ? 1 : -1)) {
++                spaceKey.currentlyPressed = false
+             } else {
+                 spaceKey.currentlyPressed = false
+                 event_handler.onKeyReleased("", "space")
+diff --git a/qml/keys/qmldir b/qml/keys/qmldir
+index 97a3bea..51e7f9c 100644
+--- a/qml/keys/qmldir
++++ b/qml/keys/qmldir
+@@ -18,3 +18,4 @@ PressArea 1.0 PressArea.qml
+ SpaceKey 1.0 SpaceKey.qml
+ UrlKey 1.0 UrlKey.qml
+ CategoryKey 1.0 CategoryKey.qml
++MicKey 1.0 MicKey.qml

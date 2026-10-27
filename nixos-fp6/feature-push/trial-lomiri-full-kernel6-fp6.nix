@@ -80,6 +80,10 @@ let
       # pinch + two-finger pan), colour inversion and correction, mono audio,
       # balance; quick-settings tiles. results/feature-push-20261024/accessibility/README.md
       ({ ... }: { imports = [ ./accessibility/accessibility-fp6.nix ]; hardware.fairphone6.accessibility.enable = true; })
+      # Keyboard: spell check (hunspell en_US/ro_RO), word prediction (n-gram
+      # models, learned words), Romanian layout/space-swipe language switch,
+      # key click. results/feature-push-20261024/keyboard/README.md
+      ({ ... }: { imports = [ ./keyboard/keyboard-fp6.nix ]; hardware.fairphone6.keyboard.enable = true; })
       # Edge lighting: screen-edge glow for notifications while the display
       # is off (Settings > Edge Lighting, off by default); always-on display
       # research. results/feature-push-20261024/edge-flash/README.md
