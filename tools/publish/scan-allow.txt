@@ -58,3 +58,6 @@ for u in \["http://192\.168\.1\.10:8742", "http://10\.0\.0\.2"
 Enter an address like https://host/path or http://192\.168\.1\.10:8742
 for bad in \["http://example\.org", "http://8\.8\.8\.8:8742"
 ok: setServer refuses (ftp://10\.0\.0\.1|http://user:pw@10\.0\.0\.1|http://10\.0\.0\.1/\?x)$
+# lockscreen-polish: keypad-type flag, no value
+property bool passphrase: false
+passphrase: root\.alphanumeric
