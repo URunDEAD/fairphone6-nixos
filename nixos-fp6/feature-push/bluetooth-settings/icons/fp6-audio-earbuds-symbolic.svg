@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- FP6: earbuds, in the style of Suru's symbolic device icons
+     (96x96, #808080 = UITK key colour). CC-BY-SA-3.0 like Suru. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96">
+  <g fill="#808080">
+    <!-- left bud: round head + stem -->
+    <path d="M30 14a16 16 0 0 0-16 16 16 16 0 0 0 11 15.2V78a6 6 0 0 0 12 0V43.6A16 16 0 0 0 46 30a16 16 0 0 0-16-16zm0 6a10 10 0 0 1 10 10 10 10 0 0 1-10 10 10 10 0 0 1-10-10 10 10 0 0 1 10-10z"/>
+    <circle cx="30" cy="30" r="4"/>
+    <!-- right bud -->
+    <path d="M66 14a16 16 0 0 1 16 16 16 16 0 0 1-11 15.2V78a6 6 0 0 1-12 0V43.6A16 16 0 0 1 50 30a16 16 0 0 1 16-16zm0 6a10 10 0 0 0-10 10 10 10 0 0 0 10 10 10 10 0 0 0 10-10 10 10 0 0 0-10-10z"/>
+    <circle cx="66" cy="30" r="4"/>
+  </g>
+</svg>

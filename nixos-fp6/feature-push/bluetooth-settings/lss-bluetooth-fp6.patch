@@ -1,0 +1,2376 @@
+diff --git a/plugins/bluetooth/CMakeLists.txt b/plugins/bluetooth/CMakeLists.txt
+index 0a98d9c..8198041 100644
+--- a/plugins/bluetooth/CMakeLists.txt
++++ b/plugins/bluetooth/CMakeLists.txt
+@@ -9,6 +9,9 @@ ProvidePasskeyDialog.qml
+ AuthorizationRequestDialog.qml
+ DevicePage.qml
+ PageComponent.qml
++Fp6RenameDialog.qml
++Fp6DeviceTypePage.qml
++Fp6Kinds.js
+ )
+ 
+ add_library(LomiriBluetoothPanel MODULE
+@@ -22,6 +25,8 @@ add_library(LomiriBluetoothPanel MODULE
+   bluetooth.cpp
+   device.cpp
+   devicemodel.cpp
++  fp6store.cpp
++  fp6store.h
+   bluez_adapter1.h
+   bluez_agentmanager1.h
+   bluez_device1.h
+diff --git a/plugins/bluetooth/DevicePage.qml b/plugins/bluetooth/DevicePage.qml
+index ee5cf5f..25ac733 100644
+--- a/plugins/bluetooth/DevicePage.qml
++++ b/plugins/bluetooth/DevicePage.qml
+@@ -19,18 +19,25 @@
+  */
+ 
+ import QMenuModel 1.0
+-import QtQuick 2.0
++import QtQuick 2.12
+ import SystemSettings 1.0
+ import SystemSettings.ListItems 1.0 as SettingsListItems
+ import Lomiri.Components 1.3
+ import Lomiri.Components.Popups 1.3
++import Lomiri.Components.ListItems 1.3 as ListItems
+ import Lomiri.SystemSettings.Bluetooth 1.0
++import "Fp6Kinds.js" as Fp6Kinds
+ 
+ Page {
+     id: connectedDevicePage
++    objectName: "bluetoothDevicePage"
+ 
+     property Item root: null
+     property LomiriBluetoothPanel backend: null
++    readonly property var dev: backend ? backend.selectedDevice : null
++    readonly property bool isConnected: dev ? (dev.connection == Device.Connected || dev.connection == Device.Connecting) : false
++    property bool addressShown: false
++    property string profileMessage: ""
+ 
+     function getStatusString(connection) {
+       switch (connection) {
+@@ -42,28 +49,6 @@ Page {
+       }
+     }
+ 
+-    function getTypeString(type) {
+-        switch (type) {
+-        case Device.Computer:   return i18n.tr("Computer");
+-        case Device.Smartphone: return i18n.tr("Phone");
+-        case Device.Phone:      return i18n.tr("Phone");
+-        case Device.Modem:      return i18n.tr("Modem");
+-        case Device.Network:    return i18n.tr("Network");
+-        case Device.Headset:    return i18n.tr("Headset");
+-        case Device.Headphones: return i18n.tr("Headphones");
+-        case Device.Video:      return i18n.tr("Video");
+-        case Device.OtherAudio: return i18n.tr("Other Audio");
+-        case Device.Joypad:     return i18n.tr("Joypad");
+-        case Device.Keyboard:   return i18n.tr("Keyboard");
+-        case Device.Tablet:     return i18n.tr("Tablet");
+-        case Device.Mouse:      return i18n.tr("Mouse");
+-        case Device.Printer:    return i18n.tr("Printer");
+-        case Device.Camera:     return i18n.tr("Camera");
+-        case Device.Watch:      return i18n.tr("Watch");
+-        default:                return i18n.tr("Other");
+-        }
+-    }
+-
+     function getSignalString(strength) {
+         switch (strength) {
+         case Device.Excellent: return i18n.tr("Excellent");
+@@ -74,12 +59,62 @@ Page {
+         }
+     }
+ 
++    function profileLabel(kind) {
++        switch (kind) {
++        case "media":   return i18n.tr("Media audio")
++        case "calls":   return i18n.tr("Calls")
++        case "input":   return i18n.tr("Input device")
++        case "files":   return i18n.tr("File transfer")
++        case "network": return i18n.tr("Internet sharing")
++        default:        return kind
++        }
++    }
++
++    function displayName() {
++        if (!dev)
++            return i18n.tr("None")
++        return dev.name.length > 0 ? dev.name : i18n.tr("Unknown device")
++    }
++
++    Component {
++        id: renameDialog
++        Fp6RenameDialog { }
++    }
++
++    Component {
++        id: forgetDialog
++        Dialog {
++            id: fd
++            title: i18n.tr("Forget “%1”?").arg(connectedDevicePage.displayName())
++            text: i18n.tr("The pairing is removed. To use the device again, pair it again.")
++            Button {
++                objectName: "fp6ForgetConfirm"
++                text: i18n.tr("Forget")
++                color: theme.palette.normal.negative
++                onClicked: {
++                    PopupUtils.close(fd)
++                    backend.removeDevice();
++                    backend.resetSelectedDevice();
++                    pageStack.removePages(connectedDevicePage);
++                }
++            }
++            Button {
++                text: i18n.tr("Cancel")
++                onClicked: PopupUtils.close(fd)
++            }
++        }
++    }
++
++    Connections {
++        target: dev
++        ignoreUnknownSignals: true
++        function onProfileActionDone(uuid, connect, success, error) {
++            profileMessage = success ? "" : i18n.tr("The device did not accept the request.")
++        }
++    }
++
+     header: PageHeader {
+-        title: backend.selectedDevice ?
+-                  backend.selectedDevice.name.length > 0 ?
+-                     backend.selectedDevice.name :
+-                     backend.selectedDevice.address
+-                  : i18n.tr("None")
++        title: connectedDevicePage.displayName()
+         flickable: scrollWidget
+     }
+ 
+@@ -102,84 +137,146 @@ Page {
+                 right: parent.right
+             }
+ 
+-            SettingsListItems.SingleValue {
++            SettingsListItems.SingleValueProgression {
++                objectName: "fp6DeviceName"
+                 text: i18n.tr("Name")
+-                value: backend.selectedDevice &&
+-                       backend.selectedDevice.name.length > 0 ?
+-                             backend.selectedDevice.name :
+-                             i18n.tr("None")
++                value: connectedDevicePage.displayName()
++                enabled: dev ? dev.paired : false
++                onClicked: PopupUtils.open(renameDialog, connectedDevicePage, {
++                    title: i18n.tr("Rename device"),
++                    text: dev.hasCustomName && dev.remoteName.length > 0
++                          ? i18n.tr("The device calls itself “%1”.").arg(dev.remoteName)
++                          : i18n.tr("Only this phone uses the new name."),
++                    name: dev.name,
++                    resetLabel: dev.hasCustomName ? i18n.tr("Use the device's own name") : "",
++                    saveHandler: function(name) { dev.setAlias(name) }
++                })
+             }
+-            SettingsListItems.SingleValue {
++
++            SettingsListItems.IconProgression {
++                objectName: "fp6DeviceType"
+                 text: i18n.tr("Type")
+-                value: getTypeString(backend.selectedDevice ? backend.selectedDevice.type : Device.OTHER)
+-                Image {
+-                    height: units.gu(4)
+-                    width: units.gu(4)
+-                    source: backend.selectedDevice ? backend.selectedDevice.iconName : ""
+-                    visible: source
+-                    SlotsLayout.position: SlotsLayout.Trailing-1
+-                }
++                iconSource: dev ? dev.iconName : ""
++                layout.subtitle.text: dev ? (Fp6Kinds.label(dev.kind)
++                    + (dev.kindOverride.length === 0 ? " · " + i18n.tr("automatic") : "")) : ""
++                enabled: dev ? dev.paired : false
++                onClicked: pageStack.addPageToNextColumn(connectedDevicePage,
++                    Qt.resolvedUrl("Fp6DeviceTypePage.qml"), {backend: backend, device: dev})
+             }
++
+             SettingsListItems.SingleValue {
+                 text: i18n.tr("Status")
+-                value: getStatusString(backend.selectedDevice ? backend.selectedDevice.connection : Device.Disconnected)
++                value: getStatusString(dev ? dev.connection : Device.Disconnected)
+             }
++
+             SettingsListItems.SingleValue {
+-                text: i18n.tr("Address")
+-                value: backend.selectedDevice ? backend.selectedDevice.address : ""
++                objectName: "fp6DeviceBattery"
++                text: i18n.tr("Battery")
++                visible: dev ? dev.battery >= 0 : false
++                value: dev ? i18n.tr("%1 %").arg(dev.battery) : ""
+             }
++
+             SettingsListItems.SingleValue {
+-                text: i18n.tr("Signal Strength")
+-                value: getSignalString(backend.selectedDevice ? backend.selectedDevice.strength : Device.None)
++                objectName: "fp6DeviceLastConnected"
++                text: i18n.tr("Last connected")
++                visible: dev ? (!isConnected && dev.lastConnected > 0) : false
++                value: dev && dev.lastConnected > 0
++                       ? new Date(dev.lastConnected * 1000).toLocaleString(Qt.locale(), Locale.ShortFormat) : ""
++            }
++
++            SettingsListItems.SingleControl {
++                Button {
++                    objectName: "fp6DeviceConnect"
++                    anchors.centerIn: parent
++                    width: parent.width - units.gu(8)
++                    text: isConnected ? i18n.tr("Disconnect") : (dev && !dev.paired ? i18n.tr("Pair") : i18n.tr("Connect"))
++                    onClicked: {
++                        if (isConnected)
++                            backend.disconnectDevice();
++                        else
++                            backend.connectDevice(dev.address);
++                    }
++                    visible: dev ? true : false
++                    enabled: dev && backend.powered && dev.connection != Device.Disconnecting ? true : false
++                }
+             }
++
+             SettingsListItems.Standard {
+                 id: trustedCheck
+-                text: i18n.tr("Connect automatically when detected:")
++                text: i18n.tr("Connect automatically when detected")
++                visible: dev ? dev.paired : false
+                 CheckBox {
+-                    property bool serverChecked: backend.selectedDevice ? backend.selectedDevice.trusted : false
++                    property bool serverChecked: dev ? dev.trusted : false
+                     onServerCheckedChanged: checked = serverChecked
+                     Component.onCompleted: checked = serverChecked
+                     onTriggered: {
+-                        if (backend.selectedDevice) {
+-                            backend.selectedDevice.trusted = checked;
++                        if (dev) {
++                            dev.trusted = checked;
+                         }
+                     }
+                 }
+             }
+ 
+-            SettingsListItems.SingleControl {
+-                Button {
+-                    anchors.centerIn: parent
+-                    width: parent.width - units.gu(8)
+-                    text: backend.selectedDevice && (backend.selectedDevice.connection == Device.Connected || backend.selectedDevice.connection == Device.Connecting) ? i18n.tr("Disconnect") : i18n.tr("Connect")
+-                    onClicked: {
+-                        if (backend.selectedDevice
+-                            && (backend.selectedDevice.connection == Device.Connected
+-                                || backend.selectedDevice.connection == Device.Connecting)) {
+-                            backend.disconnectDevice();
+-                        } else {
+-                            backend.connectDevice(backend.selectedDevice.address);
+-                        }
++            /* ---- Profiles -------------------------------------------- */
++            SettingsItemTitle {
++                text: i18n.tr("Use for")
++                visible: profileRepeater.count > 0 && dev && dev.paired
++            }
+ 
+-                        backend.resetSelectedDevice();
+-                        pageStack.removePages(connectedDevicePage);
++            Repeater {
++                id: profileRepeater
++                model: dev && dev.paired ? dev.profiles : []
++                delegate: SettingsListItems.Standard {
++                    objectName: "fp6Profile_" + modelData.kind
++                    text: profileLabel(modelData.kind)
++                    enabled: backend.powered
++                    Button {
++                        text: i18n.tr("Connect")
++                        strokeColor: theme.palette.normal.baseText
++                        onClicked: dev.connectProfile(modelData.uuid)
++                        SlotsLayout.position: SlotsLayout.Trailing
++                    }
++                    Button {
++                        text: i18n.tr("Disconnect")
++                        strokeColor: theme.palette.normal.baseText
++                        onClicked: dev.disconnectProfile(modelData.uuid)
++                        SlotsLayout.position: SlotsLayout.Trailing
+                     }
+-                    visible: backend.selectedDevice ? true : false
+-                    enabled: backend.selectedDevice && backend.powered ? true : false
+                 }
+             }
+ 
++            ListItems.Caption {
++                visible: profileMessage.length > 0
++                text: profileMessage
++            }
++
++            /* ---- Details --------------------------------------------- */
++            SettingsItemTitle {
++                text: i18n.tr("Details")
++            }
++
++            SettingsListItems.SingleValue {
++                objectName: "fp6DeviceAddress"
++                text: i18n.tr("Address")
++                value: addressShown && dev ? dev.address : i18n.tr("Tap to show")
++                onClicked: addressShown = !addressShown
++            }
++
++            SettingsListItems.SingleValue {
++                text: i18n.tr("Signal Strength")
++                visible: dev ? dev.strength != Device.None : false
++                value: getSignalString(dev ? dev.strength : Device.None)
++            }
++
+             SettingsListItems.SingleControl {
+                 Button {
++                    objectName: "fp6DeviceForget"
+                     anchors.centerIn: parent
+                     width: parent.width - units.gu(8)
+                     text: i18n.tr("Forget this device")
+-                    onClicked: {
+-                        backend.removeDevice();
+-                        backend.resetSelectedDevice();
+-                        pageStack.removePages(connectedDevicePage);
+-                    }
+-                    enabled: backend.powered && backend.selectedDevice && backend.selectedDevice.path.length > 0 && backend.selectedDevice.paired ? true : false
++                    color: theme.palette.normal.negative
++                    onClicked: PopupUtils.open(forgetDialog, connectedDevicePage)
++                    enabled: backend.powered && dev && dev.path.length > 0 && dev.paired ? true : false
+                 }
+             }
+         }
+diff --git a/plugins/bluetooth/Fp6DeviceTypePage.qml b/plugins/bluetooth/Fp6DeviceTypePage.qml
+new file mode 100644
+index 0000000..ce218c9
+--- /dev/null
++++ b/plugins/bluetooth/Fp6DeviceTypePage.qml
+@@ -0,0 +1,73 @@
++/*
++ * FP6: choose the type (icon) of a paired device. Stored per user in
++ * $XDG_CONFIG_HOME/fp6-bluetooth/devices.ini (see fp6store.h), shared with
++ * the Bluetooth indicator and the sound UI. BlueZ's Icon is read-only.
++ * GPL-3.0, part of the FP6 lomiri-system-settings Bluetooth patch.
++ */
++import QtQuick 2.12
++import SystemSettings 1.0
++import SystemSettings.ListItems 1.0 as SettingsListItems
++import Lomiri.Components 1.3
++import Lomiri.SystemSettings.Bluetooth 1.0
++import "Fp6Kinds.js" as Fp6Kinds
++
++Page {
++    id: typePage
++    objectName: "fp6DeviceTypePage"
++
++    property LomiriBluetoothPanel backend: null
++    property var device: null
++
++    header: PageHeader {
++        title: i18n.tr("Device type")
++        flickable: typeFlick
++    }
++
++    function choose(kind) {
++        if (device)
++            device.setKindOverride(kind)
++        pageStack.removePages(typePage)
++    }
++
++    Flickable {
++        id: typeFlick
++        anchors.fill: parent
++        contentHeight: typeColumn.height
++        flickableDirection: Flickable.VerticalFlick
++
++        Column {
++            id: typeColumn
++            anchors { left: parent.left; right: parent.right }
++
++            SettingsListItems.Icon {
++                objectName: "fp6Kind_auto"
++                iconSource: device ? "image://theme/" + backend.iconForKind(device.autoKind) : ""
++                text: i18n.tr("Automatic")
++                layout.subtitle.text: device ? Fp6Kinds.label(device.autoKind) : ""
++                Icon {
++                    name: "tick"
++                    width: units.gu(2.5); height: width
++                    visible: device ? device.kindOverride.length === 0 : false
++                    SlotsLayout.position: SlotsLayout.Trailing
++                }
++                onClicked: typePage.choose("")
++            }
++
++            Repeater {
++                model: backend ? backend.kinds() : []
++                delegate: SettingsListItems.Icon {
++                    objectName: "fp6Kind_" + modelData
++                    iconSource: "image://theme/" + backend.iconForKind(modelData)
++                    text: Fp6Kinds.label(modelData)
++                    Icon {
++                        name: "tick"
++                        width: units.gu(2.5); height: width
++                        visible: device ? device.kindOverride === modelData : false
++                        SlotsLayout.position: SlotsLayout.Trailing
++                    }
++                    onClicked: typePage.choose(modelData)
++                }
++            }
++        }
++    }
++}
+diff --git a/plugins/bluetooth/Fp6Kinds.js b/plugins/bluetooth/Fp6Kinds.js
+new file mode 100644
+index 0000000..6eeff73
+--- /dev/null
++++ b/plugins/bluetooth/Fp6Kinds.js
+@@ -0,0 +1,19 @@
++// FP6: labels of the device types (Device::knownKinds()). Not a
++// .pragma library, so i18n from the importing component is in scope.
++function label(kind) {
++    switch (kind) {
++    case "car":        return i18n.tr("Car")
++    case "speaker":    return i18n.tr("Speaker")
++    case "headphones": return i18n.tr("Headphones")
++    case "earbuds":    return i18n.tr("Earbuds")
++    case "headset":    return i18n.tr("Headset")
++    case "watch":      return i18n.tr("Watch")
++    case "keyboard":   return i18n.tr("Keyboard")
++    case "mouse":      return i18n.tr("Mouse")
++    case "gamepad":    return i18n.tr("Game controller")
++    case "phone":      return i18n.tr("Phone")
++    case "computer":   return i18n.tr("Computer")
++    case "tv":         return i18n.tr("TV")
++    default:           return i18n.tr("Other")
++    }
++}
+diff --git a/plugins/bluetooth/Fp6RenameDialog.qml b/plugins/bluetooth/Fp6RenameDialog.qml
+new file mode 100644
+index 0000000..92b279b
+--- /dev/null
++++ b/plugins/bluetooth/Fp6RenameDialog.qml
+@@ -0,0 +1,53 @@
++/*
++ * FP6: rename dialog for this phone (adapter Alias) and paired devices
++ * (Device1.Alias). An empty name restores the system/device name.
++ * GPL-3.0, part of the FP6 lomiri-system-settings Bluetooth patch.
++ */
++import QtQuick 2.12
++import Lomiri.Components 1.3
++import Lomiri.Components.Popups 1.3
++
++Dialog {
++    id: dialog
++    objectName: "fp6RenameDialog"
++
++    property string name: ""
++    property string resetLabel: ""
++    property var saveHandler: null
++
++    function save(value) {
++        if (saveHandler)
++            saveHandler(value)
++        PopupUtils.close(dialog)
++    }
++
++    TextField {
++        id: field
++        objectName: "fp6RenameField"
++        text: dialog.name
++        maximumLength: 248 // HCI local name limit, in bytes for ASCII
++        inputMethodHints: Qt.ImhNoPredictiveText
++        Component.onCompleted: { selectAll(); forceActiveFocus() }
++        onAccepted: if (text.trim().length > 0) dialog.save(text)
++    }
++
++    Button {
++        objectName: "fp6RenameSave"
++        text: i18n.tr("Save")
++        color: theme.palette.normal.positive
++        enabled: field.text.trim().length > 0
++        onClicked: dialog.save(field.text)
++    }
++
++    Button {
++        objectName: "fp6RenameReset"
++        visible: dialog.resetLabel.length > 0
++        text: dialog.resetLabel
++        onClicked: dialog.save("")
++    }
++
++    Button {
++        text: i18n.tr("Cancel")
++        onClicked: PopupUtils.close(dialog)
++    }
++}
+diff --git a/plugins/bluetooth/PageComponent.qml b/plugins/bluetooth/PageComponent.qml
+index 9a5aee3..3c45e56 100644
+--- a/plugins/bluetooth/PageComponent.qml
++++ b/plugins/bluetooth/PageComponent.qml
+@@ -24,6 +24,7 @@ import SystemSettings 1.0
+ import SystemSettings.ListItems 1.0 as SettingsListItems
+ import Lomiri.Components 1.3
+ import Lomiri.Components.Popups 1.3
++import Lomiri.Components.ListItems 1.3 as ListItems
+ import Lomiri.SystemSettings.Bluetooth 1.0
+ import Lomiri.Settings.Components 0.1 as LSC
+ 
+@@ -67,8 +68,7 @@ ItemPage {
+         id: backend
+ 
+         onDevicePairingDone: {
+-            console.log("Got pairing status notification for device " + device.address)
+-
++            // FP6: no address in the journal.
+             if (device != root.currentDevice)
+                 return
+ 
+@@ -76,22 +76,22 @@ ItemPage {
+         }
+     }
+ 
+-    Timer {
+-        id: discoverableTimer
+-        repeat: false
+-        running: false
+-        onTriggered: backend.trySetDiscoverable(true)
+-    }
+-
+     property int lastApplicationState: Qt.ApplicationSuspended
+ 
+-    /* Disable BT visiblity/discovery when switching out */
++    /* FP6: visibility and pairing requests follow backend.active (this page
++     * open and System Settings in the foreground); the backend applies the
++     * user's choices and BlueZ safety timeouts. Discovery is paused when
++     * switching out, as upstream. */
++    Binding {
++        target: backend
++        property: "active"
++        value: Qt.application.state === Qt.ApplicationActive
++    }
++
+     Connections {
+         target: Qt.application
+         function onStateChanged() {
+             if (Qt.application.state !== Qt.ApplicationActive) {
+-                backend.trySetDiscoverable(false)
+-
+                 // We only increase the block count when we get inactive
+                 // and not for any other state as would then end up in
+                 // a state we can never escape from.
+@@ -100,7 +100,6 @@ ItemPage {
+                     backend.blockDiscovery()
+             }
+             else {
+-                discoverableTimer.start()
+                 backend.unblockDiscovery()
+             }
+ 
+@@ -108,6 +107,11 @@ ItemPage {
+         }
+     }
+ 
++    Component {
++        id: renameDialog
++        Fp6RenameDialog { }
++    }
++
+     Component {
+         id: confirmPasskeyDialog
+         ConfirmPasskeyDialog { }
+@@ -140,7 +144,9 @@ ItemPage {
+ 
+     Connections {
+         target: backend.agent
+-        onCancelNeeded: finishDevicePairing()
++        // FP6: function syntax; one implicit onFoo handler made Qt 5.15 ignore
++        // every function-style handler below (no pairing dialogs at all).
++        function onCancelNeeded() { finishDevicePairing() }
+         function onPasskeyConfirmationNeeded(tag, device, passkey) {
+             var request_tag = tag
+             var popup = PopupUtils.open(confirmPasskeyDialog, root, {passkey: passkey, name: device.name})
+@@ -174,7 +180,7 @@ ItemPage {
+             }
+             else
+             {
+-                console.warn("Unhandled PIN code request for device " + device.name);
++                console.warn("Unhandled PIN code request");
+             }
+         }
+         function onDisplayPasskeyNeeded(device, passkey, entered) {
+@@ -217,12 +223,58 @@ ItemPage {
+     }
+ 
+     function getDisplayName(type, displayName) {
+-        /* TODO: If the device requires a PIN, show ellipsis.
+-         * Right now we don't have a way to check this, just return the name
+-         */
+-        return displayName;
++        return displayName && displayName.length > 0 ? displayName : i18n.tr("Unknown device")
++    }
++
++    readonly property var visibilityTimeouts: [0, 120, 300, 900, 3600]
++
++    function visibilityTimeoutLabel(seconds) {
++        switch (seconds) {
++        case 0:    return i18n.tr("While this page is open")
++        case 120:  return i18n.tr("2 minutes")
++        case 300:  return i18n.tr("5 minutes")
++        case 900:  return i18n.tr("15 minutes")
++        case 3600: return i18n.tr("1 hour")
++        default:   return i18n.tr("%1 seconds").arg(seconds)
++        }
++    }
++
++    function relativeTime(seconds) {
++        if (!seconds || seconds <= 0)
++            return ""
++        var now = Date.now() / 1000
++        var d = Math.max(0, now - seconds)
++        if (d < 120) return i18n.tr("just now")
++        if (d < 3600) return i18n.tr("%1 minutes ago").arg(Math.floor(d / 60))
++        if (d < 86400) {
++            var h = Math.floor(d / 3600)
++            return h === 1 ? i18n.tr("1 hour ago") : i18n.tr("%1 hours ago").arg(h)
++        }
++        var days = Math.floor(d / 86400)
++        if (days === 1) return i18n.tr("yesterday")
++        if (days < 30) return i18n.tr("%1 days ago").arg(days)
++        return new Date(seconds * 1000).toLocaleDateString(Qt.locale(), Locale.ShortFormat)
++    }
++
++    function deviceSummary(connection, battery, lastConnected, pairing) {
++        if (pairing)
++            return i18n.tr("Pairing…")
++        if (connection == Device.Connecting)
++            return i18n.tr("Connecting…")
++        if (connection == Device.Disconnecting)
++            return i18n.tr("Disconnecting…")
++        if (connection == Device.Connected) {
++            if (battery >= 0)
++                return i18n.tr("Connected · battery %1 %").arg(battery)
++            return i18n.tr("Connected")
++        }
++        if (lastConnected > 0)
++            return i18n.tr("Last connected %1").arg(relativeTime(lastConnected))
++        return i18n.tr("Not connected")
+     }
+ 
++    readonly property bool btOn: bluetoothActionGroup.enabled.state != undefined && bluetoothActionGroup.enabled.state
++
+     Flickable {
+         id: scrollWidget
+         anchors {
+@@ -270,20 +322,71 @@ ItemPage {
+                 }
+             }
+ 
+-            // Discoverability
+-            SettingsListItems.SingleValue {
+-                text: backend.discoverable ? i18n.tr("Discoverable") : i18n.tr("Not discoverable")
+-                value: backend.discoverable ? backend.adapterName : ""
+-                enabled: bluetoothActionGroup.enabled
+-                showDivider: false
++            /* ---- This phone ------------------------------------------- */
++            SettingsListItems.SingleValueProgression {
++                objectName: "fp6PhoneName"
++                text: i18n.tr("Phone name")
++                value: backend.adapterName
++                enabled: root.btOn && backend.powered
++                onClicked: PopupUtils.open(renameDialog, root, {
++                    title: i18n.tr("Rename this phone"),
++                    text: i18n.tr("Other devices see this name when they search or are connected."),
++                    name: backend.adapterName,
++                    resetLabel: i18n.tr("Use system name"),
++                    saveHandler: function(name) { backend.setPhoneName(name) }
++                })
++            }
++
++            SettingsListItems.Standard {
++                objectName: "fp6Visible"
++                text: i18n.tr("Visible to nearby devices")
++                enabled: root.btOn && backend.powered
++                layout.subtitle.text: !backend.visibleSetting ? i18n.tr("Hidden. Paired devices can still connect.")
++                    : backend.discoverable ? (backend.visibilityTimeout === 0
++                        ? i18n.tr("Visible as “%1” while this page is open").arg(backend.adapterName)
++                        : i18n.tr("Visible as “%1” for %2").arg(backend.adapterName).arg(visibilityTimeoutLabel(backend.visibilityTimeout)))
++                    : i18n.tr("Not visible right now")
++                layout.subtitle.maximumLineCount: 2
++                layout.subtitle.wrapMode: Text.WordWrap
++                Switch {
++                    id: visibleSwitch
++                    checked: backend.visibleSetting
++                    onTriggered: backend.visibleSetting = checked
++                }
++            }
++
++            ListItems.ItemSelector {
++                id: timeoutSelector
++                objectName: "fp6VisibilityTimeout"
++                text: i18n.tr("Stay visible")
++                visible: backend.visibleSetting
++                enabled: root.btOn && backend.powered
++                expanded: false
++                model: root.visibilityTimeouts.map(function(s) { return root.visibilityTimeoutLabel(s) })
++                selectedIndex: Math.max(0, root.visibilityTimeouts.indexOf(backend.visibilityTimeout))
++                onDelegateClicked: backend.visibilityTimeout = root.visibilityTimeouts[index]
++            }
++
++            SettingsListItems.Standard {
++                objectName: "fp6AllowPairing"
++                text: i18n.tr("Allow pairing requests")
++                enabled: root.btOn && backend.powered
++                layout.subtitle.text: backend.allowPairing
++                    ? i18n.tr("Other devices can ask to pair while this page is open")
++                    : i18n.tr("Pairing requests from other devices are refused")
++                layout.subtitle.maximumLineCount: 2
++                layout.subtitle.wrapMode: Text.WordWrap
++                Switch {
++                    checked: backend.allowPairing
++                    onTriggered: backend.allowPairing = checked
++                }
+             }
+ 
++            /* ---- Paired devices ---------------------------------------- */
+             SettingsItemTitle {
+                 id: connectedHeader
+-                text: i18n.tr("Paired devices:")
+-
+-                enabled: bluetoothActionGroup.enabled
+-                visible: connectedList.visible
++                text: i18n.tr("Paired devices")
++                visible: root.btOn
+             }
+ 
+             Column {
+@@ -292,20 +395,22 @@ ItemPage {
+                     left: parent.left
+                     right: parent.right
+                 }
+-                visible: (bluetoothActionGroup.enabled.state != undefined && bluetoothActionGroup.enabled.state) && (connectedRepeater.count > 0)
++                visible: root.btOn && (connectedRepeater.count > 0)
+                 objectName: "connectedList"
+ 
+                 Repeater {
+                     id: connectedRepeater
+-                    model: backend.connectedDevices
++                    model: backend.pairedDevices
+                     delegate: SettingsListItems.IconProgression {
++                        objectName: "pairedDevice" + index
+                         iconSource: iconPath
+                         text: getDisplayName(type, displayName)
+-                        layout.subtitle.text: connection == Device.Connecting ? i18n.tr("Connecting…") : connection == Device.Connected ? i18n.tr("Connected") : i18n.tr("Disconnected")
++                        layout.subtitle.text: deviceSummary(connection, battery, lastConnected, pairing)
+                         layout.subtitle.color: connection == Device.Connected ? theme.palette.normal.positive : theme.palette.normal.backgroundSecondaryText
+                         ActivityIndicator {
+-                            visible: connection == Device.Connecting
++                            visible: connection == Device.Connecting || connection == Device.Disconnecting
+                             running: visible
++                            SlotsLayout.position: SlotsLayout.Trailing
+                         }
+                         onClicked: {
+                             backend.setSelectedDevice(addressName);
+@@ -317,10 +422,17 @@ ItemPage {
+                 }
+             }
+ 
++            SettingsListItems.Standard {
++                text: i18n.tr("No paired devices")
++                visible: root.btOn && connectedRepeater.count === 0
++                enabled: false
++            }
++
++            /* ---- Available devices ------------------------------------- */
+             SettingsItemTitle {
+                 id: disconnectedHeader
+-                text: connectedList.visible ? i18n.tr("Connect another device:") : i18n.tr("Connect a device:")
+-                enabled: bluetoothActionGroup.enabled.state != undefined ? bluetoothActionGroup.enabled.state : false
++                text: i18n.tr("Available devices")
++                visible: root.btOn
+                 Label {
+                     anchors {
+                         verticalCenter: parent.verticalCenter
+@@ -331,8 +443,6 @@ ItemPage {
+                     visible: backend.powered && backend.discovering
+                     text: i18n.tr("Searching…")
+                     fontSize: "x-small"
+-                    SlotsLayout.position: SlotsLayout.Trailing
+-                    SlotsLayout.overrideVerticalPositioning: true
+                 }
+             }
+ 
+@@ -342,28 +452,48 @@ ItemPage {
+                     left: parent.left
+                     right: parent.right
+                 }
+-                visible: (bluetoothActionGroup.enabled.state != undefined && bluetoothActionGroup.enabled.state) && (disconnectedRepeater.count > 0)
++                visible: root.btOn && (disconnectedRepeater.count > 0)
+                 objectName: "disconnectedList"
+ 
+                 Repeater {
+                     id: disconnectedRepeater
+-                    model: backend.disconnectedDevices
+-                    delegate: SettingsListItems.IconProgression {
++                    model: backend.availableDevices
++                    delegate: SettingsListItems.Icon {
++                        objectName: "availableDevice" + index
+                         iconSource: iconPath
+                         text: getDisplayName(type, displayName)
++                        layout.subtitle.text: pairing || connection == Device.Connecting ? i18n.tr("Pairing…") : ""
++                        ActivityIndicator {
++                            visible: pairing || connection == Device.Connecting
++                            running: visible
++                            SlotsLayout.position: SlotsLayout.Trailing
++                        }
++                        Label {
++                            visible: !(pairing || connection == Device.Connecting)
++                            text: i18n.tr("Pair")
++                            color: theme.palette.normal.activity
++                            SlotsLayout.position: SlotsLayout.Trailing
++                        }
+                         onClicked: {
+-                            backend.setSelectedDevice(addressName);
+-                            pageStack.addPageToNextColumn(root,
+-                                Qt.resolvedUrl("DevicePage.qml"),
+-                                {backend: backend, root: root});
++                            if (pairing || connection == Device.Connecting)
++                                return
++                            // Pair, then connect. Passkey/PIN dialogs come
++                            // from the agent above.
++                            backend.connectDevice(addressName)
+                         }
+                     }
+                 }
+             }
+             SettingsListItems.Standard {
+                 id: disconnectedNone
+-                text: i18n.tr("None detected")
++                text: backend.discovering ? i18n.tr("Searching…") : i18n.tr("None detected")
+                 visible: !disconnectedList.visible && disconnectedHeader.visible
++                enabled: false
++            }
++
++            ListItems.Caption {
++                visible: root.btOn
++                text: i18n.tr("Other devices can find this phone only while it is visible, and can ask to pair only while pairing requests are allowed and this page is open.")
+             }
+         }
+     }
+diff --git a/plugins/bluetooth/agent.cpp b/plugins/bluetooth/agent.cpp
+index 0b6fc93..9f7984d 100644
+--- a/plugins/bluetooth/agent.cpp
++++ b/plugins/bluetooth/agent.cpp
+@@ -40,6 +40,19 @@ void Agent::reject(QDBusMessage msg, const char *functionName)
+   m_connection.send(msg.createErrorReply(name, text));
+ }
+ 
++bool Agent::refuseUnsolicited(const QSharedPointer<Device> &device, const char *functionName)
++{
++    if (m_allowIncoming || (device && device->isPairing()))
++        return false;
++
++    qWarning() << "Refusing unsolicited pairing request (" << functionName
++               << "): pairing requests are off";
++    // Only our error reply, not QtDBus' automatic empty (= accepted) one.
++    setDelayedReply(true);
++    reject(message(), functionName);
++    return true;
++}
++
+ QSharedPointer<Device> Agent::findOrCreateDevice(const QDBusObjectPath &path)
+ {
+     auto device = m_devices.getDeviceFromPath(path.path());
+@@ -92,6 +105,9 @@ void Agent::Release()
+  */
+ void Agent::RequestConfirmation(const QDBusObjectPath &objectPath, uint passkey)
+ {
++    if (refuseUnsolicited(m_devices.getDeviceFromPath(objectPath.path()), __func__))
++        return;
++
+     if (auto device = findOrCreateDevice(objectPath)) {
+         const uint tag = m_tag++;
+ 
+@@ -129,6 +145,9 @@ void Agent::confirmPasskey(uint tag, bool confirmed)
+ 
+ QString Agent::RequestPinCode(const QDBusObjectPath &objectPath)
+ {
++    if (refuseUnsolicited(m_devices.getDeviceFromPath(objectPath.path()), __func__))
++        return QString();
++
+     if (auto device = findOrCreateDevice(objectPath)) {
+         const uint tag = m_tag++;
+ 
+@@ -156,6 +175,9 @@ QString Agent::RequestPinCode(const QDBusObjectPath &objectPath)
+  */
+ unsigned int Agent::RequestPasskey(const QDBusObjectPath &objectPath)
+ {
++    if (refuseUnsolicited(m_devices.getDeviceFromPath(objectPath.path()), __func__))
++        return 0;
++
+     if (auto device = findOrCreateDevice(objectPath)) {
+         const uint tag = m_tag++;
+ 
+@@ -253,8 +275,8 @@ void Agent::Cancel()
+ 
+ void Agent::RequestAuthorization(const QDBusObjectPath &objectPath)
+ {
+-    qWarning() << "Authorization requested for device"
+-               << objectPath.path();
++    if (refuseUnsolicited(m_devices.getDeviceFromPath(objectPath.path()), __func__))
++        return;
+ 
+     if (auto device = findOrCreateDevice(objectPath)) {
+         const uint tag = m_tag++;
+@@ -270,6 +292,23 @@ void Agent::RequestAuthorization(const QDBusObjectPath &objectPath)
+     }
+ }
+ 
++/**
++ * FP6: upstream had no AuthorizeService slot, so the adaptor's invokeMethod
++ * failed silently and BlueZ got an empty (= "authorized") reply for every
++ * service connection while the panel was open. Paired devices are allowed
++ * (the user paired them), anything else is rejected.
++ */
++void Agent::AuthorizeService(const QDBusObjectPath &objectPath, const QString &uuid)
++{
++    Q_UNUSED(uuid);
++    auto device = m_devices.getDeviceFromPath(objectPath.path());
++    if (device && device->isPaired())
++        return; // empty reply = authorized
++
++    setDelayedReply(true);
++    reject(message(), __func__);
++}
++
+ void Agent::authorizationRequestCallback(uint tag, bool allow)
+ {
+     if (m_delayedReplies.contains(tag)) {
+diff --git a/plugins/bluetooth/agent.h b/plugins/bluetooth/agent.h
+index c6fdaec..f4f6cf0 100644
+--- a/plugins/bluetooth/agent.h
++++ b/plugins/bluetooth/agent.h
+@@ -45,6 +45,11 @@ public:
+     Q_INVOKABLE void displayPasskeyCallback(uint tag);
+     Q_INVOKABLE void authorizationRequestCallback(uint tag, bool allow);
+ 
++    // FP6: when false, requests for devices this panel is not pairing with
++    // itself (unsolicited pairing from other devices) are rejected.
++    void setAllowIncoming(bool allow) { m_allowIncoming = allow; }
++    bool allowIncoming() const { return m_allowIncoming; }
++
+ public Q_SLOTS: // received from the system's bluez service
+     void Cancel();
+     void DisplayPinCode(const QDBusObjectPath &path, QString pincode);
+@@ -54,6 +59,7 @@ public Q_SLOTS: // received from the system's bluez service
+     uint RequestPasskey(const QDBusObjectPath &path);
+     QString RequestPinCode(const QDBusObjectPath &path);
+     void RequestAuthorization(const QDBusObjectPath &path);
++    void AuthorizeService(const QDBusObjectPath &path, const QString &uuid);
+ 
+ Q_SIGNALS:
+     void pinCodeNeeded(int tag, Device* device);
+@@ -72,6 +78,9 @@ private:
+     DeviceModel &m_devices;
+     QMap<uint,QDBusMessage> m_delayedReplies;
+     uint m_tag = 1;
++    bool m_allowIncoming = true;
++
++    bool refuseUnsolicited(const QSharedPointer<Device> &device, const char *functionName);
+ 
+     void cancel(QDBusMessage msg, const char *functionName);
+     void reject(QDBusMessage msg, const char *functionName);
+diff --git a/plugins/bluetooth/bluetooth.cpp b/plugins/bluetooth/bluetooth.cpp
+index b4c333f..7929f60 100644
+--- a/plugins/bluetooth/bluetooth.cpp
++++ b/plugins/bluetooth/bluetooth.cpp
+@@ -21,9 +21,21 @@
+ #include "bluetooth.h"
+ 
+ #include <QQmlEngine>
++#include <QSettings>
+ 
+ #include "agent.h"
+ #include "dbus-shared.h"
++#include "fp6store.h"
++
++namespace {
++// Safety timeouts (seconds): BlueZ ends visibility/pairing by itself if this
++// process is frozen in the background or dies; re-armed every minute while
++// the page is active.
++const uint FP6_SAFETY_TIMEOUT = 180;
++const int FP6_KEEPALIVE_MSEC = 60 * 1000;
++const int FP6_TEMP_PAIRABLE_MSEC = 90 * 1000;
++const char *FP6_SYSTEM_DEFAULTS = "/etc/fp6-bluetooth/settings.ini";
++}
+ 
+ Bluetooth::Bluetooth(QObject *parent):
+     Bluetooth(QDBusConnection::systemBus(), parent)
+@@ -48,6 +60,47 @@ Bluetooth::Bluetooth(const QDBusConnection &dbus, QObject *parent):
+     m_disconnectedDevices.filterOnTrusted(false);
+     m_disconnectedDevices.setSourceModel(&m_devices);
+ 
++    // FP6: "Paired devices" are BlueZ-paired devices (upstream listed
++    // trusted ones), everything else discovered is "Available devices".
++    m_pairedDevices.filterOnPaired(true);
++    m_pairedDevices.setSourceModel(&m_devices);
++    m_pairedDevices.sort(0);
++    m_availableDevices.filterOnPaired(false);
++    m_availableDevices.setSourceModel(&m_devices);
++    m_availableDevices.sort(0);
++
++    loadSettings();
++
++    m_keepAlive.setInterval(FP6_KEEPALIVE_MSEC);
++    QObject::connect(&m_keepAlive, &QTimer::timeout, this, [this]() { applyPolicy(); });
++    m_keepAlive.start();
++
++    m_tempPairableTimer.setSingleShot(true);
++    m_tempPairableTimer.setInterval(FP6_TEMP_PAIRABLE_MSEC);
++    QObject::connect(&m_tempPairableTimer, &QTimer::timeout, this, [this]() {
++        m_tempPairable = false;
++        applyPolicy();
++    });
++
++    QObject::connect(&m_devices, &DeviceModel::adapterReady, this, [this]() { applyVisibility(true); applyPolicy(); });
++    QObject::connect(&m_devices, &DeviceModel::agentReady, this, [this]() { applyPolicy(); });
++    QObject::connect(&m_devices, &DeviceModel::poweredChanged, this, [this](bool powered) {
++        if (powered) { applyVisibility(true); applyPolicy(); }
++    });
++    QObject::connect(&m_devices, &DeviceModel::pairableChanged, this, [this](bool pairable) {
++        Q_EMIT(pairableChanged());
++        // Another agent registering turns bonding back on; keep the choice.
++        if (pairable && m_policyApplied && !wantPairable())
++            m_devices.setAdapterProperty(QStringLiteral("Pairable"), false);
++    });
++    QObject::connect(&m_devices, &DeviceModel::devicePairingDone, this, [this](Device *, bool) {
++        if (m_tempPairable) {
++            m_tempPairable = false;
++            m_tempPairableTimer.stop();
++            applyPolicy();
++        }
++    });
++
+     QObject::connect(&m_devices, SIGNAL(poweredChanged(bool)),
+                      this, SIGNAL(poweredChanged(bool)));
+ 
+@@ -67,6 +120,152 @@ Bluetooth::Bluetooth(const QDBusConnection &dbus, QObject *parent):
+                      this, SIGNAL(adapterAddressChanged()));
+ }
+ 
++void Bluetooth::loadSettings()
++{
++    QSettings system(QString::fromLatin1(FP6_SYSTEM_DEFAULTS), QSettings::IniFormat);
++    QSettings user(Fp6Store::settingsPath(), QSettings::IniFormat);
++    auto value = [&](const char *key, const QVariant &fallback) {
++        const QString k = QString::fromLatin1(key);
++        return user.value(k, system.value(k, fallback));
++    };
++    m_visibleSetting = value("visible", true).toBool();
++    m_visibilityTimeout = qBound(0, value("visibility-timeout", 0).toInt(), 24 * 3600);
++    m_allowPairing = value("allow-pairing", true).toBool();
++    m_agent.setAllowIncoming(m_allowPairing);
++}
++
++void Bluetooth::saveSettings()
++{
++    QSettings user(Fp6Store::settingsPath(), QSettings::IniFormat);
++    user.setValue(QStringLiteral("visible"), m_visibleSetting);
++    user.setValue(QStringLiteral("visibility-timeout"), m_visibilityTimeout);
++    user.setValue(QStringLiteral("allow-pairing"), m_allowPairing);
++    user.sync();
++}
++
++bool Bluetooth::wantPairable() const
++{
++    return (m_allowPairing && m_active) || m_tempPairable;
++}
++
++void Bluetooth::applyVisibility(bool arm)
++{
++    if (!m_devices.hasAdapter() || !m_devices.isPowered())
++        return;
++
++    if (!m_visibleSetting) {
++        m_devices.trySetDiscoverable(false);
++        return;
++    }
++
++    if (m_visibilityTimeout > 0) {
++        // Timed: armed when the page opens or the switch is turned on;
++        // leaving the page does not end it, BlueZ does after the timeout.
++        if (arm) {
++            m_devices.setAdapterProperty(QStringLiteral("DiscoverableTimeout"), (uint) m_visibilityTimeout);
++            m_devices.setAdapterProperty(QStringLiteral("Discoverable"), true);
++        }
++        return;
++    }
++
++    // While the page is open.
++    if (m_active) {
++        m_devices.setAdapterProperty(QStringLiteral("DiscoverableTimeout"), FP6_SAFETY_TIMEOUT);
++        if (arm || !m_devices.isDiscoverable())
++            m_devices.setAdapterProperty(QStringLiteral("Discoverable"), true);
++    } else {
++        m_devices.trySetDiscoverable(false);
++    }
++}
++
++void Bluetooth::applyPolicy()
++{
++    m_agent.setAllowIncoming(m_allowPairing && m_active);
++
++    if (!m_devices.hasAdapter() || !m_devices.isPowered())
++        return;
++
++    // Keep-alive: re-arm the safety timeout of "while open" visibility.
++    if (m_visibleSetting && m_visibilityTimeout == 0 && m_active && m_devices.isDiscoverable())
++        m_devices.setAdapterProperty(QStringLiteral("DiscoverableTimeout"), FP6_SAFETY_TIMEOUT);
++
++    const bool want = wantPairable();
++    if (want) {
++        // Setting PairableTimeout restarts BlueZ's pairable timer.
++        m_devices.setAdapterProperty(QStringLiteral("PairableTimeout"), FP6_SAFETY_TIMEOUT);
++        if (!m_devices.isPairable())
++            m_devices.setAdapterProperty(QStringLiteral("Pairable"), true);
++    } else if (m_devices.isPairable() || !m_policyApplied) {
++        m_devices.setAdapterProperty(QStringLiteral("Pairable"), false);
++    }
++    m_policyApplied = true;
++}
++
++void Bluetooth::setVisibleSetting(bool visible)
++{
++    if (m_visibleSetting == visible)
++        return;
++    m_visibleSetting = visible;
++    saveSettings();
++    Q_EMIT(settingsChanged());
++    applyVisibility(true);
++}
++
++void Bluetooth::setVisibilityTimeout(int seconds)
++{
++    seconds = qBound(0, seconds, 24 * 3600);
++    if (m_visibilityTimeout == seconds)
++        return;
++    m_visibilityTimeout = seconds;
++    saveSettings();
++    Q_EMIT(settingsChanged());
++    applyVisibility(true);
++}
++
++void Bluetooth::setAllowPairing(bool allow)
++{
++    if (m_allowPairing == allow)
++        return;
++    m_allowPairing = allow;
++    saveSettings();
++    Q_EMIT(settingsChanged());
++    applyPolicy();
++}
++
++void Bluetooth::setActive(bool active)
++{
++    if (m_active == active)
++        return;
++    m_active = active;
++    Q_EMIT(activeChanged());
++    applyVisibility(active);
++    applyPolicy();
++    if (active)
++        reloadStore();
++}
++
++void Bluetooth::setPhoneName(const QString &name)
++{
++    // Adapter Alias: stored by BlueZ in /var/lib/bluetooth/<adapter>/settings
++    // and preferred over the hostname; "" restores the system name.
++    m_devices.setAdapterProperty(QStringLiteral("Alias"), name.trimmed());
++}
++
++void Bluetooth::reloadStore()
++{
++    m_devices.reloadStore();
++}
++
++QStringList Bluetooth::kinds() const
++{
++    return Device::knownKinds();
++}
++
++QString Bluetooth::iconForKind(const QString &kind) const
++{
++    return Device::iconForKind(kind);
++}
++
+ void Bluetooth::setSelectedDevice(const QString &address)
+ {
+     if (!m_selectedDevice || (m_selectedDevice->getAddress() != address)) {
+@@ -140,6 +339,20 @@ QAbstractItemModel * Bluetooth::getConnectedDevices()
+     return ret;
+ }
+ 
++QAbstractItemModel * Bluetooth::getPairedDevices()
++{
++    auto ret = &m_pairedDevices;
++    QQmlEngine::setObjectOwnership(ret, QQmlEngine::CppOwnership);
++    return ret;
++}
++
++QAbstractItemModel * Bluetooth::getAvailableDevices()
++{
++    auto ret = &m_availableDevices;
++    QQmlEngine::setObjectOwnership(ret, QQmlEngine::CppOwnership);
++    return ret;
++}
++
+ QAbstractItemModel * Bluetooth::getDisconnectedDevices()
+ {
+     auto ret = &m_disconnectedDevices;
+@@ -169,6 +382,12 @@ void Bluetooth::connectDevice(const QString &address)
+     }
+ 
+     if (!device->isPaired()) {
++        // LE bonding needs the adapter bondable even when we initiate.
++        if (!m_devices.isPairable()) {
++            m_tempPairable = true;
++            m_tempPairableTimer.start();
++            applyPolicy();
++        }
+         device->setConnectAfterPairing(true);
+         device->pair();
+     }
+@@ -185,6 +404,7 @@ void Bluetooth::removeDevice()
+     }
+ 
+     QString path = m_selectedDevice->getPath();
++    Fp6Store::forget(m_selectedDevice->getAddress());
+     m_devices.removeDevice(path);
+ }
+ 
+diff --git a/plugins/bluetooth/bluetooth.h b/plugins/bluetooth/bluetooth.h
+index 1588119..9bd1013 100644
+--- a/plugins/bluetooth/bluetooth.h
++++ b/plugins/bluetooth/bluetooth.h
+@@ -22,6 +22,7 @@
+ #define BLUETOOTH_H
+ 
+ #include <QObject>
++#include <QTimer>
+ 
+ #include "agent.h"
+ #include "devicemodel.h"
+@@ -68,6 +69,39 @@ class Bluetooth : public QObject
+                 READ adapterAddress
+                 NOTIFY adapterAddressChanged)
+ 
++    // FP6 additions
++    Q_PROPERTY (QAbstractItemModel* pairedDevices
++                READ getPairedDevices
++                CONSTANT)
++
++    Q_PROPERTY (QAbstractItemModel* availableDevices
++                READ getAvailableDevices
++                CONSTANT)
++
++    Q_PROPERTY (bool pairable
++                READ isPairable
++                NOTIFY pairableChanged)
++
++    Q_PROPERTY (bool visibleSetting
++                READ visibleSetting
++                WRITE setVisibleSetting
++                NOTIFY settingsChanged)
++
++    Q_PROPERTY (int visibilityTimeout
++                READ visibilityTimeout
++                WRITE setVisibilityTimeout
++                NOTIFY settingsChanged)
++
++    Q_PROPERTY (bool allowPairing
++                READ allowPairing
++                WRITE setAllowPairing
++                NOTIFY settingsChanged)
++
++    Q_PROPERTY (bool active
++                READ isActive
++                WRITE setActive
++                NOTIFY activeChanged)
++
+ Q_SIGNALS:
+     void selectedDeviceChanged();
+     void poweredChanged(bool powered);
+@@ -76,6 +110,9 @@ Q_SIGNALS:
+     void devicePairingDone(Device *device, bool success);
+     void adapterNameChanged();
+     void adapterAddressChanged();
++    void pairableChanged();
++    void settingsChanged();
++    void activeChanged();
+ 
+ public:
+     explicit Bluetooth(QObject *parent = nullptr);
+@@ -96,11 +133,30 @@ public:
+     Q_INVOKABLE void stopDiscovery();
+     Q_INVOKABLE void toggleDiscovery();
+ 
++    // FP6
++    Q_INVOKABLE void setPhoneName(const QString &name);
++    Q_INVOKABLE void reloadStore();
++    Q_INVOKABLE QStringList kinds() const;
++    Q_INVOKABLE QString iconForKind(const QString &kind) const;
++    Q_INVOKABLE void applyPolicy();
++
++    bool visibleSetting() const { return m_visibleSetting; }
++    int visibilityTimeout() const { return m_visibilityTimeout; }
++    bool allowPairing() const { return m_allowPairing; }
++    bool isActive() const { return m_active; }
++    bool isPairable() const { return m_devices.isPairable(); }
++    void setVisibleSetting(bool visible);
++    void setVisibilityTimeout(int seconds);
++    void setAllowPairing(bool allow);
++    void setActive(bool active);
++
+ public:
+     Agent * getAgent();
+     Device * getSelectedDevice();
+     QAbstractItemModel * getConnectedDevices();
+     QAbstractItemModel * getDisconnectedDevices();
++    QAbstractItemModel * getPairedDevices();
++    QAbstractItemModel * getAvailableDevices();
+ 
+     bool isPowered() const { return m_devices.isPowered(); }
+     bool isDiscovering() const { return m_devices.isDiscovering(); }
+@@ -112,6 +168,22 @@ private:
+     DeviceFilter m_connectedDevices;
+     DeviceFilter m_disconnectedDevices;
+     QSharedPointer<Device> m_selectedDevice;
++    DeviceFilter m_pairedDevices;
++    DeviceFilter m_availableDevices;
++
++    bool m_visibleSetting = true;
++    int m_visibilityTimeout = 0;
++    bool m_allowPairing = true;
++    bool m_active = true;
++    bool m_tempPairable = false;
++    bool m_policyApplied = false;
++    QTimer m_keepAlive;
++    QTimer m_tempPairableTimer;
++
++    void loadSettings();
++    void saveSettings();
++    bool wantPairable() const;
++    void applyVisibility(bool arm);
+ 
+     Agent m_agent;
+ };
+diff --git a/plugins/bluetooth/device.cpp b/plugins/bluetooth/device.cpp
+index 9d26ba2..a0bf899 100644
+--- a/plugins/bluetooth/device.cpp
++++ b/plugins/bluetooth/device.cpp
+@@ -25,6 +25,277 @@
+ #include <QTimer>
+ 
+ #include "dbus-shared.h"
++#include "fp6store.h"
++
++#include <QDateTime>
++
++#define BLUEZ_BATTERY_IFACE "org.bluez.Battery1"
++
++namespace {
++struct Fp6Kind { const char *kind; const char *icon; };
++// Kinds offered in "Type"; icons from Suru (fp6-audio-earbuds-symbolic is
++// shipped by the FP6 module into hicolor).
++const Fp6Kind FP6_KINDS[] = {
++    { "car",        "audio-carkit-symbolic" },
++    { "speaker",    "audio-speakers-symbolic" },
++    { "headphones", "audio-headphones-symbolic" },
++    { "earbuds",    "fp6-audio-earbuds-symbolic" },
++    { "headset",    "audio-headset-symbolic" },
++    { "watch",      "smartwatch-symbolic" },
++    { "keyboard",   "input-keyboard-symbolic" },
++    { "mouse",      "input-mouse-symbolic" },
++    { "gamepad",    "input-gaming-symbolic" },
++    { "phone",      "phone-smartphone-symbolic" },
++    { "computer",   "computer-symbolic" },
++    { "tv",         "video-display-symbolic" },
++    { "other",      "bluetooth-active" },
++};
++
++struct Fp6Profile { const char *uuid16; const char *label; };
++// Profiles shown on the device page (only the ones the device lists in
++// UUIDs). Connect/DisconnectProfile go to BlueZ; routing stays with the
++// audio stack.
++const Fp6Profile FP6_PROFILES[] = {
++    { "110b", "media" },      // A2DP sink: media audio
++    { "111e", "calls" },      // HFP hands-free: calls
++    { "1108", "calls" },      // HSP headset: calls
++    { "1124", "input" },      // HID
++    { "1812", "input" },      // HOGP (HID over GATT)
++    { "1105", "files" },      // OBEX object push
++    { "1106", "files" },      // OBEX file transfer
++    { "1116", "network" },    // PAN NAP
++};
++}
++
++QStringList Device::knownKinds()
++{
++    QStringList kinds;
++    for (const auto &k : FP6_KINDS)
++        kinds << QString::fromLatin1(k.kind);
++    return kinds;
++}
++
++QString Device::iconForKind(const QString &kind)
++{
++    for (const auto &k : FP6_KINDS)
++        if (kind == QLatin1String(k.kind))
++            return QString::fromLatin1(k.icon);
++    return QString();
++}
++
++QString Device::getName() const
++{
++    // BlueZ fills Alias with the name, or with the address ("AA-BB-..")
++    // when there is no name; never show the address as the name.
++    QString dashed = m_address;
++    dashed.replace(QLatin1Char(':'), QLatin1Char('-'));
++    if (!m_alias.isEmpty() && m_alias.compare(dashed, Qt::CaseInsensitive) != 0)
++        return m_alias;
++    if (m_name == QLatin1String("unknown") && !m_alias.isEmpty())
++        return QString();
++    return m_name;
++}
++
++bool Device::hasCustomName() const
++{
++    QString dashed = m_address;
++    dashed.replace(QLatin1Char(':'), QLatin1Char('-'));
++    return !m_alias.isEmpty() && m_alias != m_name
++        && m_alias.compare(dashed, Qt::CaseInsensitive) != 0;
++}
++
++QString Device::getAutoKind() const
++{
++    // Appearance (LE) first, it distinguishes earbuds.
++    // GAP Appearance: category = bits 15..6, subcategory = bits 5..0.
++    switch (m_appearance >> 6) {
++    case 0x001: return QStringLiteral("phone");     // 0x0040 Phone
++    case 0x002: return QStringLiteral("computer");  // 0x0080 Computer
++    case 0x003: return QStringLiteral("watch");     // 0x00C0 Watch
++    case 0x005: return QStringLiteral("tv");        // 0x0140 Display
++    case 0x00f: // 0x03C0 HID
++        switch (m_appearance & 0x3f) {
++        case 0x01: return QStringLiteral("keyboard");
++        case 0x02: return QStringLiteral("mouse");
++        case 0x03:
++        case 0x04: return QStringLiteral("gamepad");
++        }
++        break;
++    case 0x021: return QStringLiteral("speaker");   // 0x0840 Speaker
++    case 0x025: // 0x0940 Wearable audio device
++        switch (m_appearance & 0x3f) {
++        case 0x01: return QStringLiteral("earbuds");
++        case 0x02: return QStringLiteral("headset");
++        default:   return QStringLiteral("headphones");
++        }
++    }
++
++    switch (m_type) {
++    case Type::Headset:    return QStringLiteral("headset");
++    case Type::Headphones: return QStringLiteral("headphones");
++    case Type::Carkit:     return QStringLiteral("car");
++    case Type::Speakers:
++    case Type::OtherAudio: return QStringLiteral("speaker");
++    case Type::Video:      return QStringLiteral("tv");
++    case Type::Mouse:
++    case Type::Tablet:     return QStringLiteral("mouse");
++    case Type::Keyboard:
++    case Type::Keypad:     return QStringLiteral("keyboard");
++    case Type::Joypad:     return QStringLiteral("gamepad");
++    case Type::Cellular:
++    case Type::Smartphone:
++    case Type::Phone:      return QStringLiteral("phone");
++    case Type::Computer:   return QStringLiteral("computer");
++    case Type::Watch:      return QStringLiteral("watch");
++    default: break;
++    }
++
++    // BlueZ's Icon property as the last hint.
++    const QString &i = m_fallbackIconName;
++    if (i == QLatin1String("audio-headset")) return QStringLiteral("headset");
++    if (i == QLatin1String("audio-headphones")) return QStringLiteral("headphones");
++    if (i == QLatin1String("audio-card")) return QStringLiteral("speaker");
++    if (i == QLatin1String("input-keyboard")) return QStringLiteral("keyboard");
++    if (i == QLatin1String("input-mouse") || i == QLatin1String("input-tablet")) return QStringLiteral("mouse");
++    if (i == QLatin1String("input-gaming")) return QStringLiteral("gamepad");
++    if (i == QLatin1String("phone")) return QStringLiteral("phone");
++    if (i == QLatin1String("computer")) return QStringLiteral("computer");
++    if (i == QLatin1String("video-display")) return QStringLiteral("tv");
++    return QStringLiteral("other");
++}
++
++QString Device::getKind() const
++{
++    return m_kindOverride.isEmpty() ? getAutoKind() : m_kindOverride;
++}
++
++QVariantList Device::getProfiles() const
++{
++    QVariantList list;
++    QStringList seenLabels;
++    for (const auto &p : FP6_PROFILES) {
++        const QString label = QString::fromLatin1(p.label);
++        if (seenLabels.contains(label))
++            continue;
++        const QString prefix = QStringLiteral("0000%1-").arg(QLatin1String(p.uuid16));
++        for (const QString &uuid : m_uuids) {
++            if (uuid.startsWith(prefix, Qt::CaseInsensitive)) {
++                QVariantMap m;
++                m[QStringLiteral("uuid")] = uuid;
++                m[QStringLiteral("kind")] = label;
++                list << m;
++                seenLabels << label;
++                break;
++            }
++        }
++    }
++    return list;
++}
++
++void Device::reloadStore()
++{
++    const QString kind = Fp6Store::kindOverride(m_address);
++    const QString valid = iconForKind(kind).isEmpty() ? QString() : kind;
++    if (valid != m_kindOverride) {
++        m_kindOverride = valid;
++        updateIcon();
++        Q_EMIT(iconNameChanged());
++    }
++    const qint64 last = Fp6Store::lastConnected(m_address);
++    if (last != m_lastConnected) {
++        m_lastConnected = last;
++        Q_EMIT(lastConnectedChanged());
++    }
++}
++
++void Device::setKindOverride(const QString &kind)
++{
++    const QString valid = iconForKind(kind).isEmpty() ? QString() : kind;
++    Fp6Store::setKindOverride(m_address, valid, iconForKind(valid));
++    m_kindOverride = valid;
++    updateIcon();
++    Q_EMIT(iconNameChanged());
++}
++
++void Device::setBattery(int percentage)
++{
++    if (percentage < -1 || percentage > 100)
++        percentage = -1;
++    if (m_battery != percentage) {
++        m_battery = percentage;
++        Q_EMIT(batteryChanged());
++        Q_EMIT(deviceChanged());
++    }
++}
++
++void Device::setPairingFlag(bool pairing)
++{
++    if (m_isPairing != pairing) {
++        m_isPairing = pairing;
++        Q_EMIT(pairingChanged());
++    }
++}
++
++void Device::noteConnectionTransition(bool connected)
++{
++    Q_UNUSED(connected);
++    // "Last connected": stamped when a connection starts and when it ends.
++    if (!m_address.isEmpty() && m_paired) {
++        m_lastConnected = QDateTime::currentSecsSinceEpoch();
++        Fp6Store::setLastConnected(m_address, m_lastConnected);
++        Q_EMIT(lastConnectedChanged());
++    }
++}
++
++void Device::setAlias(const QString &alias)
++{
++    // An empty alias makes BlueZ fall back to the device's own name.
++    auto call = m_bluezDeviceProperties->Set(BLUEZ_DEVICE_IFACE, "Alias", QDBusVariant(alias.trimmed()));
++    auto watcher = new QDBusPendingCallWatcher(call, this);
++    QObject::connect(watcher, &QDBusPendingCallWatcher::finished, [this](QDBusPendingCallWatcher *watcher) {
++        QDBusPendingReply<void> reply = *watcher;
++        if (reply.isError())
++            qWarning() << "Could not rename device:" << reply.error().name();
++        Q_EMIT(aliasActionDone(!reply.isError()));
++        watcher->deleteLater();
++    });
++}
++
++void Device::connectProfile(const QString &uuid)
++{
++    auto call = m_bluezDevice->ConnectProfile(uuid);
++    auto watcher = new QDBusPendingCallWatcher(call, this);
++    QObject::connect(watcher, &QDBusPendingCallWatcher::finished, [this, uuid](QDBusPendingCallWatcher *watcher) {
++        QDBusPendingReply<void> reply = *watcher;
++        if (reply.isError())
++            qWarning() << "ConnectProfile failed:" << reply.error().name();
++        Q_EMIT(profileActionDone(uuid, true, !reply.isError(), reply.isError() ? reply.error().name() : QString()));
++        watcher->deleteLater();
++    });
++}
++
++void Device::disconnectProfile(const QString &uuid)
++{
++    auto call = m_bluezDevice->DisconnectProfile(uuid);
++    auto watcher = new QDBusPendingCallWatcher(call, this);
++    QObject::connect(watcher, &QDBusPendingCallWatcher::finished, [this, uuid](QDBusPendingCallWatcher *watcher) {
++        QDBusPendingReply<void> reply = *watcher;
++        if (reply.isError())
++            qWarning() << "DisconnectProfile failed:" << reply.error().name();
++        Q_EMIT(profileActionDone(uuid, false, !reply.isError(), reply.isError() ? reply.error().name() : QString()));
++        watcher->deleteLater();
++    });
++}
++
++void Device::slotBatteryChanged(const QString &interface, const QVariantMap &changedProperties,
++                                const QStringList &invalidatedProperties)
++{
++    Q_UNUSED(invalidatedProperties);
++    if (interface != BLUEZ_BATTERY_IFACE)
++        return;
++    if (changedProperties.contains(QStringLiteral("Percentage")))
++        setBattery(changedProperties.value(QStringLiteral("Percentage")).toInt());
++}
+ 
+ Device::Device(const QString &path, QDBusConnection &bus) :
+    m_name("unknown"),
+@@ -45,6 +316,8 @@ void Device::initDevice(const QString &path, QDBusConnection &bus)
+     QObject::connect(this, SIGNAL(typeChanged()), this, SIGNAL(deviceChanged()));
+     QObject::connect(this, SIGNAL(connectionChanged()), this, SIGNAL(deviceChanged()));
+     QObject::connect(this, SIGNAL(strengthChanged()), this, SIGNAL(deviceChanged()));
++    QObject::connect(this, SIGNAL(lastConnectedChanged()), this, SIGNAL(deviceChanged()));
++    QObject::connect(this, SIGNAL(pairingChanged()), this, SIGNAL(deviceChanged()));
+ 
+     m_bluezDevice.reset(new BluezDevice1(BLUEZ_SERVICE, path, bus));
+     /* Give our calls a bit more time than the default 25 seconds to
+@@ -56,6 +329,8 @@ void Device::initDevice(const QString &path, QDBusConnection &bus)
+ 
+     QObject::connect(m_bluezDeviceProperties.data(), SIGNAL(PropertiesChanged(const QString&, const QVariantMap&, const QStringList&)),
+                      this, SLOT(slotPropertiesChanged(const QString&, const QVariantMap&, const QStringList&)));
++    QObject::connect(m_bluezDeviceProperties.data(), SIGNAL(PropertiesChanged(const QString&, const QVariantMap&, const QStringList&)),
++                     this, SLOT(slotBatteryChanged(const QString&, const QVariantMap&, const QStringList&)));
+ 
+     Q_EMIT(pathChanged());
+ 
+@@ -73,6 +348,17 @@ void Device::initDevice(const QString &path, QDBusConnection &bus)
+ 
+         watcher->deleteLater();
+     });
++
++    // Battery1 (BlueZ experimental): absent on most devices; the model also
++    // forwards InterfacesAdded/Removed for it.
++    auto batteryCall = m_bluezDeviceProperties->Get(BLUEZ_BATTERY_IFACE, "Percentage");
++    auto batteryWatcher = new QDBusPendingCallWatcher(batteryCall, this);
++    QObject::connect(batteryWatcher, &QDBusPendingCallWatcher::finished, [this](QDBusPendingCallWatcher *w) {
++        QDBusPendingReply<QDBusVariant> reply = *w;
++        if (!reply.isError())
++            setBattery(reply.argumentAt<0>().variant().toInt());
++        w->deleteLater();
++    });
+ }
+ 
+ void Device::slotPropertiesChanged(const QString &interface, const QVariantMap &changedProperties,
+@@ -145,7 +431,7 @@ void Device::pair()
+ 
+     setConnection(Device::Connecting);
+ 
+-    m_isPairing = true;
++    setPairingFlag(true);
+ 
+     auto call = m_bluezDevice->asyncCall("Pair");
+ 
+@@ -161,7 +447,7 @@ void Device::pair()
+             success = false;
+         }
+ 
+-        m_isPairing = false;
++        setPairingFlag(false);
+ 
+         Q_EMIT(pairingDone(success));
+ 
+@@ -186,7 +472,7 @@ void Device::cancelPairing()
+             updateConnection();
+         } else {
+             // Only mark us a not pairing when call succeeded
+-            m_isPairing = false;
++            setPairingFlag(false);
+         }
+ 
+         watcher->deleteLater();
+@@ -322,8 +608,19 @@ void Device::updateIcon()
+        Try to guess the icon from the device type,
+        and use the bluez-provided icon as a fallback */
+ 
++    if (!m_kindOverride.isEmpty()) {
++        setIconName(QString("image://theme/%1").arg(iconForKind(m_kindOverride)));
++        return;
++    }
++
+     const auto type = getType();
+ 
++    if (m_appearance != 0 && getAutoKind() != QLatin1String("other")
++        && (type == Type::Other)) {
++        setIconName(QString("image://theme/%1").arg(iconForKind(getAutoKind())));
++        return;
++    }
++
+     switch (type) {
+     case Type::Headset:
+         setIconName("image://theme/audio-headset-symbolic");
+@@ -356,8 +653,22 @@ void Device::updateIcon()
+     case Type::Computer:
+         setIconName("image://theme/computer-symbolic");
+         break;
++    case Type::Watch:
++        setIconName("image://theme/smartwatch-symbolic");
++        break;
++    case Type::Joypad:
++        setIconName("image://theme/input-gaming-symbolic");
++        break;
++    case Type::Video:
++        setIconName("image://theme/video-display-symbolic");
++        break;
+     default:
+-        setIconName(QString("image://theme/%1").arg(m_fallbackIconName));
++        if (getAutoKind() != QLatin1String("other"))
++            setIconName(QString("image://theme/%1").arg(iconForKind(getAutoKind())));
++        else if (!m_fallbackIconName.isEmpty())
++            setIconName(QString("image://theme/%1").arg(m_fallbackIconName));
++        else
++            setIconName("image://theme/bluetooth-active");
+     }
+ }
+ 
+@@ -379,15 +690,31 @@ void Device::updateProperty(const QString &key, const QVariant &value)
+         } else {
+             setValid(true);
+         }
++    } else if (key == "Alias") {
++        if (m_alias != value.toString()) {
++            m_alias = value.toString();
++            Q_EMIT(nameChanged());
++        }
+     } else if (key == "Address") {
+         setAddress(value.toString());
++        reloadStore();
+     } else if (key == "Connected") {
++        const bool was = m_isConnected;
+         m_isConnected = value.toBool();
++        if (was != m_isConnected)
++            noteConnectionTransition(m_isConnected);
+         updateConnection();
++    } else if (key == "UUIDs") {
++        m_uuids = value.toStringList();
++        Q_EMIT(profilesChanged());
+     } else if (key == "Class") {
+         setType(getTypeFromClass(value.toUInt()));
+     } else if (key == "Appearance") {
+-        setType(getTypeFromAppearance(value.toUInt()));
++        m_appearance = value.toUInt();
++        if (getTypeFromAppearance(m_appearance) != Type::Other || m_type == Type::Other) {
++            setType(getTypeFromAppearance(m_appearance));
++        }
++        updateIcon();
+     } else if (key == "Paired") {
+         setPaired(value.toBool());
+ 
+@@ -466,6 +793,9 @@ Device::Type Device::getTypeFromClass (quint32 c)
+         case 0x0b: // vcr
+         case 0x0c: // video camera
+         case 0x0d: // camcorder
++        case 0x0e: // video monitor (FP6)
++        case 0x0f: // video display and loudspeaker (FP6)
++        case 0x10: // video conferencing (FP6)
+             return Type::Video;
+ 
+         default:
+diff --git a/plugins/bluetooth/device.h b/plugins/bluetooth/device.h
+index 2e8640f..c2beeee 100644
+--- a/plugins/bluetooth/device.h
++++ b/plugins/bluetooth/device.h
+@@ -75,6 +75,43 @@ struct Device: QObject
+                WRITE setValid
+                NOTIFY validChanged)
+ 
++    // FP6 additions
++    Q_PROPERTY(QString remoteName
++               READ getRemoteName
++               NOTIFY nameChanged)
++
++    Q_PROPERTY(bool hasCustomName
++               READ hasCustomName
++               NOTIFY nameChanged)
++
++    Q_PROPERTY(int battery
++               READ getBattery
++               NOTIFY batteryChanged)
++
++    Q_PROPERTY(QString kind
++               READ getKind
++               NOTIFY iconNameChanged)
++
++    Q_PROPERTY(QString autoKind
++               READ getAutoKind
++               NOTIFY iconNameChanged)
++
++    Q_PROPERTY(QString kindOverride
++               READ getKindOverride
++               NOTIFY iconNameChanged)
++
++    Q_PROPERTY(qint64 lastConnected
++               READ getLastConnected
++               NOTIFY lastConnectedChanged)
++
++    Q_PROPERTY(QVariantList profiles
++               READ getProfiles
++               NOTIFY profilesChanged)
++
++    Q_PROPERTY(bool pairing
++               READ isPairing
++               NOTIFY pairingChanged)
++
+ public:
+ 
+     enum Type { Other, Computer, Cellular, Smartphone, Phone, Modem, Network,
+@@ -103,9 +140,29 @@ Q_SIGNALS:
+     void strengthChanged();
+     void deviceChanged(); // catchall for any change
+     void pairingDone(bool success);
++    void batteryChanged();
++    void lastConnectedChanged();
++    void profilesChanged();
++    void pairingChanged();
++    void profileActionDone(const QString &uuid, bool connect, bool success, const QString &error);
++    void aliasActionDone(bool success);
+ 
+ public:
+-    const QString& getName() const { return m_name; }
++    QString getName() const;
++    const QString& getRemoteName() const { return m_name; }
++    bool hasCustomName() const;
++    int getBattery() const { return m_battery; }
++    QString getKind() const;
++    QString getAutoKind() const;
++    QString getKindOverride() const { return m_kindOverride; }
++    qint64 getLastConnected() const { return m_lastConnected; }
++    QVariantList getProfiles() const;
++    bool isPairing() const { return m_isPairing; }
++    bool isConnectedNow() const { return m_isConnected; }
++    void setBattery(int percentage);
++    void reloadStore();
++    static QString iconForKind(const QString &kind);
++    static QStringList knownKinds();
+     const QString& getAddress() const { return m_address; }
+     const QString& getIconName() const { return m_iconName; }
+     Type getType() const { return m_type; }
+@@ -118,6 +175,12 @@ public:
+ 
+   private:
+     QString m_name;
++    QString m_alias;
++    int m_battery = -1;
++    quint32 m_appearance = 0;
++    QString m_kindOverride;
++    qint64 m_lastConnected = 0;
++    QStringList m_uuids;
+     QString m_state;
+     QString m_address;
+     QString m_iconName;
+@@ -154,18 +217,26 @@ public:
+     void pair();
+     Q_INVOKABLE void cancelPairing();
+     void connect();
++    Q_INVOKABLE void setAlias(const QString &alias);
++    Q_INVOKABLE void setKindOverride(const QString &kind);
++    Q_INVOKABLE void connectProfile(const QString &uuid);
++    Q_INVOKABLE void disconnectProfile(const QString &uuid);
+     void makeTrusted(bool trusted);
+     void disconnect();
+     void setProperties(const QMap<QString,QVariant> &properties);
+     void setConnectAfterPairing(bool value);
+ 
+   private Q_SLOTS:
++    void slotBatteryChanged(const QString &interface, const QVariantMap &changedProperties,
++                            const QStringList &invalidatedProperties);
+     void slotPropertiesChanged(const QString &interface, const QVariantMap &changedProperties,
+                                const QStringList &invalidatedProperties);
+     void slotMakeTrustedDone(QDBusPendingCallWatcher *call);
+ 
+   private:
+     void initDevice(const QString &path, QDBusConnection &bus);
++    void setPairingFlag(bool pairing);
++    void noteConnectionTransition(bool connected);
+     void updateProperties(QSharedPointer<QDBusInterface>);
+     void updateProperty(const QString &key, const QVariant &value);
+     static Type getTypeFromClass(quint32 bluetoothClass);
+diff --git a/plugins/bluetooth/devicemodel.cpp b/plugins/bluetooth/devicemodel.cpp
+index c473717..611c621 100644
+--- a/plugins/bluetooth/devicemodel.cpp
++++ b/plugins/bluetooth/devicemodel.cpp
+@@ -26,6 +26,9 @@
+ #include <QCoreApplication>
+ 
+ #include "dbus-shared.h"
++#include "fp6store.h"
++
++#define BLUEZ_BATTERY_IFACE "org.bluez.Battery1"
+ 
+ namespace
+ {
+@@ -143,6 +146,11 @@ void DeviceModel::setupAsDefaultAgent()
+                        << reply.error().message();
+         }
+ 
++        // BlueZ (AlwaysPairable=false) turns bonding on whenever an agent
++        // registers; the panel re-applies its pairing policy now.
++        m_agentReady = true;
++        Q_EMIT(agentReady());
++
+         watcher->deleteLater();
+     });
+ }
+@@ -165,6 +173,12 @@ void DeviceModel::slotInterfacesAdded(const QDBusObjectPath &objectPath, Interfa
+     if (!candidatedPath.startsWith(m_bluezAdapter->path()))
+         return;
+ 
++    if (ifacesAndProps.contains(BLUEZ_BATTERY_IFACE)) {
++        if (auto device = getDeviceFromPath(candidatedPath))
++            device->setBattery(ifacesAndProps.value(BLUEZ_BATTERY_IFACE)
++                               .value(QStringLiteral("Percentage"), -1).toInt());
++    }
++
+     if (!ifacesAndProps.contains(BLUEZ_DEVICE_IFACE))
+         return;
+ 
+@@ -187,6 +201,11 @@ void DeviceModel::slotInterfacesRemoved(const QDBusObjectPath &objectPath, const
+     if (!candidatedPath.startsWith(m_bluezAdapter->path()))
+         return;
+ 
++    if (interfaces.contains(BLUEZ_BATTERY_IFACE)) {
++        if (auto device = getDeviceFromPath(candidatedPath))
++            device->setBattery(-1);
++    }
++
+     if (!interfaces.contains(BLUEZ_DEVICE_IFACE))
+         return;
+ 
+@@ -278,6 +297,9 @@ void DeviceModel::clearAdapter()
+         stopDiscovery();
+         m_discoverableTimer.stop();
+         trySetDiscoverable(false);
++        // Bonding off again when this panel goes away (BlueZ also turns it
++        // off once no agent is registered).
++        setAdapterProperty(QStringLiteral("Pairable"), false);
+ 
+         m_bluezAdapter.reset(0);
+         m_bluezAdapterProperties.reset(0);
+@@ -309,10 +331,9 @@ void DeviceModel::setAdapterFromPath(const QString &path, const QVariantMap &pro
+         connect(adapterProperties, SIGNAL(PropertiesChanged(const QString&, const QVariantMap&, const QStringList&)),
+                 this, SLOT(slotAdapterPropertiesChanged(const QString&, const QVariantMap&, const QStringList&)));
+ 
+-        // Delay enabling discoverability by 1 second.
+-        m_discoverableTimer.setSingleShot(true);
+-        connect(&m_discoverableTimer, SIGNAL(timeout()), this, SLOT(slotEnableDiscoverable()));
+-        m_discoverableTimer.start(1000);
++        // FP6: visibility and pairing are decided by the panel's policy
++        // (Bluetooth::applyPolicy), not switched on unconditionally here.
++        Q_EMIT(adapterReady());
+     }
+ }
+ 
+@@ -354,9 +375,14 @@ void DeviceModel::updateDevices()
+ 
+             auto properties = ifaces.value(BLUEZ_DEVICE_IFACE);
+ 
+-            addDevice(candidatePath, properties);
++            auto device = addDevice(candidatePath, properties);
++            if (device && ifaces.contains(BLUEZ_BATTERY_IFACE))
++                device->setBattery(ifaces.value(BLUEZ_BATTERY_IFACE)
++                                   .value(QStringLiteral("Percentage"), -1).toInt());
+         }
+ 
++        watcher->deleteLater();
++
+     });
+ }
+ 
+@@ -378,7 +404,13 @@ void DeviceModel::updateProperty(const QString &key, const QVariant &value)
+         m_adapterAddress = value.toString();
+         Q_EMIT(adapterAddressChanged());
+     } else if (key == "Pairable") {
+-        m_isPairable = value.toBool();
++        if (m_isPairable != value.toBool()) {
++            m_isPairable = value.toBool();
++            Q_EMIT(pairableChanged(m_isPairable));
++        }
++    } else if (key == "DiscoverableTimeout") {
++        m_discoverableTimeout = value.toUInt();
++        Q_EMIT(discoverableTimeoutChanged());
+     } else if (key == "Discoverable") {
+         setDiscoverable(value.toBool());
+     } else if (key == "Discovering") {
+@@ -386,8 +418,6 @@ void DeviceModel::updateProperty(const QString &key, const QVariant &value)
+         restartDiscoveryTimer();
+     } else if (key == "Powered") {
+         setPowered(value.toBool());
+-        if (m_isPowered)
+-            trySetDiscoverable(true);
+     }
+ }
+ 
+@@ -412,9 +442,31 @@ void DeviceModel::slotEnableDiscoverable()
+     trySetDiscoverable(true);
+ }
+ 
++void DeviceModel::setAdapterProperty(const QString &name, const QVariant &value)
++{
++    if (!m_bluezAdapter || !m_bluezAdapter->isValid() || !m_bluezAdapterProperties)
++        return;
++
++    auto call = m_bluezAdapterProperties->Set(BLUEZ_ADAPTER_IFACE, name, QDBusVariant(value));
++    watchCall(call, [=](QDBusPendingCallWatcher *watcher) {
++        QDBusPendingReply<void> reply = *watcher;
++        if (reply.isError())
++            qWarning() << "Failed to set adapter property" << name << ":" << reply.error().message();
++        watcher->deleteLater();
++    });
++}
++
++void DeviceModel::reloadStore()
++{
++    for (auto device : m_devices)
++        device->reloadStore();
++}
++
+ void DeviceModel::trySetDiscoverable(bool discoverable)
+ {
+-    if (m_isDiscoverable)
++    // Upstream returned early whenever the adapter was discoverable, so
++    // "not discoverable" could never be requested.
++    if (m_isDiscoverable == discoverable)
+         return;
+ 
+     QVariant value;
+@@ -657,6 +709,11 @@ QHash<int,QByteArray> DeviceModel::roleNames() const
+         names[ConnectionRole] = "connection";
+         names[AddressRole] = "addressName";
+         names[TrustedRole] = "trusted";
++        names[PairedRole] = "paired";
++        names[BatteryRole] = "battery";
++        names[LastConnectedRole] = "lastConnected";
++        names[PairingRole] = "pairing";
++        names[KindRole] = "kind";
+     }
+ 
+     return names;
+@@ -673,11 +730,9 @@ QVariant DeviceModel::data(const QModelIndex &index, int role) const
+ 
+         switch (role) {
+         case Qt::DisplayRole:
++            // FP6: empty for nameless devices (the page shows "Unknown
++            // device"); the address is only shown on the details page.
+             displayName = device->getName();
+-
+-            if (displayName.isEmpty())
+-                displayName = device->getAddress();
+-
+             ret = displayName;
+             break;
+ 
+@@ -704,6 +759,26 @@ QVariant DeviceModel::data(const QModelIndex &index, int role) const
+         case TrustedRole:
+             ret = device->isTrusted();
+             break;
++
++        case PairedRole:
++            ret = device->isPaired();
++            break;
++
++        case BatteryRole:
++            ret = device->getBattery();
++            break;
++
++        case LastConnectedRole:
++            ret = device->getLastConnected();
++            break;
++
++        case PairingRole:
++            ret = device->isPairing();
++            break;
++
++        case KindRole:
++            ret = device->getKind();
++            break;
+         }
+     }
+ 
+@@ -724,6 +799,13 @@ void DeviceFilter::filterOnConnections(Device::Connections connections)
+     invalidateFilter();
+ }
+ 
++void DeviceFilter::filterOnPaired(bool paired)
++{
++    m_pairedEnabled = true;
++    m_pairedFilter = paired;
++    invalidateFilter();
++}
++
+ void DeviceFilter::filterOnTrusted(bool trusted)
+ {
+     m_trustedEnabled = true;
+@@ -747,6 +829,11 @@ bool DeviceFilter::filterAcceptsRow(int sourceRow,
+         accepts = (m_connections & connection) != 0;
+     }
+ 
++    if (accepts && m_pairedEnabled) {
++        const bool paired = childIndex.model()->data(childIndex, DeviceModel::PairedRole).value<bool>();
++        accepts = paired == m_pairedFilter;
++    }
++
+     if (accepts && m_trustedEnabled) {
+         const bool trusted = childIndex.model()->data(childIndex, DeviceModel::TrustedRole).value<bool>();
+         accepts = trusted == m_trustedFilter;
+@@ -758,7 +845,16 @@ bool DeviceFilter::filterAcceptsRow(int sourceRow,
+ bool DeviceFilter::lessThan(const QModelIndex &left,
+                             const QModelIndex &right) const
+ {
++  // FP6: connected devices first, then named before nameless, then by name.
++  const int ca = sourceModel()->data(left, DeviceModel::ConnectionRole).value<int>();
++  const int cb = sourceModel()->data(right, DeviceModel::ConnectionRole).value<int>();
++  const bool la = ca == Device::Connected || ca == Device::Connecting;
++  const bool lb = cb == Device::Connected || cb == Device::Connecting;
++  if (la != lb)
++      return la;
+   const QString a = sourceModel()->data(left, Qt::DisplayRole).value<QString>();
+   const QString b = sourceModel()->data(right, Qt::DisplayRole).value<QString>();
+-  return a < b;
++  if (a.isEmpty() != b.isEmpty())
++      return !a.isEmpty();
++  return a.localeAwareCompare(b) < 0;
+ }
+diff --git a/plugins/bluetooth/devicemodel.h b/plugins/bluetooth/devicemodel.h
+index 9a35b84..a8a6ea2 100644
+--- a/plugins/bluetooth/devicemodel.h
++++ b/plugins/bluetooth/devicemodel.h
+@@ -57,7 +57,12 @@ public:
+       ConnectionRole,
+       AddressRole,
+       TrustedRole,
+-      LastRole = TrustedRole
++      PairedRole,
++      BatteryRole,
++      LastConnectedRole,
++      PairingRole,
++      KindRole,
++      LastRole = KindRole
+     };
+ 
+     // implemented virtual methods from QAbstractTableModel
+@@ -75,6 +80,12 @@ public:
+     bool isPowered() const { return m_isPowered; }
+     bool isDiscovering() const { return m_isDiscovering; }
+     bool isDiscoverable() const { return m_isDiscoverable; }
++    bool isPairable() const { return m_isPairable; }
++    bool hasAdapter() const { return !m_bluezAdapter.isNull(); }
++    bool isAgentReady() const { return m_agentReady; }
++    uint discoverableTimeout() const { return m_discoverableTimeout; }
++    void setAdapterProperty(const QString &name, const QVariant &value);
++    void reloadStore();
+     void removeDevice(const QString &path);
+     void trySetDiscoverable(bool discoverable);
+     void stopDiscovery();
+@@ -90,6 +101,10 @@ Q_SIGNALS:
+     void devicePairingDone(Device *device, bool success);
+     void adapterNameChanged();
+     void adapterAddressChanged();
++    void pairableChanged(bool pairable);
++    void discoverableTimeoutChanged();
++    void adapterReady();
++    void agentReady();
+ 
+ private:
+     QDBusConnection m_dbus;
+@@ -105,6 +120,8 @@ private:
+     bool m_isPairable = false;
+     bool m_isDiscovering = false;
+     bool m_isDiscoverable = false;
++    bool m_agentReady = false;
++    uint m_discoverableTimeout = 0;
+     QTimer m_discoveryTimer;
+     QTimer m_discoverableTimer;
+     unsigned int m_discoveryBlockCount;
+@@ -156,6 +173,7 @@ public:
+     void filterOnType(const QVector<Device::Type>);
+     void filterOnConnections(Device::Connections);
+     void filterOnTrusted(bool trusted);
++    void filterOnPaired(bool paired);
+ 
+ protected:
+     virtual bool filterAcceptsRow(int, const QModelIndex&) const;
+@@ -168,6 +186,8 @@ private:
+     bool m_connectionsEnabled = false;
+     bool m_trustedEnabled = false;
+     bool m_trustedFilter = false;
++    bool m_pairedEnabled = false;
++    bool m_pairedFilter = false;
+ };
+ 
+ #endif // BLUETOOTH_DEVICE_MODEL_H
+diff --git a/plugins/bluetooth/fp6store.cpp b/plugins/bluetooth/fp6store.cpp
+new file mode 100644
+index 0000000..dcb6601
+--- /dev/null
++++ b/plugins/bluetooth/fp6store.cpp
+@@ -0,0 +1,96 @@
++#include "fp6store.h"
++
++#include <QCryptographicHash>
++#include <QDir>
++#include <QFileInfo>
++#include <QSettings>
++#include <QStandardPaths>
++
++namespace {
++QString xdgDir(const char *var, const QString &fallback)
++{
++    QString base = qEnvironmentVariable(var);
++    if (base.isEmpty() || !QDir::isAbsolutePath(base))
++        base = QDir::homePath() + fallback;
++    return base + QStringLiteral("/fp6-bluetooth");
++}
++
++QString configDir() { return xdgDir("XDG_CONFIG_HOME", QStringLiteral("/.config")); }
++QString stateDir() { return xdgDir("XDG_STATE_HOME", QStringLiteral("/.local/state")); }
++
++void ensureDir(const QString &file)
++{
++    QDir().mkpath(QFileInfo(file).absolutePath());
++}
++}
++
++QString Fp6Store::deviceKey(const QString &address)
++{
++    if (address.isEmpty())
++        return QString();
++    return QString::fromLatin1(QCryptographicHash::hash(address.toUpper().toUtf8(),
++                                                        QCryptographicHash::Sha256).toHex());
++}
++
++QString Fp6Store::devicesPath() { return configDir() + QStringLiteral("/devices.ini"); }
++QString Fp6Store::lastConnectedPath() { return stateDir() + QStringLiteral("/last-connected.ini"); }
++QString Fp6Store::settingsPath() { return configDir() + QStringLiteral("/settings.ini"); }
++
++QString Fp6Store::kindOverride(const QString &address)
++{
++    const QString key = deviceKey(address);
++    if (key.isEmpty())
++        return QString();
++    QSettings s(devicesPath(), QSettings::IniFormat);
++    return s.value(key + QStringLiteral("/type")).toString();
++}
++
++void Fp6Store::setKindOverride(const QString &address, const QString &kind, const QString &icon)
++{
++    const QString key = deviceKey(address);
++    if (key.isEmpty())
++        return;
++    ensureDir(devicesPath());
++    QSettings s(devicesPath(), QSettings::IniFormat);
++    if (kind.isEmpty()) {
++        s.remove(key);
++    } else {
++        s.setValue(key + QStringLiteral("/type"), kind);
++        s.setValue(key + QStringLiteral("/icon"), icon);
++    }
++    s.sync();
++}
++
++qint64 Fp6Store::lastConnected(const QString &address)
++{
++    const QString key = deviceKey(address);
++    if (key.isEmpty())
++        return 0;
++    QSettings s(lastConnectedPath(), QSettings::IniFormat);
++    return s.value(key + QStringLiteral("/last-connected")).toLongLong();
++}
++
++void Fp6Store::setLastConnected(const QString &address, qint64 when)
++{
++    const QString key = deviceKey(address);
++    if (key.isEmpty())
++        return;
++    ensureDir(lastConnectedPath());
++    QSettings s(lastConnectedPath(), QSettings::IniFormat);
++    s.setValue(key + QStringLiteral("/last-connected"), when);
++    s.sync();
++}
++
++void Fp6Store::forget(const QString &address)
++{
++    const QString key = deviceKey(address);
++    if (key.isEmpty())
++        return;
++    for (const QString &path : { devicesPath(), lastConnectedPath() }) {
++        if (!QFileInfo::exists(path))
++            continue;
++        QSettings s(path, QSettings::IniFormat);
++        s.remove(key);
++        s.sync();
++    }
++}
+diff --git a/plugins/bluetooth/fp6store.h b/plugins/bluetooth/fp6store.h
+new file mode 100644
+index 0000000..d495ae2
+--- /dev/null
++++ b/plugins/bluetooth/fp6store.h
+@@ -0,0 +1,36 @@
++/*
++ * FP6: small per-user store shared with the Bluetooth indicator and the
++ * audio UI. Format (documented in results/feature-push-20261024/
++ * bluetooth-settings/README.md):
++ *
++ *   $XDG_CONFIG_HOME/fp6-bluetooth/devices.ini   (written by System Settings)
++ *     [<key>]
++ *     type=car            one of Device::knownKinds()
++ *     icon=audio-carkit-symbolic
++ *
++ *   $XDG_STATE_HOME/fp6-bluetooth/last-connected.ini
++ *     [<key>]
++ *     last-connected=1761500000     (unix seconds, UTC)
++ *
++ *   <key> = lowercase hex SHA-256 of the device address in upper case with
++ *   colons ("AA:BB:CC:DD:EE:FF", UTF-8, no newline). No address or name is
++ *   stored in clear.
++ */
++#ifndef FP6_BLUETOOTH_STORE_H
++#define FP6_BLUETOOTH_STORE_H
++
++#include <QString>
++
++namespace Fp6Store {
++    QString deviceKey(const QString &address);
++    QString devicesPath();
++    QString lastConnectedPath();
++    QString settingsPath();
++    QString kindOverride(const QString &address);
++    void setKindOverride(const QString &address, const QString &kind, const QString &icon);
++    qint64 lastConnected(const QString &address);
++    void setLastConnected(const QString &address, qint64 when);
++    void forget(const QString &address);
++}
++
++#endif

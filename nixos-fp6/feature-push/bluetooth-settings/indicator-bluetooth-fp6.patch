@@ -1,0 +1,507 @@
+diff --git a/src/bluez.vala b/src/bluez.vala
+index 16e237a..b903089 100644
+--- a/src/bluez.vala
++++ b/src/bluez.vala
+@@ -55,10 +55,20 @@ public class Bluez: Bluetooth, Object
+   /* maps our arbitrary unique id to a Bluetooth.Device struct for public consumption */
+   private HashTable<uint,Device> id_to_device;
+ 
++  /* FP6: org.bluez.Battery1 proxies, last Connected state, user's icons */
++  private HashTable<ObjectPath,DBusProxy> path_to_battery_proxy;
++  private HashTable<ObjectPath,bool> path_connected;
++  private Fp6Store fp6_store = new Fp6Store ();
++
+   public Bluez (KillSwitch? killswitch)
+   {
+     init_bluez_state_vars ();
+ 
++    fp6_store.changed.connect (() => {
++      foreach (var path in path_to_device_proxy.get_keys ())
++        update_device (path);
++    });
++
+     if ((killswitch != null) && (killswitch.is_valid()))
+       {
+         this.killswitch = killswitch;
+@@ -102,6 +112,30 @@ public class Bluez: Bluetooth, Object
+     path_to_id = new HashTable<ObjectPath,uint> (str_hash, str_equal);
+     path_to_adapter_proxy = new HashTable<ObjectPath,BluezAdapter> (str_hash, str_equal);
+     path_to_device_proxy = new HashTable<ObjectPath,BluezDevice> (str_hash, str_equal);
++    path_to_battery_proxy = new HashTable<ObjectPath,DBusProxy> (str_hash, str_equal);
++    path_connected = new HashTable<ObjectPath,bool> (str_hash, str_equal);
++  }
++
++  private void update_battery (ObjectPath object_path, bool present)
++  {
++    path_to_battery_proxy.remove (object_path);
++    if (present)
++      {
++        try
++          {
++            var proxy = new DBusProxy.sync (bus, DBusProxyFlags.NONE, null,
++                                            BLUEZ_BUSNAME, object_path,
++                                            "org.bluez.Battery1", null);
++            proxy.g_properties_changed.connect (() => update_device (object_path));
++            path_to_battery_proxy.insert (object_path, proxy);
++          }
++        catch (Error e)
++          {
++            debug (@"Battery1 proxy: $(e.message)");
++          }
++      }
++    if (path_to_device_proxy.contains (object_path))
++      update_device (object_path);
+   }
+ 
+   private void reset_bluez ()
+@@ -130,6 +164,8 @@ public class Bluez: Bluetooth, Object
+                 update_adapter (object_path);
+               if (name == "org.bluez.Device1")
+                 update_device (object_path);
++              if (name == "org.bluez.Battery1")
++                update_battery (object_path, true);
+             }
+         });
+         manager.interfaces_removed.connect ((object_path, interfaces) => {
+@@ -138,6 +174,8 @@ public class Bluez: Bluetooth, Object
+                 adapter_removed (object_path);
+               if (interface == "org.bluez.Device1")
+                 device_removed (object_path);
++              if (interface == "org.bluez.Battery1")
++                update_battery (object_path, false);
+             }
+         });
+         var objects = manager.get_managed_objects ();
+@@ -153,6 +191,8 @@ public class Bluez: Bluetooth, Object
+                 update_adapter (object_path);
+               if (name == "org.bluez.Device1")
+                 update_device (object_path);
++              if (name == "org.bluez.Battery1")
++                update_battery (object_path, true);
+             }
+           }
+       }
+@@ -297,11 +337,18 @@ public class Bluez: Bluetooth, Object
+ 
+     // look up the device's type
+     Device.Type type;
++    uint32 cls = 0;
+     var v = device_proxy.get_cached_property ("Class");
+     if (v == null)
+       type = Device.Type.OTHER;
+     else
+-      type = Device.class_to_device_type (v.get_uint32());
++      {
++        cls = v.get_uint32 ();
++        type = Device.class_to_device_type (cls);
++      }
++
++    v = device_proxy.get_cached_property ("Appearance");
++    uint16 appearance = (v != null) ? v.get_uint16 () : 0;
+ 
+     // look up the device's human-readable name
+     v = device_proxy.get_cached_property ("Alias");
+@@ -313,14 +360,37 @@ public class Bluez: Bluetooth, Object
+     v = device_proxy.get_cached_property ("Address");
+     var address = v == null ? null : v.get_string ();
+ 
+-    // look up the device's bus address
++    // FP6: the user's type/icon from System Settings, else the same
++    // automatic choice as System Settings.
+     v = device_proxy.get_cached_property ("Icon");
+-    var icon = new ThemedIcon (v != null ? v.get_string() : "unknown");
++    var icon_name = fp6_store.icon_for (address);
++    if (icon_name == null)
++      icon_name = Fp6Store.auto_icon (cls, appearance, v != null ? v.get_string () : null);
++    var icon = new ThemedIcon.with_default_fallbacks (icon_name);
+ 
+     // look up the device's Connected flag
+     v = device_proxy.get_cached_property ("Connected");
+     var is_connected = (v != null) && v.get_boolean ();
+ 
++    v = device_proxy.get_cached_property ("Paired");
++    var is_paired = (v != null) && v.get_boolean ();
++
++    // "Last connected" for System Settings: stamped on every change of a
++    // paired device's connection (not on the first sighting).
++    if (path_connected.contains (object_path) &&
++        path_connected.lookup (object_path) != is_connected && is_paired)
++      fp6_store.record_connection (address);
++    path_connected.insert (object_path, is_connected);
++
++    var battery = -1;
++    var battery_proxy = path_to_battery_proxy.lookup (object_path);
++    if (battery_proxy != null)
++      {
++        var b = battery_proxy.get_cached_property ("Percentage");
++        if (b != null)
++          battery = (int) b.get_byte ();
++      }
++
+     // derive the uuid-related attributes we care about
+     v = device_proxy.get_cached_property ("UUIDs");
+     uint16[] uuids = {};
+@@ -341,7 +411,9 @@ public class Bluez: Bluetooth, Object
+                                          true,
+                                          is_connected,
+                                          supports_browsing,
+-                                         supports_file_transfer));
++                                         supports_file_transfer,
++                                         is_paired,
++                                         battery));
+ 
+     devices_changed ();
+     update_connected ();
+@@ -353,6 +425,9 @@ public class Bluez: Bluetooth, Object
+     path_to_id.remove (path);
+     id_to_path.remove (id);
+     id_to_device.remove (id);
++    path_connected.remove (path);
++    path_to_battery_proxy.remove (path);
++    path_to_device_proxy.remove (path);
+ 
+     devices_changed ();
+   }
+diff --git a/src/device.vala b/src/device.vala
+index 51bec03..0acb8bc 100644
+--- a/src/device.vala
++++ b/src/device.vala
+@@ -48,6 +48,9 @@ public class Device: Object
+   public bool is_connected { get; construct; }
+   public bool supports_browsing { get; construct; }
+   public bool supports_file_transfer { get; construct; }
++  // FP6
++  public bool is_paired { get; construct; }
++  public int battery { get; construct; }   // percent, -1 = unknown
+   public string print() {
+     return @"{id:$id, name:$name, address:$address, icon:$(icon.to_string()), device_type:$device_type, is_connectable:$is_connectable, is_connected:$is_connected, supports_browsing:$supports_browsing, supports_file_transfer:$supports_file_transfer}";
+   }
+@@ -60,7 +63,9 @@ public class Device: Object
+                  bool is_connectable,
+                  bool is_connected,
+                  bool supports_browsing,
+-                 bool supports_file_transfer)
++                 bool supports_file_transfer,
++                 bool is_paired = false,
++                 int battery = -1)
+   {
+     Object (id: id,
+             device_type: device_type,
+@@ -70,7 +75,9 @@ public class Device: Object
+             is_connectable: is_connectable,
+             is_connected: is_connected,
+             supports_browsing: supports_browsing,
+-            supports_file_transfer: supports_file_transfer);
++            supports_file_transfer: supports_file_transfer,
++            is_paired: is_paired,
++            battery: battery);
+   }
+ 
+   public static Type class_to_device_type (uint32 c)
+@@ -154,3 +161,178 @@ public class Device: Object
+     return 0;
+   }
+ }
++
++/**
++ * FP6: per-user store shared with System Settings > Bluetooth and the sound
++ * UI (format: lomiri-system-settings plugins/bluetooth/fp6store.h).
++ *   $XDG_CONFIG_HOME/fp6-bluetooth/devices.ini         [<key>] type=, icon=
++ *   $XDG_STATE_HOME/fp6-bluetooth/last-connected.ini   [<key>] last-connected=
++ * <key> = lowercase hex SHA-256 of the upper-case "AA:BB:CC:DD:EE:FF".
++ */
++public class Fp6Store : Object
++{
++  private KeyFile devices = new KeyFile ();
++  private FileMonitor? monitor = null;
++
++  public signal void changed ();
++
++  public static string key_for (string address)
++  {
++    return Checksum.compute_for_string (ChecksumType.SHA256, address.up ());
++  }
++
++  public static string devices_path ()
++  {
++    return Path.build_filename (Environment.get_user_config_dir (), "fp6-bluetooth", "devices.ini");
++  }
++
++  public static string state_path ()
++  {
++    var state = Environment.get_variable ("XDG_STATE_HOME");
++    if (state == null || !Path.is_absolute (state))
++      state = Path.build_filename (Environment.get_home_dir (), ".local", "state");
++    return Path.build_filename (state, "fp6-bluetooth", "last-connected.ini");
++  }
++
++  public Fp6Store ()
++  {
++    reload ();
++    try
++      {
++        var dir = File.new_for_path (Path.get_dirname (devices_path ()));
++        // Watch the directory: QSettings replaces the file atomically.
++        DirUtils.create_with_parents (dir.get_path (), 0700);
++        monitor = dir.monitor_directory (FileMonitorFlags.NONE, null);
++        monitor.changed.connect ((file, other, event) => {
++          if (file.get_basename () == "devices.ini" &&
++              (event == FileMonitorEvent.CHANGES_DONE_HINT ||
++               event == FileMonitorEvent.CREATED ||
++               event == FileMonitorEvent.DELETED ||
++               event == FileMonitorEvent.RENAMED ||
++               event == FileMonitorEvent.MOVED_IN))
++            {
++              reload ();
++              changed ();
++            }
++        });
++      }
++    catch (Error e)
++      {
++        debug (@"fp6 store: no monitor: $(e.message)");
++      }
++  }
++
++  private void reload ()
++  {
++    devices = new KeyFile ();
++    try { devices.load_from_file (devices_path (), KeyFileFlags.NONE); }
++    catch (Error e) { }
++  }
++
++  /* The user's icon for this device, or null. */
++  public string? icon_for (string? address)
++  {
++    if (address == null)
++      return null;
++    try
++      {
++        var icon = devices.get_string (key_for (address), "icon");
++        return (icon != null && icon != "") ? icon : null;
++      }
++    catch (Error e)
++      {
++        return null;
++      }
++  }
++
++  public void record_connection (string? address)
++  {
++    if (address == null)
++      return;
++    var path = state_path ();
++    var kf = new KeyFile ();
++    try { kf.load_from_file (path, KeyFileFlags.KEEP_COMMENTS); } catch (Error e) { }
++    kf.set_int64 (key_for (address), "last-connected", get_real_time () / 1000000);
++    try
++      {
++        DirUtils.create_with_parents (Path.get_dirname (path), 0700);
++        FileUtils.set_contents (path, kf.to_data ());
++      }
++    catch (Error e)
++      {
++        debug (@"fp6 store: $(e.message)");
++      }
++  }
++
++  /* Same choice as System Settings when the user picked no type. */
++  public static string auto_icon (uint32 cls, uint16 appearance, string? bluez_icon)
++  {
++    switch (appearance >> 6)
++      {
++        case 0x001: return "phone-smartphone-symbolic";
++        case 0x002: return "computer-symbolic";
++        case 0x003: return "smartwatch-symbolic";
++        case 0x005: return "video-display-symbolic";
++        case 0x00f:
++          switch (appearance & 0x3f)
++            {
++              case 0x01: return "input-keyboard-symbolic";
++              case 0x02: return "input-mouse-symbolic";
++              case 0x03:
++              case 0x04: return "input-gaming-symbolic";
++            }
++          break;
++        case 0x021: return "audio-speakers-symbolic";
++        case 0x025:
++          switch (appearance & 0x3f)
++            {
++              case 0x01: return "fp6-audio-earbuds-symbolic";
++              case 0x02: return "audio-headset-symbolic";
++              default:   return "audio-headphones-symbolic";
++            }
++      }
++
++    var minor = (cls & 0xfc) >> 2;
++    switch ((cls & 0x1f00) >> 8)
++      {
++        case 0x01: return "computer-symbolic";
++        case 0x02: return "phone-smartphone-symbolic";
++        case 0x04:
++          switch (minor)
++            {
++              case 0x01:
++              case 0x02: return "audio-headset-symbolic";
++              case 0x06: return "audio-headphones-symbolic";
++              case 0x08: return "audio-carkit-symbolic";
++              case 0x0b:
++              case 0x0c:
++              case 0x0d:
++              case 0x0f: return "video-display-symbolic";
++              default:   return "audio-speakers-symbolic";
++            }
++        case 0x05:
++          if ((cls & 0x40) != 0) return "input-keyboard-symbolic";
++          if ((cls & 0x80) != 0) return "input-mouse-symbolic";
++          if (((cls & 0x1e) >> 2) == 0x01 || ((cls & 0x1e) >> 2) == 0x02) return "input-gaming-symbolic";
++          break;
++        case 0x07:
++          if ((cls & 0x4) != 0) return "smartwatch-symbolic";
++          break;
++      }
++
++    switch (bluez_icon ?? "")
++      {
++        case "audio-headset":    return "audio-headset-symbolic";
++        case "audio-headphones": return "audio-headphones-symbolic";
++        case "audio-card":       return "audio-speakers-symbolic";
++        case "input-keyboard":   return "input-keyboard-symbolic";
++        case "input-mouse":
++        case "input-tablet":     return "input-mouse-symbolic";
++        case "input-gaming":     return "input-gaming-symbolic";
++        case "phone":            return "phone-smartphone-symbolic";
++        case "computer":         return "computer-symbolic";
++        case "video-display":    return "video-display-symbolic";
++      }
++    return "bluetooth-active";
++  }
++}
+diff --git a/src/phone.vala b/src/phone.vala
+index 075096f..4a0f1d2 100644
+--- a/src/phone.vala
++++ b/src/phone.vala
+@@ -23,6 +23,12 @@ class Phone: Profile
+ {
+   SimpleActionGroup action_group;
+ 
++  // FP6: paired devices with a connect switch (icon, name, state).
++  private Menu device_section;
++  private HashTable<uint,SimpleAction> connect_actions;
++  private HashTable<uint,SimpleAction> subtitle_actions;
++  private uint idle_rebuild_id = 0;
++
+   public Phone (Bluetooth bluetooth, SimpleActionGroup action_group)
+   {
+     const string profile_name = "phone";
+@@ -40,12 +46,25 @@ class Phone: Profile
+     foreach (var a in actions)
+       action_group.add_action (a);
+ 
++    connect_actions = new HashTable<uint,SimpleAction> (direct_hash, direct_equal);
++    subtitle_actions = new HashTable<uint,SimpleAction> (direct_hash, direct_equal);
++
+     var section = new Menu ();
+     section.append_item (create_enabled_menuitem ());
++    menu.append_section (null, section);
++
++    device_section = new Menu ();
++    menu.append_section (null, device_section);
++
++    section = new Menu ();
+     section.append (_("Bluetooth settings…"),
+                     "indicator.phone-show-settings::bluetooth");
+     menu.append_section (null, section);
+ 
++    bluetooth.devices_changed.connect (() => queue_rebuild ());
++    bluetooth.notify["enabled"].connect (() => queue_rebuild ());
++    rebuild_device_section ();
++
+     // know when to show the indicator & when to hide it
+     bluetooth.notify.connect (() => update_visibility());
+     update_visibility ();
+@@ -53,6 +72,84 @@ class Phone: Profile
+     bluetooth.notify.connect (() => update_root_action_state());
+   }
+ 
++  void queue_rebuild ()
++  {
++    if (idle_rebuild_id == 0)
++      idle_rebuild_id = Idle.add (() => {
++        idle_rebuild_id = 0;
++        rebuild_device_section ();
++        return false;
++      });
++  }
++
++  static int compare_devices (Device a, Device b)
++  {
++    if (a.is_connected != b.is_connected)
++      return a.is_connected ? -1 : 1;
++    return a.name.collate (b.name);
++  }
++
++  string subtitle_for (Device device)
++  {
++    if (device.is_connected)
++      {
++        if (device.battery >= 0)
++          return _("Connected · battery %d %%").printf (device.battery);
++        return _("Connected");
++      }
++    return _("Not connected");
++  }
++
++  void rebuild_device_section ()
++  {
++    device_section.remove_all ();
++    if (!bluetooth.enabled)
++      return;
++
++    var devices = new List<unowned Device> ();
++    foreach (var d in bluetooth.get_devices ())
++      if (d.is_paired)
++        devices.insert_sorted (d, compare_devices);
++
++    foreach (var device in devices)
++      {
++        var id = device.id;
++        var name = @"phone-device-$(id)-connected";
++        var subtitle_name = @"phone-device-$(id)-subtitle";
++
++        var a = connect_actions.lookup (id);
++        if (a == null)
++          {
++            a = new SimpleAction.stateful (name, VariantType.BOOLEAN,
++                                           new Variant.boolean (device.is_connected));
++            a.activate.connect ((action, param) => action.change_state (param));
++            a.change_state.connect ((action, requested) =>
++              bluetooth.set_device_connected (id, requested.get_boolean ()));
++            connect_actions.insert (id, a);
++            action_group.add_action (a);
++          }
++        else
++          a.set_state (new Variant.boolean (device.is_connected));
++
++        var s = subtitle_actions.lookup (id);
++        if (s == null)
++          {
++            s = new SimpleAction.stateful (subtitle_name, null,
++                                           new Variant.string (subtitle_for (device)));
++            subtitle_actions.insert (id, s);
++            action_group.add_action (s);
++          }
++        else
++          s.set_state (new Variant.string (subtitle_for (device)));
++
++        var item = new MenuItem (device.name, @"indicator.$(name)(true)");
++        item.set_attribute ("x-ayatana-type", "s", "org.ayatana.indicator.switch");
++        item.set_attribute ("x-ayatana-subtitle-action", "s", @"indicator.$(subtitle_name)");
++        item.set_attribute_value ("icon", device.icon.serialize ());
++        device_section.append_item (item);
++      }
++  }
++
+   void update_visibility ()
+   {
+     visible = bluetooth.enabled;

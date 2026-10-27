@@ -70,6 +70,11 @@ let
       # indicator and Settings > Sound, auto-switch to new BT/USB devices.
       # results/feature-push-20261024/audio-routing/README.md
       ({ ... }: { imports = [ ./audio-routing/audio-routing-fp6.nix ]; hardware.fairphone6.audioRouting.enable = true; })
+      # Bluetooth: visibility/pairing-request switches (only while the page is
+      # open by default), phone name, paired devices (rename, type icon,
+      # battery, last connected, profiles, forget), devices in the BT menu.
+      # results/feature-push-20261024/bluetooth-settings/README.md
+      ({ ... }: { imports = [ ./bluetooth-settings/bluetooth-settings-fp6.nix ]; hardware.fairphone6.bluetoothSettings.enable = true; })
       ({ lib, options, ... }: {
         # fp6-lomiri-powerd replaces the manual-only brightness bridge.
         # lomiri-gpu-fp6.nix restates it at mkOverride 10.
