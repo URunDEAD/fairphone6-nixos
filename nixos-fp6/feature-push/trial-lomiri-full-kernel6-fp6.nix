@@ -37,6 +37,9 @@ let
       # Share via link/QR (any device on the same Wi-Fi or hotspot), built by a Codex worker:
       # nixos-fp6/feature-push/webshare/README.md
       ({ ... }: { imports = [ ./webshare/module.nix ]; hardware.fairphone6.webshare.enable = true; })
+      # Text recognition (offline OCR, English/Romanian), built by a Codex worker:
+      # nixos-fp6/feature-push/ocr/README.md
+      ({ ... }: { imports = [ ./ocr/module.nix ]; hardware.fairphone6.ocr.enable = true; })
       # USB preferences: System Settings > USB (USB network / file transfer /
       # USB drive / ADB toggles, power role), "Charging via USB" notification.
       # Developer build: usb0 (172.16.42.1) is always kept for SSH over USB.

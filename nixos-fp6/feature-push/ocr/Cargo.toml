@@ -1,0 +1,32 @@
+[package]
+name = "fairphone-ocr"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Offline English and Romanian OCR for Lomiri"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+tiny_http = "0.12"
+unicode-normalization = "0.1"
+url = "2"
+uuid = { version = "1", features = ["v4"] }
+zbus = "4.4"
+ocrs = { version = "0.13", optional = true }
+rten = { version = "0.26", optional = true }
+
+[features]
+evaluate-ocrs = ["dep:ocrs", "dep:rten"]
+
+[[example]]
+name = "evaluate_ocrs"
+required-features = ["evaluate-ocrs"]
+
+[profile.release]
+lto = "thin"
+strip = true

@@ -1,0 +1,150 @@
+{
+  "platform": "Linux-6.18.34-x86_64-with-glibc2.44",
+  "load_average_before": [
+    59.82568359375,
+    62.2314453125,
+    48.365234375
+  ],
+  "load_average_after": [
+    53.05322265625,
+    59.3876953125,
+    48.76953125
+  ],
+  "font": "DejaVu Sans 2.37, 38 px",
+  "ocrs_rustc": "1.95.0",
+  "tesseract": "tesseract 5.5.3",
+  "ocrs": "0.13.1",
+  "rten": "0.26.0",
+  "threads": 1,
+  "repeats": 3,
+  "results": [
+    {
+      "case": "english",
+      "engine": "tesseract",
+      "expected": "A quiet morning in the city. Read this screenshot without a network. Meeting at 10:30. Bring 2 notebooks.",
+      "actual": "A quiet morning in the city. Read this screenshot without a network. Meeting at 10:30. Bring 2 notebooks.",
+      "cer": 0.0,
+      "wer": 0.0,
+      "median_ms": 5102.0,
+      "peak_rss_kib": 91192,
+      "median_cpu_ms": 1310.0,
+      "runs_ms": [
+        2007.569376961328,
+        5101.997042016592,
+        8560.682101000566
+      ]
+    },
+    {
+      "case": "english",
+      "engine": "ocrs",
+      "expected": "A quiet morning in the city. Read this screenshot without a network. Meeting at 10:30. Bring 2 notebooks.",
+      "actual": "A quiet morning in the city. Read this screenshot without a network. Meeting at 10:30, Bring 2 notebooks.",
+      "cer": 0.009523809523809525,
+      "wer": 0.05555555555555555,
+      "median_ms": 2689.7,
+      "peak_rss_kib": 164968,
+      "median_cpu_ms": 2290.0,
+      "runs_ms": [
+        2659.6028390340507,
+        2689.6645770175382,
+        7489.99937903136
+      ]
+    },
+    {
+      "case": "romanian",
+      "engine": "tesseract",
+      "expected": "În România, învățăm în fiecare zi. Ștefan și Ana cumpără pâine și mere. Țara are munți, păduri și râuri.",
+      "actual": "În România, învățăm în fiecare zi. Ștefan și Ana cumpără păine și mere. Țara are munți, păduri și râuri.",
+      "cer": 0.009615384615384616,
+      "wer": 0.05263157894736842,
+      "median_ms": 3051.3,
+      "peak_rss_kib": 56732,
+      "median_cpu_ms": 1130.0,
+      "runs_ms": [
+        3308.3355670096353,
+        1364.0589860151522,
+        3051.3121969997883
+      ]
+    },
+    {
+      "case": "romanian",
+      "engine": "ocrs",
+      "expected": "În România, învățăm în fiecare zi. Ștefan și Ana cumpără pâine și mere. Țara are munți, păduri și râuri.",
+      "actual": "in Rom?nia, inv?t?m in fiecare zi, Stefan si Ana cump?r? p?ine si mere. 0 Tara are munti, p?duri si r?uri.",
+      "cer": 0.20192307692307693,
+      "wer": 0.8421052631578947,
+      "median_ms": 4382.7,
+      "peak_rss_kib": 164820,
+      "median_cpu_ms": 2080.0,
+      "runs_ms": [
+        13757.867994019762,
+        3455.7153779896908,
+        4382.667102036066
+      ]
+    },
+    {
+      "case": "mixed",
+      "engine": "tesseract",
+      "expected": "Offline text recognition București: știri și călătorii English + Română: ă â î ș ț",
+      "actual": "Offline text recognition București: stiri si călătorii 3 î English + Română: ă âîșt",
+      "cer": 0.12195121951219512,
+      "wer": 0.5333333333333333,
+      "median_ms": 5362.8,
+      "peak_rss_kib": 105952,
+      "median_cpu_ms": 1690.0,
+      "runs_ms": [
+        2367.6554349949583,
+        11624.80486597633,
+        5362.828744982835
+      ]
+    },
+    {
+      "case": "mixed",
+      "engine": "ocrs",
+      "expected": "Offline text recognition București: știri și călătorii English + Română: ă â î ș ț",
+      "actual": "Offline text recognition Bucuresti: stiri si c?l?torii English + Rom?n?: ? ?ist_",
+      "cer": 0.18292682926829268,
+      "wer": 0.6666666666666666,
+      "median_ms": 2516.7,
+      "peak_rss_kib": 165060,
+      "median_cpu_ms": 1770.0,
+      "runs_ms": [
+        2464.444519020617,
+        2516.7035210179165,
+        2742.990638012998
+      ]
+    },
+    {
+      "case": "photo",
+      "engine": "tesseract",
+      "expected": "Bon de cumpărături Pâine și brânză: 24 lei Mulțumim! O zi frumoasă!",
+      "actual": "Bon de cumpărături pâine și brânză: 24 lei Mulțumim! O zi frumoasă!",
+      "cer": 0.014925373134328358,
+      "wer": 0.08333333333333333,
+      "median_ms": 3177.5,
+      "peak_rss_kib": 56608,
+      "median_cpu_ms": 1150.0,
+      "runs_ms": [
+        3177.5426390231587,
+        1369.8055029963143,
+        5495.822686003521
+      ]
+    },
+    {
+      "case": "photo",
+      "engine": "ocrs",
+      "expected": "Bon de cumpărături Pâine și brânză: 24 lei Mulțumim! O zi frumoasă!",
+      "actual": "Bon de cump?r?turi P?ine si br?nz?: 24 lei Multumim! O zi frumoas?!",
+      "cer": 0.11940298507462686,
+      "wer": 0.5,
+      "median_ms": 3050.6,
+      "peak_rss_kib": 165384,
+      "median_cpu_ms": 1660.0,
+      "runs_ms": [
+        3304.1388440178707,
+        3050.5820169928484,
+        2365.5171360005625
+      ]
+    }
+  ]
+}

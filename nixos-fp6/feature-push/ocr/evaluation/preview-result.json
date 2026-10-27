@@ -1,0 +1,181 @@
+{
+  "path": "evaluation/generated/romanian.png",
+  "image_url": "evaluation/generated/romanian.png",
+  "width": 1100,
+  "height": 320,
+  "text": "În România, învățăm în fiecare zi.\nȘtefan și Ana cumpără păine și mere.\nȚara are munți, păduri și râuri.",
+  "words": [
+    {
+      "text": "În",
+      "confidence": 92.50701,
+      "x": 45,
+      "y": 41,
+      "width": 32,
+      "height": 35,
+      "line": "1:1:1:1"
+    },
+    {
+      "text": "România,",
+      "confidence": 92.77767,
+      "x": 96,
+      "y": 46,
+      "width": 171,
+      "height": 34,
+      "line": "1:1:1:1"
+    },
+    {
+      "text": "învățăm",
+      "confidence": 68.41975,
+      "x": 283,
+      "y": 46,
+      "width": 152,
+      "height": 39,
+      "line": "1:1:1:1"
+    },
+    {
+      "text": "în",
+      "confidence": 93.1212,
+      "x": 450,
+      "y": 46,
+      "width": 32,
+      "height": 30,
+      "line": "1:1:1:1"
+    },
+    {
+      "text": "fiecare",
+      "confidence": 92.34606,
+      "x": 498,
+      "y": 47,
+      "width": 126,
+      "height": 29,
+      "line": "1:1:1:1"
+    },
+    {
+      "text": "zi.",
+      "confidence": 92.91622,
+      "x": 641,
+      "y": 47,
+      "width": 36,
+      "height": 29,
+      "line": "1:1:1:1"
+    },
+    {
+      "text": "Ștefan",
+      "confidence": 86.32594,
+      "x": 47,
+      "y": 127,
+      "width": 118,
+      "height": 38,
+      "line": "1:1:1:2"
+    },
+    {
+      "text": "și",
+      "confidence": 92.00507,
+      "x": 182,
+      "y": 127,
+      "width": 25,
+      "height": 38,
+      "line": "1:1:1:2"
+    },
+    {
+      "text": "Ana",
+      "confidence": 92.35859,
+      "x": 223,
+      "y": 128,
+      "width": 70,
+      "height": 28,
+      "line": "1:1:1:2"
+    },
+    {
+      "text": "cumpără",
+      "confidence": 92.90953,
+      "x": 310,
+      "y": 127,
+      "width": 163,
+      "height": 37,
+      "line": "1:1:1:2"
+    },
+    {
+      "text": "păine",
+      "confidence": 85.25643,
+      "x": 491,
+      "y": 126,
+      "width": 101,
+      "height": 38,
+      "line": "1:1:1:2"
+    },
+    {
+      "text": "și",
+      "confidence": 91.28029,
+      "x": 608,
+      "y": 127,
+      "width": 25,
+      "height": 38,
+      "line": "1:1:1:2"
+    },
+    {
+      "text": "mere.",
+      "confidence": 92.47408,
+      "x": 651,
+      "y": 134,
+      "width": 104,
+      "height": 22,
+      "line": "1:1:1:2"
+    },
+    {
+      "text": "Țara",
+      "confidence": 40.018467,
+      "x": 45,
+      "y": 208,
+      "width": 82,
+      "height": 37,
+      "line": "1:2:1:1"
+    },
+    {
+      "text": "are",
+      "confidence": 92.55405,
+      "x": 144,
+      "y": 214,
+      "width": 58,
+      "height": 22,
+      "line": "1:2:1:1"
+    },
+    {
+      "text": "munți,",
+      "confidence": 66.40989,
+      "x": 219,
+      "y": 207,
+      "width": 116,
+      "height": 38,
+      "line": "1:2:1:1"
+    },
+    {
+      "text": "păduri",
+      "confidence": 92.8327,
+      "x": 354,
+      "y": 207,
+      "width": 115,
+      "height": 37,
+      "line": "1:2:1:1"
+    },
+    {
+      "text": "și",
+      "confidence": 82.60775,
+      "x": 487,
+      "y": 207,
+      "width": 24,
+      "height": 38,
+      "line": "1:2:1:1"
+    },
+    {
+      "text": "râuri.",
+      "confidence": 93.01567,
+      "x": 530,
+      "y": 206,
+      "width": 94,
+      "height": 30,
+      "line": "1:2:1:1"
+    }
+  ],
+  "elapsed_ms": 1587
+}

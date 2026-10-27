@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=com.fairphone6.Ocr1
+Exec=@out@/bin/fairphone-ocr serve
+SystemdService=fairphone-ocr.service

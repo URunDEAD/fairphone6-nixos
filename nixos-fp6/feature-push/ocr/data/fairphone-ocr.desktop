@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Text from images
+Name[ro]=Text din imagini
+Comment=Recognize English and Romanian text offline
+Exec=fairphone-ocr ui %f
+Icon=fairphone-ocr
+Terminal=false
+Categories=Utility;Graphics;
+MimeType=image/png;image/jpeg;
+X-Lomiri-Touch=true
+X-Lomiri-Single-Instance=true
