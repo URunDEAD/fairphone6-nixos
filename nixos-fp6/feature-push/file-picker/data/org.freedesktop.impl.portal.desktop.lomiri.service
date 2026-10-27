@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=org.freedesktop.impl.portal.desktop.lomiri
+Exec=@out@/libexec/xdg-desktop-portal-lomiri
+SystemdService=xdg-desktop-portal-lomiri.service

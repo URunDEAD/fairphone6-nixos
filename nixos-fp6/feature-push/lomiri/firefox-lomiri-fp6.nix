@@ -77,7 +77,7 @@ let
     extraPrefs = (old.extraPrefs or "") + lib.optionalString cfg.serverSideDecorations ''
       // fp6 Lomiri: no GTK client-side shadow; Lomiri stretches the full surface.
       pref("browser.tabs.inTitlebar", 0);
-    '';
+    '' + cfg.extraPrefs;
   });
   shim = pkgs.stdenv.mkDerivation {
     name = "fp6-firefox-subsurface-scale-shim";
@@ -163,6 +163,12 @@ in {
       default = { };
       example = { MOZ_ENABLE_WAYLAND = "1"; };
       description = "Extra variables set for Firefox only.";
+    };
+    extraPrefs = lib.mkOption {
+      type = lib.types.lines;
+      default = "";
+      example = ''pref("widget.use-xdg-desktop-portal.file-picker", 1);'';
+      description = "Extra autoconfig lines (pref(...)) appended to Firefox's prefs.";
     };
   };
 

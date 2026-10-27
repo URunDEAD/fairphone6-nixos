@@ -26,7 +26,12 @@ let
   };
   base = import ./trial-lomiri-full-fp6.nix { inherit nixpkgs kernelPin; };
   evaluated = base.eval.extendModules {
-    modules = [ ./camera/selfie-gbrg-fp6.nix ({ config, lib, ... }: let
+    modules = [ ./camera/selfie-gbrg-fp6.nix
+      # Lomiri file picker for GTK4 (Fragments), Firefox and portal-using Qt
+      # apps: xdg-desktop-portal FileChooser backend.
+      # results/feature-push-20261024/file-picker/README.md
+      ({ ... }: { imports = [ ./file-picker/file-picker-fp6.nix ]; hardware.fairphone6.filePickerPortal.enable = true; })
+      ({ config, lib, ... }: let
       kernel = config.mobile.boot.stage-1.kernel.package;
     in {
       # stk3310 (STK36C61 ALS/proximity, CONFIG_STK3310=m) autoloads through

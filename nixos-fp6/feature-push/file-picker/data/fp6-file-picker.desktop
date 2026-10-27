@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Files
+Comment=Choose a file for another app
+Exec=@out@/bin/fp6-file-picker
+Icon=document-open
+Terminal=false
+NoDisplay=true
+X-Lomiri-Touch=true

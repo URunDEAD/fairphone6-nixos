@@ -1,0 +1,4 @@
+[portal]
+DBusName=org.freedesktop.impl.portal.desktop.lomiri
+Interfaces=org.freedesktop.impl.portal.FileChooser;
+UseIn=Lomiri

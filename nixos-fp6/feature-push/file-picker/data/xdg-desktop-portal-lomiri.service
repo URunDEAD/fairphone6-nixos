@@ -1,0 +1,10 @@
+[Unit]
+Description=Portal service (Lomiri file chooser, FP6)
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=dbus
+BusName=org.freedesktop.impl.portal.desktop.lomiri
+ExecStart=@out@/libexec/xdg-desktop-portal-lomiri
+Slice=session.slice
