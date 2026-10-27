@@ -1,0 +1,6 @@
+<schemalist>
+  <schema id="com.fairphone6.fixture" path="/com/fairphone6/fixture/">
+    <key name="enabled" type="b"><default>false</default></key>
+    <key name="labels" type="as"><default>[]</default></key>
+  </schema>
+</schemalist>

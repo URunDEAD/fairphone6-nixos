@@ -1,0 +1,11 @@
+{
+  "name": "Run self-test",
+  "icon": "fp6-selftest",
+  "category": "system",
+  "priority": 21,
+  "form-factors": ["phone", "tablet", "desktop"],
+  "keywords": ["health", "diagnostics", "self-test", "update"],
+  "has-dynamic-keywords": false,
+  "has-dynamic-visibility": false,
+  "page-component": "PageComponent.qml"
+}

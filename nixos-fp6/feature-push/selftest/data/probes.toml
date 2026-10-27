@@ -1,0 +1,150 @@
+# Audited against sibling sources; see DESIGN.md. No activation, no writes.
+[[probe]]
+id = "quickshare"
+unit = "fp6-quickshare.service"
+name = "com.fairphone6.QuickShare1"
+path = "/com/fairphone6/QuickShare1"
+interface = "com.fairphone6.QuickShare1"
+property = "State"
+shape = "string"
+values = ["idle", "discovering", "transferring"]
+
+[[probe]]
+id = "webshare"
+unit = "fp6-webshare.service"
+name = "com.fairphone6.WebShare1"
+path = "/com/fairphone6/WebShare1"
+interface = "com.fairphone6.WebShare1"
+method = "Status"
+shape = "json-object"
+fields = { active = "bool", files = "array", pending = "array" }
+
+[[probe]]
+id = "kdeconnect"
+unit = "lomiri-kdeconnect.service"
+name = "com.fairphone6.KdeConnect1"
+path = "/com/fairphone6/KdeConnect1"
+interface = "com.fairphone6.KdeConnect1"
+method = "Devices"
+shape = "json-object"
+fields = { devices = "array", plugins = "array" }
+
+[[probe]]
+id = "ocr"
+unit = "fairphone-ocr.service"
+name = "com.fairphone6.Ocr1"
+path = "/com/fairphone6/Ocr1"
+interface = "com.fairphone6.Ocr1"
+method = "GetSettings"
+shape = "json-object"
+fields = { index_enabled = "bool" }
+
+[[probe]]
+id = "dictation"
+unit = "fp6-dictation.service"
+name = "com.fairphone6.Dictation1"
+path = "/com/fairphone6/Dictation1"
+interface = "com.fairphone6.Dictation1"
+property = "State"
+shape = "string"
+
+[[probe]]
+id = "share"
+unit = "fp6-share.service"
+name = "com.fairphone6.Share1"
+path = "/com/fairphone6/Share1"
+interface = "com.fairphone6.Share1"
+method = "Snapshot"
+shape = "json-object"
+fields = { revision = "number", busy = "bool", targets = "array" }
+
+[[probe]]
+id = "calls"
+unit = "fp6-calls.service"
+name = "com.fairphone6.Calls1"
+path = "/com/fairphone6/Calls1"
+interface = "com.fairphone6.Calls1"
+method = "Calls"
+shape = "json-array"
+
+[[probe]]
+id = "netpolicy"
+unit = "fp6-netpolicy.service"
+name = "org.fairphone.NetPolicy1"
+path = "/org/fairphone/NetPolicy1"
+interface = "org.fairphone.NetPolicy1"
+method = "GetStatus"
+shape = "json-object"
+fields = { settings = "object", snapshot = "object", route = "string" }
+
+# Helper exports ONLY Sync and SetMobilePreferred. Neither is safe to call.
+[[probe]]
+id = "netpolicy-helper"
+unit = "fp6-netpolicy-helper.service"
+bus = "system"
+name = "org.fairphone.NetPolicy.Helper1"
+path = "/org/fairphone/NetPolicy/Helper1"
+interface = "org.fairphone.NetPolicy.Helper1"
+
+# Standard notification daemon metadata; DND policy is separate below.
+[[probe]]
+id = "notifications"
+name = "org.freedesktop.Notifications"
+path = "/org/freedesktop/Notifications"
+interface = "org.freedesktop.Notifications"
+method = "GetServerInformation"
+shape = "server-information"
+
+# Integration slots: names/paths are candidates, NOT verified phone contracts.
+# Replace from actual service definitions before declaring required=true.
+# unverified=true never invokes a guessed method and reports WARN when owned.
+[[probe]]
+id = "usb-modes"
+bus = "system"
+name = "com.fairphone6.UsbModes1"
+path = "/com/fairphone6/UsbModes1"
+interface = "com.fairphone6.UsbModes1"
+unverified = true
+
+[[probe]]
+id = "ota"
+bus = "system"
+name = "com.fairphone6.Update1"
+path = "/com/fairphone6/Update1"
+interface = "com.fairphone6.Update1"
+unverified = true
+
+[[probe]]
+id = "dnd"
+name = "com.fairphone6.Notifications1"
+path = "/com/fairphone6/Notifications1"
+interface = "com.fairphone6.Notifications1"
+unverified = true
+
+[[probe]]
+id = "battery"
+name = "com.fairphone6.Battery1"
+path = "/com/fairphone6/Battery1"
+interface = "com.fairphone6.Battery1"
+unverified = true
+
+[[probe]]
+id = "app-ready"
+name = "com.fairphone6.AppReady1"
+path = "/com/fairphone6/AppReady1"
+interface = "com.fairphone6.AppReady1"
+unverified = true
+
+[[probe]]
+id = "privacy"
+name = "com.fairphone6.Privacy1"
+path = "/com/fairphone6/Privacy1"
+interface = "com.fairphone6.Privacy1"
+unverified = true
+
+[[probe]]
+id = "gestures"
+name = "com.fairphone6.Gestures1"
+path = "/com/fairphone6/Gestures1"
+interface = "com.fairphone6.Gestures1"
+unverified = true

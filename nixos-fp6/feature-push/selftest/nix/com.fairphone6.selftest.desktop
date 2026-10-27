@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Self-test
+Comment=Check this phone after an update
+Exec=fp6-selftest-ui %u
+Icon=fp6-selftest
+Terminal=false
+Categories=Settings;System;
+MimeType=x-scheme-handler/fp6-selftest;
+X-Lomiri-Touch=true

@@ -1,0 +1,5 @@
+<schemalist>
+  <schema id="com.fairphone6.fixture" path="/com/fairphone6/fixture/">
+    <key name="unsafe-array" type="ai"><default>[]</default></key>
+  </schema>
+</schemalist>

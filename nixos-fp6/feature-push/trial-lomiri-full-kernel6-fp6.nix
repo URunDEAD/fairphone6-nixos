@@ -58,6 +58,9 @@ let
       # Live captions (offline, on-device; off until started), built by a Codex worker:
       # nixos-fp6/feature-push/captions/README.md
       ({ ... }: { imports = [ ./captions/module.nix ]; hardware.fairphone6.captions.enable = true; })
+      # Post-update self-test (read-only health and feature checks), built by a Codex worker:
+      # nixos-fp6/feature-push/selftest/README.md
+      ({ ... }: { imports = [ ./selftest/module.nix ]; hardware.fairphone6.selftest = { enable = true; user = "user"; }; })
       # Persist the modem's EFS working copy across boots (real partitions stay read-only;
       # supervised test passed 2026-10-27, user approved). Removes the per-boot modem restart.
       ({ ... }: { hardware.fairphone6.modem.persistShadow = true; })

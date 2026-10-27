@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Synthetic fixture
+Exec=fixture-app %U
+Icon=fixture-icon
+X-Lomiri-Touch=true
