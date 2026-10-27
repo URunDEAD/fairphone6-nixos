@@ -9,11 +9,18 @@
 pub mod altimeter;
 pub mod compass;
 pub mod dashboard;
+pub mod flashlight;
 pub mod gps;
 pub mod level;
 pub mod light;
 pub mod measure;
+pub mod metal;
 pub mod sound;
+pub mod speed;
+pub mod steps;
+pub mod tone;
+pub mod tuner;
+pub mod vibration;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -45,6 +52,14 @@ pub fn make(kind: &str) -> Option<Box<dyn Tool>> {
         "light" => Box::new(light::LightMeter::new()),
         "gps" => Box::new(gps::Gps::new()),
         "dashboard" => Box::new(dashboard::Dashboard::new()),
+        // batch 2
+        "speed" => Box::new(speed::Speed::new()),
+        "metal" => Box::new(metal::Metal::new()),
+        "vibration" => Box::new(vibration::Vibration::new()),
+        "steps" => Box::new(steps::Steps::new()),
+        "torch" => Box::new(flashlight::Flashlight::new()),
+        "tuner" => Box::new(tuner::Tuner::new()),
+        "tone" => Box::new(tone::Tone::new()),
         _ => return None,
     })
 }
@@ -108,7 +123,7 @@ impl Drop for Feed {
 }
 
 fn run(sh: Arc<Shared>) {
-    let period = {
+    let mut period = {
         let mut t = sh.tool.lock().unwrap();
         t.start();
         t.period()
@@ -117,7 +132,12 @@ fn run(sh: Arc<Shared>) {
     while sh.running.load(Ordering::SeqCst) {
         let now = crate::util::mono();
         if now >= next {
-            let out = sh.tool.lock().ok().and_then(|mut t| t.tick(now));
+            // the period may change with the tool's mode (flashlight strobe)
+            let out = sh.tool.lock().ok().and_then(|mut t| {
+                let o = t.tick(now);
+                period = t.period();
+                o
+            });
             if let Some(o) = out {
                 if let Ok(mut l) = sh.latest.lock() {
                     *l = Some(o);
@@ -128,7 +148,7 @@ fn run(sh: Arc<Shared>) {
                 next = now + period; // fell behind: do not burst
             }
         }
-        let wait = (next - crate::util::mono()).clamp(0.001, 0.05);
+        let wait = (next - crate::util::mono()).clamp(0.001, 0.05).min(period.max(0.001));
         std::thread::sleep(Duration::from_secs_f64(wait));
     }
     if let Ok(mut t) = sh.tool.lock() {
