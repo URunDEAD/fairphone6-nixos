@@ -254,6 +254,23 @@ ItemPage {
                 fontSize: "small"
                 text: i18n.tr("While the screen is off, picking the phone up from a table (or from lying still) and looking at it shows the lock screen. Not in a pocket and not while walking. The screen turns off again after 10 seconds if you do not touch it.")
             }
+            SettingsListItems.Standard {
+                text: i18n.tr("Stay on while held")
+                Switch {
+                    objectName: "stayOnHeldSwitch"
+                    property bool serverChecked: gs.stayOnWhileHeld
+                    onServerCheckedChanged: checked = serverChecked
+                    Component.onCompleted: checked = serverChecked
+                    onTriggered: gs.stayOnWhileHeld = checked
+                }
+                showDivider: false
+            }
+            Label {
+                anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
+                wrapMode: Text.WordWrap
+                fontSize: "small"
+                text: i18n.tr("While you hold the phone to read, the screen does not dim or turn off for inactivity. Just before it would dim, the motion sensor checks for a moment whether the phone is in your hand. On a table, in a stand or in a pocket it turns off as usual, and never later than 10 minutes after your last touch. The camera is not used.")
+            }
 
             ListItem.ThinDivider {}
 

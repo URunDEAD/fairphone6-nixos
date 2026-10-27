@@ -87,6 +87,11 @@
       <summary>Raise to wake</summary>
       <description>Picking the phone up from rest into view turns the screen on (lock screen) while it is off; it goes off again after 10 s without a touch.</description>
     </key>
+    <key name="stay-on-while-held" type="b">
+      <default>false</default>
+      <summary>Stay on while held</summary>
+      <description>A few seconds before the screen would dim for inactivity, the accelerometer is read for 1.5 s; if the phone is held in a reading pose (hand tremor, tilted, not flat or upside down, not covered) the screen stays on for another period. At most 10 minutes after the last touch. Nothing is read while this is off.</description>
+    </key>
     <key name="back-double-tap-action" enum="com.fairphone6.gestures.PressAction">
       <default>'none'</default>
       <summary>Back double tap</summary>

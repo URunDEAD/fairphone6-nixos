@@ -74,6 +74,8 @@ pub struct Config {
     pub back_triple: Action,
     pub back_sensitivity: Sensitivity,
     pub volume_tracks: bool,
+    /// Stay on while held (powerd HoldCheck; accelerometer burst per check).
+    pub stay_on_held: bool,
 }
 
 impl Default for Config {
@@ -94,6 +96,7 @@ impl Default for Config {
             back_triple: Action::None,
             back_sensitivity: Sensitivity::Medium,
             volume_tracks: false,
+            stay_on_held: false,
         }
     }
 }
@@ -251,7 +254,7 @@ mod tests {
     fn new_gestures_are_off_by_default_and_arm_sensibly() {
         let c = Config::default();
         assert_eq!(c.armed(false, false), Armed::default());
-        assert!(!c.wants_proximity(false) && !c.pocket_mode && !c.volume_tracks);
+        assert!(!c.wants_proximity(false) && !c.pocket_mode && !c.volume_tracks && !c.stay_on_held);
         let c = Config {
             flip_to_silence: true,
             raise_to_wake: true,

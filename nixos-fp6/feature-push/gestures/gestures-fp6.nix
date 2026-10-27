@@ -21,6 +21,9 @@
 #    interrupt (IIO event, no polling at rest); pocket = iio-sensor-proxy
 #    proximity near + dark (direct lux read) > 1 s, gated in
 #    fp6-lomiri-powerd (com.fairphone6.Gestures SetPocket / Peek).
+#  * Stay on while held (2026-10-27, edge-flash README): powerd asks
+#    (HoldCheck) shortly before the idle dim; one 1.5 s IMU burst decides
+#    "held in a reading pose" (hold.rs); nothing is read while it is off.
 #  * Volume keys long press = next/previous track with the display off
 #    (read-only evdev, MPRIS), volume put back afterwards.
 #  * System Settings > Gesture Shortcuts (QML plugin page).

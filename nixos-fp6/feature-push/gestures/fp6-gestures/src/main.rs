@@ -18,11 +18,13 @@
 //!   fp6-gestures volume [0..1]         indicator-sound volume
 //!   fp6-gestures peek [SECONDS]        raise-to-wake display on (powerd Peek)
 //!   fp6-gestures pocket SECONDS        proximity claim + lux + pocket decisions
+//!   fp6-gestures hold                  one "stay on while held" check now (verdict)
 
 mod actions;
 mod apps;
 mod config;
 mod detector;
+mod hold;
 mod iio;
 mod motion;
 mod pocket;
@@ -47,6 +49,8 @@ use wom::monotonic;
 const SCHEMA: &str = "com.fairphone6.gestures";
 const POWERKEY_PATH: &str = "/com/fairphone6/PowerKey";
 const POWERKEY_IFACE: &str = "com.fairphone6.PowerKey";
+const GESTURES_PATH: &str = "/com/fairphone6/Gestures";
+const GESTURES_IFACE: &str = "com.fairphone6.Gestures";
 const REPOWERD: &str = "com.lomiri.Repowerd";
 const IIO_ROOT: &str = "/sys/bus/iio/devices";
 
@@ -89,6 +93,7 @@ fn main() {
             0
         }
         Some("pocket") => pocket_cli(&args[1..]),
+        Some("hold") => hold_cli(),
         Some("apps") => {
             for app in apps::scan(&apps::data_dirs(), &apps::current_desktops()) {
                 println!("{}\t{}\t{}", app.id, app.name, app.icon);
@@ -128,6 +133,7 @@ fn read_config(s: &gio::Settings) -> Config {
         back_triple: action("back-triple-tap"),
         back_sensitivity: Sensitivity::parse(&s.string("back-tap-sensitivity")),
         volume_tracks: s.boolean("volume-long-press-tracks"),
+        stay_on_held: s.boolean("stay-on-while-held"),
     }
 }
 
@@ -150,6 +156,8 @@ enum Wake {
     /// WoM interrupt at this monotonic time.
     Motion(f64),
     Covered,
+    /// powerd's HoldCheck(token): sample a short burst and answer.
+    HoldCheck(u32),
 }
 
 /// Work for the executor thread (D-Bus calls that may block).
@@ -160,6 +168,7 @@ enum Job {
     Flip(bool),
     Media(Track),
     RestoreVolume(f64),
+    HoldResult(u32, bool),
 }
 
 enum ProxMsg {
@@ -189,6 +198,15 @@ fn set_flip_flag(shared: &Shared, on: bool) {
     glib::MainContext::default().invoke(move || {
         let _ = gio::Settings::new(SCHEMA).set_boolean("flip-silenced", on);
     });
+}
+
+/// Stay on while held: ask powerd for HoldCheck signals (or stop them).
+fn register_hold_check(system: Option<&zbus::blocking::Connection>, on: bool) {
+    let Some(system) = system else { return };
+    match system.call_method(Some(REPOWERD), GESTURES_PATH, Some(GESTURES_IFACE), "SetHoldCheck", &(on,)) {
+        Ok(_) => log(format!("stay on while held: {}", if on { "registered" } else { "off" })),
+        Err(e) => log(format!("SetHoldCheck({on}): {e}")),
+    }
 }
 
 fn register_multi_press(system: Option<&zbus::blocking::Connection>, max: i32) {
@@ -248,6 +266,9 @@ fn run() -> i32 {
                 if old.multi_press_max() != new.multi_press_max() {
                     register_multi_press(buses.system.as_ref(), new.multi_press_max());
                 }
+                if old.stay_on_held != new.stay_on_held {
+                    register_hold_check(buses.system.as_ref(), new.stay_on_held);
+                }
                 let _ = wake_tx.send(Wake::Config);
                 let _ = prox_tx.send(ProxMsg::Recheck);
                 let _ = input_tx.send(());
@@ -256,6 +277,9 @@ fn run() -> i32 {
     }
     publish_apps(&settings);
     register_multi_press(buses.system.as_ref(), shared.config.lock().unwrap().multi_press_max());
+    if shared.config.lock().unwrap().stay_on_held {
+        register_hold_check(buses.system.as_ref(), true);
+    }
 
     if let Some(system) = buses.system.clone() {
         spawn_signal_threads(system, shared.clone(), wake_tx.clone(), exec_tx.clone(), prox_tx.clone(), input_tx.clone());
@@ -404,6 +428,17 @@ fn run_job(buses: &Buses, shared: &Shared, job: Job) {
             }
             Err(e) => log(format!("volume key long press: {e}")),
         },
+        Job::HoldResult(token, held) => {
+            let Some(system) = buses.system.as_ref() else { return };
+            match system.call_method(Some(REPOWERD), GESTURES_PATH, Some(GESTURES_IFACE), "HoldResult", &(token, held)) {
+                Ok(r) => {
+                    if r.body().deserialize::<bool>().unwrap_or(false) {
+                        log("stay on while held: idle timer extended");
+                    }
+                }
+                Err(e) => log(format!("HoldResult: {e}")),
+            }
+        }
         Job::RestoreVolume(v) => {
             // After Lomiri's own step on release.
             std::thread::sleep(Duration::from_millis(300));
@@ -452,6 +487,34 @@ fn spawn_signal_threads(
             .expect("match rule")
             .build()
     };
+    // Stay on while held: powerd asks before the idle dim/off point.
+    {
+        let it = MessageIterator::for_match_rule(rule(GESTURES_IFACE, "HoldCheck"), &system, Some(8));
+        let shared = shared.clone();
+        let wake_tx = wake_tx.clone();
+        let exec_tx = exec_tx.clone();
+        let conn = system.clone();
+        std::thread::spawn(move || {
+            let Ok(it) = it else { return log("cannot watch Gestures.HoldCheck") };
+            for msg in it.flatten() {
+                if !from_owner(&conn, &msg, REPOWERD) {
+                    continue;
+                }
+                let Ok((token, _left)) = msg.body().deserialize::<(u32, i32)>() else { continue };
+                let on = shared.config.lock().unwrap().stay_on_held;
+                let near = *shared.prox_near.lock().unwrap() == Some(true);
+                if !on || !shared.display_on.load(Ordering::SeqCst) {
+                    continue;
+                }
+                if shared.covered.load(Ordering::SeqCst) || near {
+                    // Covered: not being read. No IMU burst needed.
+                    let _ = exec_tx.send(Job::HoldResult(token, false));
+                    continue;
+                }
+                let _ = wake_tx.send(Wake::HoldCheck(token));
+            }
+        });
+    }
     // Display on/off from fp6-lomiri-powerd (com.canonical.Unity.Screen).
     {
         let it = MessageIterator::for_match_rule(rule("com.canonical.Unity.Screen", "DisplayPowerStateChange"), &system, Some(32));
@@ -515,6 +578,9 @@ fn spawn_signal_threads(
                         std::thread::sleep(Duration::from_millis(300));
                         shared.display_on.store(true, Ordering::SeqCst);
                         register_multi_press(Some(&conn), shared.config.lock().unwrap().multi_press_max());
+                        if shared.config.lock().unwrap().stay_on_held {
+                            register_hold_check(Some(&conn), true);
+                        }
                         let _ = prox_tx.send(ProxMsg::Resync);
                     }
                 }
@@ -582,6 +648,8 @@ fn sampler(shared: Arc<Shared>, wake_rx: mpsc::Receiver<Wake>, wake_tx: mpsc::Se
     let mut errors = 0u32;
     let mut was_active = false;
     let mut last_armed = motion::Armed::default();
+    // Stay on while held: one burst per powerd HoldCheck, nothing otherwise.
+    let mut hold_window: Option<hold::HoldWindow> = None;
     loop {
         let config = shared.config.lock().unwrap().clone();
         let display_on = shared.display_on.load(Ordering::SeqCst);
@@ -660,12 +728,21 @@ fn sampler(shared: Arc<Shared>, wake_rx: mpsc::Receiver<Wake>, wake_tx: mpsc::Se
             .poll_hz(now, armed, flip.pending(), raise.pending(), tap.as_ref().map_or(false, |t| t.1.pending()))
             .map(|hz| sched.last_read + 1.0 / hz);
         let shake_next = rate.as_ref().map(|_| next_shake);
-        let due = [motion_next, shake_next].into_iter().flatten().fold(f64::INFINITY, f64::min);
+        let hold_next = hold_window.as_ref().map(|w| w.next);
+        let due = [motion_next, shake_next, hold_next].into_iter().flatten().fold(f64::INFINITY, f64::min);
 
         if force_read || due <= now {
             force_read = false;
             sched.last_read = now;
-            match accel.read_raw() {
+            let raw = accel.read_raw();
+            if let Some(w) = &mut hold_window {
+                if let Some(verdict) = w.push(now, raw.as_ref().ok().map(|r| accel.to_mounted(*r))) {
+                    log(format!("stay on while held: {verdict:?} ({} samples)", w.samples.len()));
+                    let _ = exec_tx.send(Job::HoldResult(w.token, verdict.held()));
+                    hold_window = None;
+                }
+            }
+            match raw {
                 Ok(raw) => {
                     errors = 0;
                     if let (Some((_, adaptive)), Some((_, det))) = (rate.as_mut(), detector.as_mut()) {
@@ -750,6 +827,10 @@ fn sampler(shared: Arc<Shared>, wake_rx: mpsc::Receiver<Wake>, wake_tx: mpsc::Se
                     raise_quiet_until = monotonic() + 2.0;
                     force_read = true;
                 }
+            }
+            Some(Wake::HoldCheck(token)) => {
+                hold_window = Some(hold::HoldWindow::new(token, monotonic()));
+                force_read = true;
             }
             Some(Wake::Config) | Some(Wake::Covered) | None => {}
         }
@@ -1227,6 +1308,39 @@ fn replay_motion(args: &[String]) -> i32 {
 
 /// Live check of the pocket inputs (no SetPocket): claim proximity, print
 /// changes, lux and the detector's decisions.
+/// One "stay on while held" check now: the same burst and verdict the
+/// daemon uses for powerd's HoldCheck.
+fn hold_cli() -> i32 {
+    let accel = match iio::Accel::find(Path::new(IIO_ROOT)) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("accelerometer: {e}");
+            return 1;
+        }
+    };
+    let mut w = hold::HoldWindow::new(0, monotonic());
+    loop {
+        let now = monotonic();
+        if now < w.next {
+            std::thread::sleep(Duration::from_secs_f64(w.next - now));
+            continue;
+        }
+        let a = accel.read_raw().ok().map(|r| accel.to_mounted(r));
+        if let Some(verdict) = w.push(monotonic(), a) {
+            let (mean, rms) = hold::stats(&w.samples);
+            println!(
+                "{verdict:?}: {} samples, mean [{:.3} {:.3} {:.3}] g, rms {:.2} mg",
+                w.samples.len(),
+                mean[0],
+                mean[1],
+                mean[2],
+                rms * 1000.0
+            );
+            return 0;
+        }
+    }
+}
+
 fn pocket_cli(args: &[String]) -> i32 {
     let seconds: f64 = args.first().and_then(|s| s.parse().ok()).unwrap_or(10.0);
     let conn = match zbus::blocking::Connection::system() {
