@@ -1,0 +1,113 @@
+diff --git a/Makefile.am b/Makefile.am
+index cf51cdf..044e563 100644
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -376,6 +376,7 @@ builtin_sources += $(qmi_sources) \
+ 			drivers/qmimodem/util.h \
+ 			drivers/qmimodem/devinfo.c \
+ 			drivers/qmimodem/voicecall.c \
++			drivers/qmimodem/call-volume.c \
+ 			drivers/qmimodem/network-registration.c \
+ 			drivers/qmimodem/sim-legacy.c \
+ 			drivers/qmimodem/sim.c \
+diff --git a/drivers/qmimodem/call-volume.c b/drivers/qmimodem/call-volume.c
+new file mode 100644
+index 0000000..7659bee
+--- /dev/null
++++ b/drivers/qmimodem/call-volume.c
+@@ -0,0 +1,74 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * oFono - Open Source Telephony
++ *
++ * Software CallVolume atom for QMI modems whose voice audio is handled
++ * outside the modem (Qualcomm SoCs where the ADSP runs the voice graph).
++ * The modem is not touched: Muted, SpeakerVolume and MicrophoneVolume are
++ * only stored and exported on D-Bus, so the audio stack (a voice-path
++ * daemon) can follow them, and Telepathy "mute" stops failing.
++ */
++
++#ifdef HAVE_CONFIG_H
++#include <config.h>
++#endif
++
++#include <ofono/log.h>
++#include <ofono/modem.h>
++#include <ofono/call-volume.h>
++
++#include "util.h"
++
++#define QMI_SW_CV_DEFAULT_SPEAKER	60
++#define QMI_SW_CV_DEFAULT_MIC		100
++
++static void qmi_sw_cv_speaker_volume(struct ofono_call_volume *cv,
++					unsigned char percent,
++					ofono_call_volume_cb_t cb, void *data)
++{
++	DBG("%u", percent);
++	CALLBACK_WITH_SUCCESS(cb, data);
++}
++
++static void qmi_sw_cv_microphone_volume(struct ofono_call_volume *cv,
++					unsigned char percent,
++					ofono_call_volume_cb_t cb, void *data)
++{
++	DBG("%u", percent);
++	CALLBACK_WITH_SUCCESS(cb, data);
++}
++
++static void qmi_sw_cv_mute(struct ofono_call_volume *cv, int muted,
++				ofono_call_volume_cb_t cb, void *data)
++{
++	DBG("%d", muted);
++	CALLBACK_WITH_SUCCESS(cb, data);
++}
++
++static int qmi_sw_cv_probe(struct ofono_call_volume *cv,
++				unsigned int vendor, void *user_data)
++{
++	DBG("");
++
++	ofono_call_volume_set_speaker_volume(cv, QMI_SW_CV_DEFAULT_SPEAKER);
++	ofono_call_volume_set_microphone_volume(cv, QMI_SW_CV_DEFAULT_MIC);
++	ofono_call_volume_set_muted(cv, 0);
++
++	return 0;
++}
++
++static void qmi_sw_cv_remove(struct ofono_call_volume *cv)
++{
++	DBG("");
++}
++
++static const struct ofono_call_volume_driver driver = {
++	.flags			= OFONO_ATOM_DRIVER_FLAG_REGISTER_ON_PROBE,
++	.probe			= qmi_sw_cv_probe,
++	.remove			= qmi_sw_cv_remove,
++	.speaker_volume		= qmi_sw_cv_speaker_volume,
++	.microphone_volume	= qmi_sw_cv_microphone_volume,
++	.mute			= qmi_sw_cv_mute,
++};
++
++OFONO_ATOM_DRIVER_BUILTIN(call_volume, qmimodem_sw, &driver)
+diff --git a/plugins/qrtrqmi.c b/plugins/qrtrqmi.c
+index 27d071a..10df31a 100644
+--- a/plugins/qrtrqmi.c
++++ b/plugins/qrtrqmi.c
+@@ -26,6 +26,7 @@
+ #include <ofono/call-settings.h>
+ #include <ofono/ussd.h>
+ #include <ofono/voicecall.h>
++#include <ofono/call-volume.h>
+ #include <ofono/netreg.h>
+ #include <ofono/netmon.h>
+ #include <ofono/sim.h>
+@@ -557,6 +558,8 @@ static void qrtrqmi_pre_sim(struct ofono_modem *modem)
+ 	if (voice) {
+ 		data->have_voice = true;
+ 		ofono_voicecall_create(modem, 0, "qmimodem", voice);
++		/* Software mute/volume: voice audio runs on the ADSP. */
++		ofono_call_volume_create(modem, 0, "qmimodem_sw", NULL);
+ 	}
+ }
+ 

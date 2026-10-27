@@ -18,6 +18,9 @@ let
       ./cellular/cellular-fp6.nix
       ./contacts/contacts-fp6.nix
       ./ims/ims-fp6.nix
+      # CS (2G/3G/CSFB) call audio; off by default (hardware.fairphone6.csCallAudio).
+      # results/feature-push-20261024/cs-call-audio/README.md
+      ./cs-call-audio/cs-call-audio-fp6.nix
       ./misc/rtc-offset-fp6.nix
       ./misc/sd-automount-fp6.nix
       ./misc/power-suspend-policy-fp6.nix

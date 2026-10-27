@@ -1,0 +1,16 @@
+[package]
+name = "fp6-csvoiced"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Starts the ADSP voice path (hostless VoiceMMode1 PCM) while oFono reports a circuit-switched call on the Fairphone 6"
+
+[dependencies]
+alsa = "0.9"
+libc = "0.2"
+zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true

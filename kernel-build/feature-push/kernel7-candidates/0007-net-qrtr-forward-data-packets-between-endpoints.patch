@@ -1,0 +1,97 @@
+From 0c63174949e10000c7a18af637c7bd4b11e9323e Mon Sep 17 00:00:00 2001
+From: Jorijn van der Graaf <jorijnvdgraaf@catcrafts.net>
+Date: Tue, 7 Jul 2026 20:07:01 +0200
+Subject: [PATCH] net: qrtr: forward data packets between endpoints (FP6 voice
+ prototype)
+
+The DSP subsystems are star-connected through the application
+processor: each has a qrtr link to us but none to each other. Incoming
+packets whose dst_node is neither the local node nor broadcast are
+currently delivered to a *local* port matching dst_port (usually
+nothing) and dropped, so two remote DSPs can never exchange QMI
+messages.
+
+On the FP6 (SM7635, AudioReach) the modem's voice stack needs exactly
+that: it must reach the ADSP's service-registry notifier / audio
+service to attach the vocoder to a VCPM voice session. Without
+forwarding, every voice graph starts cleanly but the modem never
+streams a single mailbox packet - calls stay silent both ways (see
+journal/calls.md 2026-07-07/08).
+
+Forward DATA and RESUME_TX packets destined to another known node onto
+that node's endpoint, re-using qrtr_node_enqueue for per-hop flow
+control. RESUME_TX additionally releases this hop's flow token on the
+arrival link; per-hop counters stay in lockstep with end-to-end ones
+because every packet of a forwarded flow transits this node. Control
+packets keep flowing to the local ns, which already redistributes
+service announcements mesh-wide.
+
+Prototype for the milos carry; needs discussion (loop prevention,
+broadcast handling, flow-control semantics) before any upstream
+attempt.
+
+Assisted-by: Claude:claude-fable-5
+Signed-off-by: Jorijn van der Graaf <jorijnvdgraaf@catcrafts.net>
+---
+ net/qrtr/af_qrtr.c | 48 ++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 48 insertions(+)
+
+diff --git a/net/qrtr/af_qrtr.c b/net/qrtr/af_qrtr.c
+index db823177e6361..aae337572be71 100644
+--- a/net/qrtr/af_qrtr.c
++++ b/net/qrtr/af_qrtr.c
+@@ -520,6 +520,54 @@ int qrtr_endpoint_post(struct qrtr_endpoint *ep, const void *data, size_t len)
+ 		qrtr_node_assign(node, le32_to_cpu(pkt->server.node));
+ 	}
+ 
++	/* The DSPs are star-connected through this node: forward packets
++	 * destined to another node onto that node's endpoint (e.g. the
++	 * modem's voice stack talking to the ADSP's audio service). Only
++	 * DATA and RESUME_TX transit; control packets keep going to the
++	 * local ns, which does its own mesh-wide redistribution. RESUME_TX
++	 * additionally releases this hop's flow-control token on the
++	 * arrival link: per-hop counters advance in lockstep with the
++	 * end-to-end ones since every packet of the flow transits here.
++	 */
++	if (cb->dst_node != qrtr_local_nid &&
++	    cb->dst_node != QRTR_NODE_BCAST &&
++	    (cb->type == QRTR_TYPE_DATA || cb->type == QRTR_TYPE_RESUME_TX)) {
++		struct sockaddr_qrtr from = {AF_QIPCRTR,
++					     cb->src_node, cb->src_port};
++		struct sockaddr_qrtr to = {AF_QIPCRTR,
++					   cb->dst_node, cb->dst_port};
++		struct qrtr_node *dst;
++
++		dst = qrtr_node_lookup(cb->dst_node);
++		if (!dst || dst == node) {
++			if (dst)
++				qrtr_node_release(dst);
++			goto err;
++		}
++
++		if (cb->type == QRTR_TYPE_RESUME_TX) {
++			struct sk_buff *clone;
++
++			clone = skb_clone(skb, GFP_ATOMIC);
++			if (clone)
++				qrtr_tx_resume(node, clone);
++		}
++
++		pr_debug("qrtr: fwd %u:%u -> %u:%u type %d len %zu\n",
++			 cb->src_node, cb->src_port,
++			 cb->dst_node, cb->dst_port, cb->type, size);
++
++		if (skb_cow_head(skb, sizeof(struct qrtr_hdr_v1))) {
++			qrtr_node_release(dst);
++			goto err;
++		}
++
++		qrtr_node_enqueue(dst, skb, cb->type, &from, &to);
++		qrtr_node_release(dst);
++
++		return 0;
++	}
++
+ 	if (cb->type == QRTR_TYPE_RESUME_TX) {
+ 		qrtr_tx_resume(node, skb);
+ 	} else {

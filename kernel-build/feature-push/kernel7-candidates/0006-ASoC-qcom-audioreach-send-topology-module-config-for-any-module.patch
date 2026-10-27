@@ -1,0 +1,96 @@
+From: Paul Schuldesz <paulschuldesz@gmail.com>
+Date: Tue, 27 Oct 2026 14:00:00 +0200
+Subject: [PATCH] ASoC: qcom: audioreach: send topology module config for any module
+
+SND_SOC_AR_TPLG_MODULE_CFG_TYPE lets a topology attach an APM SET_CFG
+payload to a module widget, but only MODULE_ID_SMECNS_V2 ever sends it.
+Send it for every module that has one, after the module's own media
+format, so topologies can carry calibration and the configuration of the
+static services a graph depends on (for a voice call graph: the VCPM
+VOICE_CONFIG/VSID/CAL_KEYS params on instance 4, which reference the
+module instance ids of the voice stream subgraphs).
+
+Also fix the parser: like every vendor array the blob's size covers its
+header, but the whole size was used as the payload length (16 bytes of
+whatever followed were sent to the DSP) and the copy read size * 4 bytes
+from the topology. Keep exactly the payload, bound it by the private data
+size and fail the widget load on a malformed blob instead of storing an
+ERR_PTR that would later be kfree()d.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Signed-off-by: Paul Schuldesz <paulschuldesz@gmail.com>
+---
+--- a/sound/soc/qcom/qdsp6/topology.c
++++ b/sound/soc/qcom/qdsp6/topology.c
+@@ -316,14 +316,25 @@
+ 		mod_array = (struct snd_soc_tplg_vendor_array *)((u8 *)private->array + sz);
+ 		if (le32_to_cpu(mod_array->type) == SND_SOC_AR_TPLG_MODULE_CFG_TYPE) {
+ 			struct audioreach_module_priv_data *pdata;
++			u32 total = le32_to_cpu(mod_array->size);
++			u32 len;
+ 
+-			pdata = kzalloc_flex(*pdata, data,
+-					     le32_to_cpu(mod_array->size));
++			/*
++			 * Like every vendor array, the size covers the header
++			 * too; keep only the APM param payload that follows
++			 * it, and never read past the private data.
++			 */
++			if (total < sizeof(*pdata) || total % 4 ||
++			    total > le32_to_cpu(private->size) - sz)
++				return ERR_PTR(-EINVAL);
++
++			len = total - sizeof(*pdata);
++			pdata = kzalloc_flex(*pdata, data, len / 4);
+ 			if (!pdata)
+ 				return ERR_PTR(-ENOMEM);
+ 
+-			memcpy(pdata, ((u8 *)private->data + sz), struct_size(pdata, data,
+-						le32_to_cpu(mod_array->size)));
++			memcpy(pdata, (u8 *)private->data + sz, total);
++			pdata->size = cpu_to_le32(len);
+ 			return pdata;
+ 		}
+ 
+@@ -611,6 +622,13 @@
+ 		return mod ? PTR_ERR(mod) : -ENODEV;
+ 
+ 	mod->data = audioreach_get_module_priv_data(&tplg_w->priv);
++	if (IS_ERR(mod->data)) {
++		int ret = PTR_ERR(mod->data);
++
++		dev_err(component->dev, "widget %s: bad module config blob\n", w->name);
++		mod->data = NULL;
++		return ret;
++	}
+ 
+ 	dobj = &w->dobj;
+ 	dobj->private = mod;
+--- a/sound/soc/qcom/qdsp6/audioreach.c
++++ b/sound/soc/qcom/qdsp6/audioreach.c
+@@ -1371,6 +1371,8 @@
+ 		rc = audioreach_display_port_set_media_format(graph, module, cfg);
+ 		break;
+ 	case  MODULE_ID_SMECNS_V2:
++		if (!module->data)
++			return -EINVAL;
+ 		rc = audioreach_set_module_config(graph, module, cfg);
+ 		break;
+ 	case MODULE_ID_I2S_SOURCE:
+@@ -1416,6 +1418,16 @@
+ 		rc = 0;
+ 	}
+ 
++	/*
++	 * Any other module may carry an APM SET_CFG payload in the topology
++	 * (SND_SOC_AR_TPLG_MODULE_CFG_TYPE): calibration, or configuration of
++	 * a static service the graph depends on, such as the voice call
++	 * processing manager. Send it after the module's own media format.
++	 */
++	if (!rc && module->data && module->module_id != MODULE_ID_SMECNS_V2 &&
++	    le32_to_cpu(module->data->size))
++		rc = audioreach_set_module_config(graph, module, cfg);
++
+ 	return rc;
+ }
+ EXPORT_SYMBOL_GPL(audioreach_set_media_format);

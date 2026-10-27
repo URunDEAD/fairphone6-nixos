@@ -84,3 +84,38 @@ kernel7 candidates (staged 2026-10-26; NOT in kernel6, whose pinned drv is uncha
   Test plan: only after the Mesa backport
   (nixos-fp6/feature-push/white-boxes) and msm.enable_preemption=0 have
   been tried, because this needs a full kernel7 build and module re-pinning.
+
+0005-ASoC-qcom-q6apm-dai-support-hostless-front-ends.patch
+0006-ASoC-qcom-audioreach-send-topology-module-config-for-any-module.patch
+0007-net-qrtr-forward-data-packets-between-endpoints.patch
+  (cs-call-audio agent, 2026-10-27; circuit-switched call audio. UNVERIFIED
+  on hardware; see results/feature-push-20261024/cs-call-audio/README.md)
+  0005: a q6apm stream graph without a shared-memory endpoint is "hostless"
+    (the VoiceMMode1 voice front ends): open/prepare/start only build and
+    start the graph; no fragments, no shmem media format, pointer 0, mono
+    host params allowed. No change for graphs with a shmem endpoint.
+  0006: topology module config blobs (SND_SOC_AR_TPLG_MODULE_CFG_TYPE) are
+    sent for any module (only SMECNS before), after its media format and
+    before graph prepare. The voice topology uses this for the VCPM
+    VOICE_CONFIG / VSID params (static instance 4). Also fixes the parser:
+    the blob size includes its 16-byte header (16 stray bytes were sent),
+    the copy is bounded by the private data, and a bad blob fails the
+    widget instead of leaving an ERR_PTR in mod->data.
+  0007: THIRD-PARTY, verbatim from Catcrafts milos-linux branch "voice"
+    (0c63174949e1, Jorijn van der Graaf). QRTR forwards DATA/RESUME_TX
+    between remote nodes (modem node 0 <-> ADSP node 5; the phone's
+    qrtr-lookup shows the ADSP's service-registry notifier on node 5,
+    instance 74). Catcrafts: without it "every voice graph starts cleanly
+    but the modem never streams a single mailbox packet". Built in
+    (CONFIG_QRTR=y), so it needs the kernel7 build. Its own commit says it
+    needs loop-prevention/flow-control review before upstream.
+  Apply in order 0005, 0006, 0007; they touch only sound/soc/qcom/qdsp6/
+  {q6apm.[ch],q6apm-dai.c,audioreach.c,topology.c} and net/qrtr/af_qrtr.c
+  (git apply --check on the 63289f4 tree: all apply).
+  Compile check (external modules/objects against kernel6 7.2.0-fp6-nixos6
+  headers, W=1, no warnings in the changed files): cs-call-audio-compile-check.nix ->
+    /nix/store/h2nk9gb8qgv4ynqm7frzqa0mdffiq4pr-fp6-kernel7-candidate-cs-call-audio-compile-check-63289f441152-nixos6
+  To check on the first kernel7 boot (no call needed): the HiFi speaker and
+  Mic1 still work (0005/0006 are no-ops for MultiMedia1/2); dmesg has no
+  "bad module config blob"; qrtr-lookup unchanged. The call test is in the
+  README (needs the ACDB-derived voice graph and the user present).

@@ -1,0 +1,279 @@
+From 72e835abfe3695f29ca1433f926202c9e2d1af74 Mon Sep 17 00:00:00 2001
+From: Paul Schuldesz <paulschuldesz@gmail.com>
+Date: Tue, 27 Oct 2026 13:47:23 +0200
+Subject: [PATCH] audioreach: MILOS-Fairphone-Gen6: optional hostless
+ VoiceMMode1 voice-call graph
+
+Generic module macro (AR_MODULE_GENERIC) with an optional APM SET_CFG
+blob (AR_MODULE_CFG_WORDS), VCPM VOICE_CONFIG/VSID blob helpers, and a
+hostless voice stream subgraph. The Fairphone (Gen. 6) board file gains
+VoiceMMode1 Playback/Capture front ends routed to SEN_MI2S_RX and from
+TX_CODEC_DMA_TX_3 when built with -DFP6_VOICE_GRAPH=<description>; without
+it the output is unchanged.
+---
+ MILOS-Fairphone-Gen6.m4                      | 41 +++++++++
+ audioreach/module_generic.m4                 | 94 +++++++++++++++++++
+ audioreach/subgraph-stream-voice-hostless.m4 | 96 ++++++++++++++++++++
+ 3 files changed, 231 insertions(+)
+ create mode 100644 audioreach/module_generic.m4
+ create mode 100644 audioreach/subgraph-stream-voice-hostless.m4
+
+diff --git a/MILOS-Fairphone-Gen6.m4 b/MILOS-Fairphone-Gen6.m4
+index f28b887..bc0ac8b 100644
+--- a/MILOS-Fairphone-Gen6.m4
++++ b/MILOS-Fairphone-Gen6.m4
+@@ -64,8 +64,49 @@ DEVICE_SG_ADD(audioreach/subgraph-device-codec-dma-capture.m4, `TX_CODEC_DMA_TX_
+ 	LPAIF_INTF_TYPE_RXTX, CODEC_INTF_IDX_TX3, 0, DATA_FORMAT_FIXED_POINT,
+ 	0x00004008, 0x00004008, 0x00006130)
+ 
++ifdef(`FP6_VOICE_GRAPH', `', `dnl
+ STREAM_DEVICE_PLAYBACK_MIXER(SENARY_MI2S_RX, ``SEN_MI2S_RX'', ``MultiMedia1'')
+ STREAM_DEVICE_PLAYBACK_ROUTE(SENARY_MI2S_RX, ``SEN_MI2S_RX Audio Mixer'', ``MultiMedia1, stream0.logger1'')
++')dnl
+ 
+ STREAM_DEVICE_CAPTURE_MIXER(FRONTEND_DAI_MULTIMEDIA2, ``TX_CODEC_DMA_TX_3'')
+ STREAM_DEVICE_CAPTURE_ROUTE(FRONTEND_DAI_MULTIMEDIA2, ``MultiMedia2 Mixer'', ``TX_CODEC_DMA_TX_3, device120.logger1'')
++ifdef(`FP6_VOICE_GRAPH', `dnl
++#
++# Circuit-switched voice call (hostless VoiceMMode1 front ends)
++#
++# FP6_VOICE_GRAPH names a generated description (milos-voice-graph.m4.in)
++# of the stock voice stream subgraphs. Build: m4 -DFP6_VOICE_GRAPH=<file>.
++#
++#  modem ~VCPM~> [VoiceMMode1 Playback SG] -> SEN_MI2S_RX Audio Mixer -> Senary MI2S
++#  WCD9378 -> TX_CODEC_DMA_TX_3 -> VoiceMMode1 Capture Mixer -> [VoiceMMode1 Capture SG] ~VCPM~> modem
++#
++include(FP6_VOICE_GRAPH)
++define(`VOICE_DAI_ID', VOICE_RX_DAI_ID)dnl
++define(`NAME_PREFIX', `stream'VOICE_RX_DAI_ID)dnl
++define(`VOICE_FE_STREAM', `VoiceMMode1 Playback')dnl
++define(`VOICE_PCM_DIR', `playback')dnl
++define(`VOICE_MIXER_NAME', `VoiceMMode1')dnl
++define(`VOICE_SG_IID', VOICE_RX_SG_IID)dnl
++define(`VOICE_CONT_IID', VOICE_RX_CONT_IID)dnl
++define(`VOICE_CONT_CAP', VOICE_RX_CONT_CAP)dnl
++define(`VOICE_SG_DIRECTION', APM_SUB_GRAPH_DIRECTION_RX)dnl
++define(`VOICE_SG_MODULES', `VOICE_RX_MODULES')dnl
++define(`VOICE_SG_LINES', `VOICE_RX_LINES')dnl
++include(`audioreach/subgraph-stream-voice-hostless.m4')
++define(`VOICE_DAI_ID', VOICE_TX_DAI_ID)dnl
++define(`NAME_PREFIX', `stream'VOICE_TX_DAI_ID)dnl
++define(`VOICE_FE_STREAM', `VoiceMMode1 Capture')dnl
++define(`VOICE_PCM_DIR', `capture')dnl
++define(`VOICE_SG_IID', VOICE_TX_SG_IID)dnl
++define(`VOICE_CONT_IID', VOICE_TX_CONT_IID)dnl
++define(`VOICE_CONT_CAP', VOICE_TX_CONT_CAP)dnl
++define(`VOICE_SG_DIRECTION', APM_SUB_GRAPH_DIRECTION_TX)dnl
++define(`VOICE_SG_MODULES', `VOICE_TX_MODULES')dnl
++define(`VOICE_SG_LINES', `VOICE_TX_LINES')dnl
++define(`VOICE_TX_DEVICES', ``"TX_CODEC_DMA_TX_3"'')dnl
++include(`audioreach/subgraph-stream-voice-hostless.m4')
++
++STREAM_DEVICE_PLAYBACK_MIXER(SENARY_MI2S_RX, ``SEN_MI2S_RX'', ``MultiMedia1'', ``VoiceMMode1'')
++STREAM_DEVICE_PLAYBACK_ROUTE(SENARY_MI2S_RX, ``SEN_MI2S_RX Audio Mixer'', ``MultiMedia1, stream0.logger1'', VOICE_RX_ROUTE)
++')dnl
+diff --git a/audioreach/module_generic.m4 b/audioreach/module_generic.m4
+new file mode 100644
+index 0000000..195b43a
+--- /dev/null
++++ b/audioreach/module_generic.m4
+@@ -0,0 +1,94 @@
++# Copyright, Paul Schuldesz, 2026
++# SPDX-License-Identifier: BSD-3-Clause
++include(`util/util.m4') dnl
++dnl Any AudioReach module by id, for graphs whose modules have no dedicated
++dnl macro (e.g. voice-call modules mined from a device ACDB). The kernel
++dnl loads "buffer" widgets (and aif_in/aif_out FE endpoints) generically and
++dnl sends an optional SND_SOC_AR_TPLG_MODULE_CFG_TYPE blob as APM SET_CFG
++dnl before graph prepare (kernel patch "audioreach: send topology module
++dnl config for any module").
++dnl
++dnl AR_MODULE_GENERIC(name, sgidx, container-idx, iid, module-id,
++dnl                   max-ip-ports, max-op-ports, src-port, dst-port, dst-iid,
++dnl                   widget-type, stream-name, cfg-data-name)
++dnl   widget-type: buffer | aif_in | aif_out (aif_* = the FE endpoint; then
++dnl                stream-name is the FE stream, e.g. "VoiceMMode1 Playback")
++dnl   cfg-data-name: name of a SectionData holding the blob, or empty
++define(`AR_MODULE_GENERIC',
++`'
++`SectionVendorTuples."NAME_PREFIX.$1_tuples" {'
++`        tokens "audioreach_tokens"'
++`'
++`        tuples."word.u32_data" {'
++`                AR_TKN_U32_MODULE_INSTANCE_ID STR($4)'
++`                AR_TKN_U32_MODULE_ID STR($5)'
++`                AR_TKN_U32_MODULE_MAX_IP_PORTS STR($6)'
++`                AR_TKN_U32_MODULE_MAX_OP_PORTS STR($7)'
++`                AR_TKN_U32_MODULE_SRC_OP_PORT_ID STR($8)'
++`                AR_TKN_U32_MODULE_DST_IN_PORT_ID STR($9)'
++`                AR_TKN_U32_MODULE_SRC_INSTANCE_ID STR($4)'
++`                AR_TKN_U32_MODULE_DST_INSTANCE_ID STR($10)'
++`        }'
++`}'
++`'
++`SectionData."NAME_PREFIX.$1_data" {'
++`        tuples "NAME_PREFIX.$1_tuples"'
++`}'
++`'
++`SectionWidget."NAME_PREFIX.$1" {'
++`        index STR($2)'
++`        type STR($11)'
++`ifelse(`$12', `', `', `        stream_name "$12"')'
++`        no_pm "true"'
++`        subseq "10"'
++`        data ['
++`                "NAME_PREFIX.sub_graph$2_data"'
++`                "NAME_PREFIX.container$3_data"'
++`                "NAME_PREFIX.$1_data"'
++`ifelse(`$13', `', `', `                "$13"')'
++`        ]'
++`}') dnl
++dnl
++dnl AR_MODULE_CFG_WORDS(data-name, w0, w1, ...): a module config blob.
++dnl The words are one or more APM param entries
++dnl   (module_instance_id, param_id, param_size, error_code=0, payload...),
++dnl each 8-byte aligned. The vendor-array style header (size in bytes incl.
++dnl the 16-byte header, type SND_SOC_AR_TPLG_MODULE_CFG_TYPE, 2 reserved)
++dnl is added here.
++dnl alsatplg wants every word in hex.
++define(`_ar_hex', `0x`'eval(`$1', 16)') dnl
++define(`_ar_hexlist', `ifelse(`$#', `1', `_ar_hex(`$1')', `_ar_hex(`$1')`,'_ar_hexlist(shift($@))')') dnl
++define(`AR_MODULE_CFG_WORDS',
++`'
++`SectionData."$1" {'
++`        words "_ar_hexlist(eval(4 * ($# - 1) + 16),0x01001006,0,0,shift($@))"'
++`}') dnl
++dnl
++dnl VCPM (voice call processing manager, static instance 4) parameters.
++define(`VCPM_MODULE_INSTANCE_ID', `0x4') dnl
++define(`VCPM_PARAM_ID_VOICE_CONFIG', `0x08001162') dnl
++define(`VCPM_PARAM_ID_VSID', `0x080011BC') dnl
++define(`VCPM_PROPERTY_ID_TAG_INFO', `0x080011B2') dnl
++define(`VOICE_MOD_TAG_ID_ENCODER', `0x08001177') dnl
++define(`VOICE_MOD_TAG_ID_TX_MAILBOX', `0x08001178') dnl
++define(`VOICE_MOD_TAG_ID_TX_STREAM_HPCM', `0x08001179') dnl
++define(`VOICE_MOD_TAG_ID_DECODER', `0x0800117B') dnl
++define(`VOICE_MOD_TAG_ID_RX_MAILBOX', `0x0800117C') dnl
++define(`VOICE_MOD_TAG_ID_RX_STREAM_HPCM', `0x0800117D') dnl
++define(`VOICE_MOD_TAG_ID_STREAM_RX_SOFT_VOL', `0x08001518') dnl
++define(`VOICE_MOD_TAG_ID_STREAM_TX_SOFT_VOL', `0x08001519') dnl
++define(`VSID_VOICE1', `0x11C05000') dnl
++dnl
++dnl _vcpm_count(tag, iid, tag, iid, ...) -> number of pairs
++define(`_vcpm_count', `ifelse(`$1', `', `0', `eval(1 + _vcpm_count(shift(shift($@))))')') dnl
++dnl
++dnl VCPM_VOICE_CONFIG_WORDS(sg-iid, tag1, miid1, tag2, miid2, ...):
++dnl words of VCPM_PARAM_ID_VOICE_CONFIG for one voice stream subgraph
++dnl (vcpm_param_voice_config_payload_t + one subgraph with one TAG_INFO
++dnl property listing which module instance has which voice role).
++dnl param_size = 4 (num_sub_graphs) + 8 (sg id, num props) + 8 (prop id,
++dnl size) + 4 (num_tag_info) + 8 per pair.
++define(`VCPM_VOICE_CONFIG_WORDS', `VCPM_MODULE_INSTANCE_ID,VCPM_PARAM_ID_VOICE_CONFIG,eval(24 + 8 * _vcpm_count(shift($@))),0,1,$1,1,VCPM_PROPERTY_ID_TAG_INFO,eval(4 + 8 * _vcpm_count(shift($@))),_vcpm_count(shift($@)),shift($@)') dnl
++dnl
++dnl VCPM_VSID_WORDS(vsid): VCPM_PARAM_ID_VSID (+4 bytes padding to 8)
++define(`VCPM_VSID_WORDS', `VCPM_MODULE_INSTANCE_ID,VCPM_PARAM_ID_VSID,4,0,$1,0') dnl
+diff --git a/audioreach/subgraph-stream-voice-hostless.m4 b/audioreach/subgraph-stream-voice-hostless.m4
+new file mode 100644
+index 0000000..5e59107
+--- /dev/null
++++ b/audioreach/subgraph-stream-voice-hostless.m4
+@@ -0,0 +1,96 @@
++# Copyright, Paul Schuldesz, 2026
++# SPDX-License-Identifier: BSD-3-Clause
++include(`audioreach/audioreach.m4') dnl
++include(`audioreach/subgraph.m4') dnl
++include(`audioreach/container.m4') dnl
++include(`audioreach/module_generic.m4') dnl
++dnl
++dnl Hostless voice-call stream subgraph (no shared-memory endpoint; needs the
++dnl kernel patch "q6apm-dai: support hostless front ends"). Used through
++dnl VOICE_SG_ADD in the board file. The module chain comes from a generated
++dnl description (see milos-voice-graph.m4.in): VOICE_SG_MODULES expands the
++dnl AR_MODULE_GENERIC calls; the FE endpoint module (first for RX, last for
++dnl TX) uses widget type aif_in/aif_out with stream name VOICE_FE_STREAM.
++dnl
++dnl  RX ("VoiceMMode1 Playback", modem -> device):
++dnl   [aif_in: RX mailbox/decoder ...] -> [... last] -> "<device> Audio Mixer"
++dnl  TX ("VoiceMMode1 Capture", device -> modem):
++dnl   "VoiceMMode1 Capture Mixer" -> [first ...] -> [aif_out: encoder/TX mailbox]
++
++define(`VOICE_PCM_SECTION',
++`'
++`SectionPCMCapabilities."VOICE_FE_STREAM" {'
++`        formats "S16_LE"'
++`        rate_min "8000"'
++`        rate_max "48000"'
++`        channels_min "1"'
++`        channels_max "2"'
++`}'
++`'
++`SectionPCM."VOICE_FE_STREAM" {'
++`        index STR(VOICE_DAI_ID)'
++`        id STR(VOICE_DAI_ID)'
++`        dai."VOICE_FE_STREAM" {'
++`                id STR(VOICE_DAI_ID)'
++`        }'
++`        pcm."VOICE_PCM_DIR" {'
++`                capabilities "VOICE_FE_STREAM"'
++`        }'
++`}') dnl
++
++VOICE_PCM_SECTION
++
++AR_SUBGRAPH(1, VOICE_DAI_ID, VOICE_SG_IID, APM_SG_PERF_MODE_LOW_LATENCY, VOICE_SG_DIRECTION, APM_SUB_GRAPH_SID_VOICE_CALL)
++
++AR_CONTAINER(1, VOICE_CONT_IID, VOICE_CONT_CAP, 8192, APM_CONT_GRAPH_POS_STREAM, APM_PROC_DOMAIN_ID_ADSP)
++
++VOICE_SG_MODULES
++
++dnl Routing control: playback -> a control "VoiceMMode1" in the device
++dnl mixer ("SEN_MI2S_RX Audio Mixer VoiceMMode1"); capture -> a mixer
++dnl widget "VoiceMMode1 Capture Mixer" whose controls are the device
++dnl subgraphs ("VoiceMMode1 Capture Mixer TX_CODEC_DMA_TX_3").
++ifelse(VOICE_PCM_DIR, `playback',
++`
++SectionControlMixer."VOICE_MIXER_NAME" {
++	reg "-1"
++	index STR(VOICE_DAI_ID)
++	max "1"
++	invert "false"
++	channel."fl" {
++		reg "-1"
++		max "1"
++	}
++	ops."ctl" {
++		get "SND_SOC_AR_TPLG_FE_BE_GRAPH_CTL_MIX"
++		put "SND_SOC_AR_TPLG_FE_BE_GRAPH_CTL_MIX"
++		info "1"
++	}
++	data [
++		"NAME_PREFIX.sub_graph1_data"
++	]
++}
++SectionGraph."NAME_PREFIX.voice Graph" {
++	index STR(VOICE_DAI_ID)
++	lines [
++		VOICE_SG_LINES
++	]
++}',
++`
++SectionWidget."VOICE_MIXER_NAME Capture Mixer" {
++	reg "-1"
++	index STR(VOICE_DAI_ID)
++	type "mixer"
++	mixer [
++		VOICE_TX_DEVICES
++	]
++	data [
++		"NAME_PREFIX.sub_graph1_data"
++	]
++}
++SectionGraph."NAME_PREFIX.voice Graph" {
++	index STR(VOICE_DAI_ID)
++	lines [
++		VOICE_SG_LINES
++	]
++}')
+-- 
+2.54.0
+
