@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- FP6 VPN reconnect at startup (fp6-vpn-restore, persistence module).
+     NetworkManager does not autoconnect VPN profiles; the agent restores them.
+     Lines are "uuid<TAB>..." (no ai/ax types: Settings QML edits these). -->
+<schemalist>
+  <schema id="com.fairphone6.vpn" path="/com/fairphone6/vpn/">
+    <key name="startup-modes" type="as">
+      <default>[]</default>
+      <summary>Per VPN: what happens after a restart ("uuid\tmode")</summary>
+      <description>mode: restore (reconnect if it was on; also the default for VPNs not listed), always (connect at startup and reconnect when it drops, Android "Always-on VPN"), never (stay off). Written by Settings > VPN.</description>
+    </key>
+    <key name="last-active" type="as">
+      <default>[]</default>
+      <summary>UUIDs of the VPNs the user last left on (written by fp6-vpn-restore)</summary>
+      <description>Added when a VPN connects, removed only when the user switches it off; drops for other reasons (no network, shutdown) keep it.</description>
+    </key>
+    <key name="connections" type="as">
+      <default>[]</default>
+      <summary>NetworkManager VPN profiles for Settings ("uuid\tname\tstate"; written by fp6-vpn-restore)</summary>
+      <description>state: on, connecting, waiting (will be reconnected once a network is up), off.</description>
+    </key>
+  </schema>
+</schemalist>

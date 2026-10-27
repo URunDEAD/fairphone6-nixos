@@ -38,6 +38,10 @@ let
       # rewrite the running boot partition with a backup, no automatic rollback.
       # results/feature-push-20261024/ota/README.md
       ({ ... }: { imports = [ ./ota/ota-fp6.nix ]; hardware.fairphone6.ota.enable = true; hardware.fairphone6.ota.allowSlotSwitch = false; })
+      # State across reboots: VPNs reconnect at startup (Settings > VPN >
+      # Reconnect at startup: restore last state / always on / off).
+      # results/feature-push-20261024/persistence/README.md
+      ({ ... }: { imports = [ ./persistence/persistence-fp6.nix ]; hardware.fairphone6.persistence.enable = true; })
       ({ config, lib, ... }: let
       kernel = config.mobile.boot.stage-1.kernel.package;
     in {

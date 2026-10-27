@@ -60,6 +60,8 @@ in {
         id = cfg.connectionName;
         uuid = "6e3c1f0a-9b7d-4c55-8f0e-0b1d5e7a4b21";
         type = "vpn";
+        # NM never autoconnects VPN profiles anyway; reconnecting after a
+        # restart is fp6-vpn-restore's job (persistence/persistence-fp6.nix).
         autoconnect = "false";
       };
       vpn = {

@@ -1,0 +1,14 @@
+--- a/PageComponent.qml
++++ b/PageComponent.qml
+@@ -83,6 +83,11 @@
+                     onClicked: Connectivity.vpnConnections.add(VpnConnection.OPENVPN)
+                 }
+             }
++
++            // FP6: reconnect VPNs after a restart (fp6-vpn-restore).
++            Fp6VpnStartup {
++                anchors { left: parent.left; right: parent.right }
++            }
+         }
+     }
+ 
