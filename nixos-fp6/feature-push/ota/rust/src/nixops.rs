@@ -46,26 +46,45 @@ pub fn present(cfg: &Config, store_path: &str) -> bool {
     fs::symlink_metadata(local_path(cfg, store_path)).is_ok()
 }
 
-/// `nix copy --from <cache> paths...` into the local store (or --to the dry
-/// run's store), with signatures checked against `trusted-public-keys`
-/// (only the release key when one is configured). The child is returned
-/// so the caller can watch progress and cancel.
-pub fn copy_from(cfg: &Config, cache: &str, paths: &[String]) -> Result<Child, String> {
-    let mut a = nix_args(cfg);
-    a.push("copy".into());
-    a.extend(["--from".into(), cache.into()]);
-    if let Some(s) = &cfg.nix_store {
-        a.extend(["--to".into(), s.clone()]);
+/// The sibling `nix-store` of the configured `nix` binary.
+fn nix_store_bin(cfg: &Config) -> String {
+    match cfg.nix.rsplit_once('/') {
+        Some((dir, _)) => format!("{dir}/nix-store"),
+        None => "nix-store".into(),
     }
+}
+
+/// Downloads `paths` (and their closure) by substitution from the update
+/// cache only: `nix-store --realise` with `substituters = <cache>`,
+/// `trusted-public-keys = <release key>` and `max-jobs = 0` (nothing can be
+/// built; a path the cache lacks fails). Through the Nix daemon on the
+/// phone (root is a trusted user, so these per-call settings apply; the
+/// daemon's own nix.conf also trusts the release key). Substitution
+/// fetches in parallel and resumes per path (the real 2450-path, 5.2 GB
+/// closure: 52 s from the laptop cache). The child is returned so the
+/// caller can watch progress and cancel; its stderr MUST be drained (one
+/// line per path: an unread pipe blocks the child, see drain_stderr).
+pub fn copy_from(cfg: &Config, cache: &str, paths: &[String]) -> Result<Child, String> {
+    let mut a: Vec<String> = store_args(cfg);
+    a.push("--realise".into());
+    a.extend(paths.iter().cloned());
+    a.extend(["--option".into(), "substituters".into(), cache.into()]);
     if !cfg.nix_public_key.is_empty() {
         a.extend(["--option".into(), "trusted-public-keys".into(), cfg.nix_public_key.clone()]);
     }
+    a.extend(["--option".into(), "max-jobs".into(), "0".into()]);
     a.extend(["--option".into(), "narinfo-cache-negative-ttl".into(), "0".into()]);
-    a.extend(paths.iter().cloned());
-    util::log(format!("fp6-updated: {} {}", cfg.nix, a.join(" ")));
-    Command::new(&cfg.nix).args(&a).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped())
-        .env("NIX_REMOTE", if cfg.nix_store.is_some() { "" } else { "daemon" })
-        .spawn().map_err(|e| format!("{}: {e}", cfg.nix))
+    a.extend(["--option".into(), "narinfo-cache-positive-ttl".into(), "0".into()]);
+    a.extend(["--option".into(), "connect-timeout".into(), "20".into()]);
+    a.push("--no-gc-warning".into());
+    let bin = nix_store_bin(cfg);
+    util::log(format!("fp6-updated: {bin} {}", a.join(" ")));
+    let mut c = Command::new(&bin);
+    c.args(&a).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
+    if cfg.nix_store.is_none() {
+        c.env("NIX_REMOTE", "daemon");
+    }
+    c.spawn().map_err(|e| format!("{bin}: {e}"))
 }
 
 /// All of `paths` are valid in the local store.
@@ -103,4 +122,24 @@ pub fn drop_gcroot(cfg: &Config, name: &str) {
 
 pub fn exists(p: &Path) -> bool {
     fs::symlink_metadata(p).is_ok()
+}
+
+/// Reads the child's stderr on a thread so it never blocks on a full pipe
+/// (nix prints one line per copied path); keeps the last 20 lines.
+pub fn drain_stderr(child: &mut Child) -> std::sync::Arc<std::sync::Mutex<Vec<String>>> {
+    use std::io::BufRead;
+    let tail = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    if let Some(e) = child.stderr.take() {
+        let t = tail.clone();
+        std::thread::spawn(move || {
+            for line in std::io::BufReader::new(e).lines().map_while(Result::ok) {
+                let mut v = t.lock().unwrap();
+                v.push(line);
+                if v.len() > 20 {
+                    v.remove(0);
+                }
+            }
+        });
+    }
+    tail
 }

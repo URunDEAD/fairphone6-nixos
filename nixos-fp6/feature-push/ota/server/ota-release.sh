@@ -11,6 +11,8 @@
 #   --no-bump            publish the tree's release counter as it is (e.g. a first baseline)
 #   --commit-bump        commit ota/release.nix after a successful publish (path-only)
 #   --dry-run            show what would happen; build and publish nothing
+#   --allow-dirty        build even with uncommitted changes under nixos-fp6/ or
+#                        kernel-build/ (the release would then contain them)
 #
 # Steps:
 #  1. Pick the release number: max(tree counter, published release) + 1 (or
@@ -35,6 +37,7 @@ kernel_notes=""
 bump=1
 commit=0
 dry=0
+dirty_ok=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --target) target=$(realpath "$2"); shift 2 ;;
@@ -45,6 +48,7 @@ while [ $# -gt 0 ]; do
     --no-bump) bump=0; shift ;;
     --commit-bump) commit=1; shift ;;
     --dry-run) dry=1; shift ;;
+    --allow-dirty) dirty_ok=1; shift ;;
     *) echo "unknown option $1" >&2; exit 2 ;;
   esac
 done
@@ -70,6 +74,13 @@ for f in manifest.key nix-cache.secret nix-cache.pub; do
 done
 [ -d "$root" ] && [ -w "$root" ] || { echo "$root must exist and be writable by $(id -un) (see ota/server/fp6-ota-server.nix)" >&2; exit 1; }
 
+dirty=$(git -C "$repo" status --porcelain --untracked-files=no -- nixos-fp6 kernel-build | grep -vE ' nixos-fp6/feature-push/ota/(release\.nix|server/|test/)' || true)
+if [ -n "$dirty" ] && [ $dirty_ok = 0 ]; then
+  echo "uncommitted changes would end up in the release (shared tree):" >&2
+  printf '%s\n' "$dirty" >&2
+  echo "commit or stash them, or pass --allow-dirty" >&2
+  exit 1
+fi
 say "release $new on channel $channel (tree $tree_rel, published $pub_rel), target $(basename "$target")"
 if [ $dry = 1 ]; then
   echo "dry run: would set release = $new, build, copy, publish into $root"
@@ -90,7 +101,12 @@ echo "toplevel   $top"
 echo "boot image $img"
 
 say "copy the closure to this machine"
-"$repo/.macmini-builder/copy-from-builder" "$top" "$img"
+# nix copy resumes per path: retry a dropped builder tunnel a few times.
+for try in 1 2 3; do
+  if "$repo/.macmini-builder/copy-from-builder" "$top" "$img"; then break; fi
+  [ $try = 3 ] && { echo "copy failed 3 times" >&2; false; }
+  echo "copy failed (attempt $try), retrying in 20 s" >&2; sleep 20
+done
 got=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["release"])' "$top/etc/fp6-release")
 [ "$got" = "$new" ] || { echo "built system says release $got, expected $new" >&2; false; }
 
@@ -100,7 +116,7 @@ rel=$(nix-build --no-out-link -E "(import (import $repo/nixos-fp6/upstream/mobil
 if [ -z "$changelog_file" ]; then
   changelog_file=$(mktemp)
   since=""
-  [ -f "$root/channels/$channel/releases/$pub_rel/git-commit" ] && since=$(cat "$root/channels/$channel/releases/$pub_rel/git-commit")
+  [ -f "$root/channels/$channel/releases/$pub_rel/git-commit" ] && since=$(head -1 "$root/channels/$channel/releases/$pub_rel/git-commit")
   if [ -n "$since" ] && git -C "$repo" cat-file -e "$since" 2>/dev/null; then
     git -C "$repo" log --no-merges --format='- %s' "$since..HEAD" -- nixos-fp6 kernel-build > "$changelog_file"
   else
@@ -113,7 +129,7 @@ say "publish"
 "$rel" publish --root "$root" --channel "$channel" --toplevel "$top" --boot-image "$img" --keys "$keys" \
   --changelog-file "$changelog_file" ${kernel_notes:+--kernel-notes "$kernel_notes"}
 published=1
-git -C "$repo" rev-parse HEAD > "$root/channels/$channel/releases/$new/git-commit"
+{ git -C "$repo" rev-parse HEAD; [ -z "$dirty" ] || printf 'dirty:\n%s\n' "$dirty"; } > "$root/channels/$channel/releases/$new/git-commit"
 "$rel" verify --root "$root" --channel "$channel" --pubkey "$keys/manifest.pub"
 trap - ERR INT TERM
 

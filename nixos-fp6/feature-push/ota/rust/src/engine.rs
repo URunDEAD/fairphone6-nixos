@@ -231,6 +231,7 @@ impl Engine {
         let count = |e: &Engine| sizes.iter().filter(|s| nixops::present(&e.cfg, &s.0)).map(|s| s.1).sum::<u64>();
         self.progress("downloading", count(self), total);
         let mut child = nixops::copy_from(&self.cfg, &a.cache_url, &want)?;
+        let tail = nixops::drain_stderr(&mut child);
         self.child.store(child.id(), Ordering::SeqCst);
         let mut last_policy = Instant::now();
         let status = loop {
@@ -255,13 +256,9 @@ impl Engine {
         };
         self.child.store(0, Ordering::SeqCst);
         if !status.success() {
-            let mut err = String::new();
-            if let Some(mut e) = child.stderr.take() {
-                use std::io::Read;
-                let _ = e.read_to_string(&mut err);
-            }
-            let last = err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string();
-            return Err(format!("Download failed: {last}"));
+            std::thread::sleep(Duration::from_millis(200));
+            let last = tail.lock().unwrap().iter().rev().find(|l| !l.trim().is_empty()).cloned().unwrap_or_default();
+            return Err(format!("Download failed: {}", last.trim()));
         }
         self.progress("verifying", total, total);
         nixops::valid(&self.cfg, &want)?;

@@ -45,6 +45,9 @@ def check(cond, msg):
 
 
 def sh(*a, ok=True, env=None):
+    # nix commands use the run's own cache dir (narinfo caches are per URL;
+    # ports repeat between runs)
+    env = env or dict(os.environ, XDG_CACHE_HOME=f"{T}/xdg-cache")
     r = subprocess.run(list(a), capture_output=True, text=True, env=env)
     log.write(f"$ {' '.join(a)}\n{r.stdout}{r.stderr}\n")
     log.flush()
@@ -383,6 +386,11 @@ try:
     r = sh("nix", "--extra-experimental-features", "nix-command", "copy", "--from", f"http://127.0.0.1:{port2}/cache", "--to", f"{T}/other-store2",
            "--option", "trusted-public-keys", nix_pub, systems[2][0], ok=False)
     check(r.returncode != 0 and "signature" in r.stderr.lower(), "nix copy --from http:// with stripped signatures fails")
+    # the daemon's own download command (substitution, max-jobs 0) against the same cache
+    r = sh("nix-store", "--store", f"{T}/other-store4", "--realise", systems[2][0], "--option", "substituters", f"http://127.0.0.1:{port2}/cache",
+           "--option", "trusted-public-keys", nix_pub, "--option", "max-jobs", "0", ok=False)
+    check(r.returncode != 0 and not os.path.exists(f"{T}/other-store4{systems[2][0]}"),
+          "substitution from the stripped-signature cache fetches nothing")
     r = sh("nix", "--extra-experimental-features", "nix-command", "copy", "--from", f"http://127.0.0.1:{port}/cache", "--to", f"{T}/other-store3",
            "--option", "trusted-public-keys", nix_pub, systems[2][0], ok=False)
     check(r.returncode == 0, "nix copy --from http:// of the signed cache works with only the release key trusted")
