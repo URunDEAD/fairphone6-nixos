@@ -34,6 +34,10 @@ let
       # White-box text test (2026-10-27): GPU preemption off via msm.enable_preemption=0.
       # results/feature-push-20261024 white-boxes notes; the Mesa CCHE backport stays off.
       ({ ... }: { imports = [ ./white-boxes/white-boxes-fp6.nix ]; hardware.fairphone6.whiteBoxes.gpuPreemptionOff = true; })
+      # OTA updates (Settings > System update). Slot switching OFF: installs
+      # rewrite the running boot partition with a backup, no automatic rollback.
+      # results/feature-push-20261024/ota/README.md
+      ({ ... }: { imports = [ ./ota/ota-fp6.nix ]; hardware.fairphone6.ota.enable = true; hardware.fairphone6.ota.allowSlotSwitch = false; })
       ({ config, lib, ... }: let
       kernel = config.mobile.boot.stage-1.kernel.package;
     in {
