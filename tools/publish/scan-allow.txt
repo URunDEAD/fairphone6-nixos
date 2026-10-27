@@ -71,3 +71,12 @@ optional (string|bool) (hidden_)?ssid = [0-9]
 WPA_PSK = 2;
 # webshare synthetic preview/test address
 192\.168\.77\.1
+# bugreport redaction tests: sequential dummy numbers, test-network IMSI, synthetic values
+"(\+40 |0|\+40 \(0\) |0040 )712[ -]345[ -]678"
+001019876543210
+89999012345678901234
+12\.345600, 65\.432100
+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+phone=\+999 123 456 789
+contact=\+999 123 456 789\\npassword=synthetic-secret
+person@example\.invalid
