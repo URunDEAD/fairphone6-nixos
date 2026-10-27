@@ -31,6 +31,9 @@ let
       # apps: xdg-desktop-portal FileChooser backend.
       # results/feature-push-20261024/file-picker/README.md
       ({ ... }: { imports = [ ./file-picker/file-picker-fp6.nix ]; hardware.fairphone6.filePickerPortal.enable = true; })
+      # White-box text test (2026-10-27): GPU preemption off via msm.enable_preemption=0.
+      # results/feature-push-20261024 white-boxes notes; the Mesa CCHE backport stays off.
+      ({ ... }: { imports = [ ./white-boxes/white-boxes-fp6.nix ]; hardware.fairphone6.whiteBoxes.gpuPreemptionOff = true; })
       ({ config, lib, ... }: let
       kernel = config.mobile.boot.stage-1.kernel.package;
     in {
