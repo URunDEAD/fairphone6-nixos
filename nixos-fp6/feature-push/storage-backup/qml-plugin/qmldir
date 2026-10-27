@@ -1,0 +1,3 @@
+module Fp6.StorageBackup
+plugin fp6storagebackupplugin
+AgentModel 1.0 AgentModel.qml

@@ -1,0 +1,27 @@
+{
+    "icon": "drive-harddisk-symbolic",
+    "name": "Storage",
+    "translations": "lomiri-system-settings",
+    "category": "system",
+    "priority": 9,
+    "form-factors": [
+        "phone",
+        "tablet"
+    ],
+    "keywords": [
+        "storage",
+        "space",
+        "disk",
+        "free",
+        "full",
+        "cache",
+        "clean",
+        "garbage",
+        "generations",
+        "journal",
+        "logs"
+    ],
+    "has-dynamic-keywords": false,
+    "has-dynamic-visibility": false,
+    "page-component": "PageComponent.qml"
+}

@@ -1,0 +1,26 @@
+{
+    "icon": "save",
+    "name": "Backup",
+    "translations": "lomiri-system-settings",
+    "category": "system",
+    "priority": 10,
+    "form-factors": [
+        "phone",
+        "tablet"
+    ],
+    "keywords": [
+        "backup",
+        "restore",
+        "export",
+        "import",
+        "encrypt",
+        "contacts",
+        "messages",
+        "photos",
+        "settings",
+        "wifi"
+    ],
+    "has-dynamic-keywords": false,
+    "has-dynamic-visibility": false,
+    "page-component": "PageComponent.qml"
+}

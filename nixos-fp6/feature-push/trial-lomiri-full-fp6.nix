@@ -57,6 +57,11 @@ let
       ({ ... }: { imports = [ ./notifications/notifications-fp6.nix ]; hardware.fairphone6.notifications.enable = true; })
       ({ ... }: { imports = [ ./privacy-lock/privacy-lock-fp6.nix ]; hardware.fairphone6.privacyLock.enable = true; })
       ({ ... }: { imports = [ ./usb-drive/usb-drive-fp6.nix ]; hardware.fairphone6.usbDrive.enable = true; })
+      # Settings > Storage (cache/generation/garbage/journal cleanup) and
+      # Settings > Backup (age-encrypted, verified; daily timer off).
+      # Nothing runs or is deleted until confirmed on a page.
+      # results/feature-push-20261024/storage-backup/README.md
+      ({ ... }: { imports = [ ./storage-backup/storage-backup-fp6.nix ]; hardware.fairphone6.storageBackup.enable = true; })
       ({ lib, options, ... }: {
         # fp6-lomiri-powerd replaces the manual-only brightness bridge.
         # lomiri-gpu-fp6.nix restates it at mkOverride 10.
