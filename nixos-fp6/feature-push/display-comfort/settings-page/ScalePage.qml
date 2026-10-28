@@ -2,7 +2,8 @@
  * Display Comfort > Text and display size: interface scale (the shell's grid
  * unit; Mir output scale = GU / 8, next login) and text size (live in the
  * shell and Lomiri apps through the font-scale UITK, GTK live, other Qt apps
- * at the next login), with presets and a preview that follows the slider.
+ * at the next login), bold text (UITK default weight, next login), with
+ * presets and a preview that follows the slider and the bold switch.
  * SPDX-License-Identifier: GPL-3.0-only
  */
 import QtQuick 2.12
@@ -42,6 +43,9 @@ ItemPage {
     readonly property bool sizePending: gs.interfaceScale !== gs.sessionInterfaceScale
     // Point-sized Qt fonts (QT_WAYLAND_FORCE_DPI) are fixed at login.
     readonly property bool fontPending: gs.fontScale !== gs.sessionFontScale
+    // Bold text: UITK default weight Light -> Normal, fixed at login.
+    readonly property bool boldPending: gs.boldText !== gs.sessionBoldText
+    readonly property int previewWeight: gs.boldText ? Font.Normal : Font.Light
 
     Flickable {
         id: flick
@@ -83,8 +87,8 @@ ItemPage {
                             Rectangle { width: units.gu(5); height: width; radius: width / 4; color: LomiriColors.orange }
                             Column {
                                 anchors.verticalCenter: parent.verticalCenter
-                                Label { text: i18n.tr("Messages"); font.pixelSize: FontUtils.sizeToPixels("medium") * page.fontRatio }
-                                Label { text: i18n.tr("3 new messages"); font.pixelSize: FontUtils.sizeToPixels("small") * page.fontRatio; color: theme.palette.normal.backgroundSecondaryText }
+                                Label { text: i18n.tr("Messages"); font.pixelSize: FontUtils.sizeToPixels("medium") * page.fontRatio; font.weight: page.previewWeight }
+                                Label { text: i18n.tr("3 new messages"); font.pixelSize: FontUtils.sizeToPixels("small") * page.fontRatio; font.weight: page.previewWeight; color: theme.palette.normal.backgroundSecondaryText }
                             }
                         }
                         Label {
@@ -94,13 +98,14 @@ ItemPage {
                             elide: Text.ElideRight
                             text: i18n.tr("The quick brown fox jumps over the lazy dog.")
                             font.pixelSize: FontUtils.sizeToPixels("medium") * page.fontRatio
+                            font.weight: page.previewWeight
                         }
                         Rectangle {
                             width: Math.max(units.gu(14), previewButtonLabel.width + units.gu(4))
                             height: Math.max(units.gu(4), previewButtonLabel.height + units.gu(1.5))
                             radius: units.gu(0.7)
                             color: theme.palette.normal.positive
-                            Label { id: previewButtonLabel; anchors.centerIn: parent; text: i18n.tr("Button"); color: "white"; font.pixelSize: FontUtils.sizeToPixels("medium") * page.fontRatio }
+                            Label { id: previewButtonLabel; anchors.centerIn: parent; text: i18n.tr("Button"); color: "white"; font.pixelSize: FontUtils.sizeToPixels("medium") * page.fontRatio; font.weight: page.previewWeight }
                         }
                     }
                 }
@@ -170,9 +175,24 @@ ItemPage {
             }
 
             ListItem.ThinDivider {}
+            SettingSwitch {
+                objectName: "boldText"
+                text: i18n.tr("Bold text")
+                settings: gs
+                key: "boldText"
+            }
+            Note {
+                objectName: "boldNote"
+                font.weight: page.boldPending ? Font.Medium : Qt.application.font.weight
+                text: page.boldPending
+                    ? i18n.tr("Bold text takes effect the next time you log in (Log Out in the power menu, or restart the phone). The preview above shows it already.")
+                    : i18n.tr("Heavier text in the shell and Lomiri apps, at the next login. Text that an app already draws bold or in a fixed weight stays as it is.")
+            }
+
+            ListItem.ThinDivider {}
             Note {
                 objectName: "pendingNote"
-                font.weight: (page.sizePending || page.fontPending) ? Font.Medium : Font.Normal
+                font.weight: (page.sizePending || page.fontPending) ? Font.Medium : Qt.application.font.weight
                 text: page.sizePending
                     ? i18n.tr("The display size takes effect the next time you log in (Log Out in the power menu, or restart the phone).")
                     : page.fontPending
@@ -182,9 +202,9 @@ ItemPage {
             Button {
                 objectName: "resetScale"
                 anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
-                visible: gs.interfaceScale !== 24 || gs.fontScale !== 100
+                visible: gs.interfaceScale !== 24 || gs.fontScale !== 100 || gs.boldText
                 text: i18n.tr("Reset to default")
-                onClicked: { gs.interfaceScale = 24; gs.fontScale = 100 }
+                onClicked: { gs.interfaceScale = 24; gs.fontScale = 100; gs.boldText = false }
             }
         }
     }

@@ -82,7 +82,9 @@ ItemPage {
                 onClicked: pageStack.addPageToNextColumn(root, Qt.resolvedUrl("ScalePage.qml"))
             }
             Note {
-                text: i18n.tr("Display %1 %, text %2 %").arg(Math.round(gs.interfaceScale * 100 / 24)).arg(gs.fontScale)
+                text: gs.boldText
+                    ? i18n.tr("Display %1 %, text %2 %, bold").arg(Math.round(gs.interfaceScale * 100 / 24)).arg(gs.fontScale)
+                    : i18n.tr("Display %1 %, text %2 %").arg(Math.round(gs.interfaceScale * 100 / 24)).arg(gs.fontScale)
             }
         }
     }
