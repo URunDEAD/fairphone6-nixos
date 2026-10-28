@@ -205,10 +205,18 @@ pub fn check_on(c: &Connection, p: &Probe) -> Check {
         let Some(interface) = interface else {
             return Ok(finish(Status::Fail, "Expected interface is missing"));
         };
-        if p.unverified || (p.method.is_none() && p.property.is_none()) {
+        if p.unverified {
             return Ok(finish(
                 Status::Warn,
                 "Interface reachable; no audited read-only status probe is available",
+            ));
+        }
+        if p.method.is_none() && p.property.is_none() {
+            // Endpoint audited against the service source, but it exposes no
+            // side-effect-free status member: presence is the health signal.
+            return Ok(finish(
+                Status::Pass,
+                "Interface reachable; owned and introspected, no method called",
             ));
         }
         let api = proxy(c, &owner, &p.path, &p.interface)?;

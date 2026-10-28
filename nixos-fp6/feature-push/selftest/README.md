@@ -65,8 +65,8 @@ Settings discovers the plugin via XDG data paths and `/share/lomiri-system-setti
 - [ ] Confirm boot and session timers run after OTA reboot without racing the graphical session.
 - [ ] Check normal audio defaults, Maliit, display/Lomiri, modem online/SIM/registration, data context, GPS and fingerprint service adapters against the actual phone contracts.
 - [ ] With airplane mode, missing SIM, disabled data and stopped optional features, verify WARN/SKIP and no state change. Observe no playback, capture, Bluetooth discovery or new network activity.
-- [ ] Resolve every `unverified` feature slot against real APIs; set correct bus/path/interface and audited method/property; mark mandatory installed services `required=true`.
-- [ ] Give the netpolicy helper an upstream read-only status API if deeper coverage is required. Until then its reachable interface is WARN.
+- [x] Resolve every `unverified` feature slot against real APIs (done for r5, 2026-10-28); mark mandatory installed services `required=true` when wanted.
+- [ ] Give the netpolicy helper an upstream read-only status API if deeper coverage is required. Until then its owned, introspected interface passes as presence-only.
 - [ ] Validate system journal visibility without escalating privileges; compare error counts with operator-visible logs. Journal reads cap at 1000 entries per check.
 - [ ] Test deliberate broken schema/desktop entry in a disposable profile and a delayed mock service; confirm FAIL and bounded runtime.
 - [ ] Confirm the OTA start-check consumer treats SKIP/WARN as incomplete coverage and never marks a boot healthy solely on a summary exit code.

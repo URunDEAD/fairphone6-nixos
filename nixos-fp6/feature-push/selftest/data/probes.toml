@@ -95,56 +95,73 @@ interface = "org.freedesktop.Notifications"
 method = "GetServerInformation"
 shape = "server-information"
 
-# Integration slots: names/paths are candidates, NOT verified phone contracts.
-# Replace from actual service definitions before declaring required=true.
-# unverified=true never invokes a guessed method and reports WARN when owned.
+# Endpoints below were audited against the service sources and the r5 phone
+# (busctl list/introspect, 2026-10-28). Presence-only probes call nothing.
 [[probe]]
 id = "usb-modes"
+unit = "fp6-usbmoded.service"
 bus = "system"
-name = "com.fairphone6.UsbModes1"
-path = "/com/fairphone6/UsbModes1"
+name = "com.fairphone6.UsbModes"
+path = "/com/fairphone6/UsbModes"
 interface = "com.fairphone6.UsbModes1"
-unverified = true
+method = "GetStatus"
+shape = "json-object"
+fields = { version = "number", functions = "array", available = "object" }
 
+# Update1 only exposes the generic Call(ss) dispatcher: presence only.
 [[probe]]
 id = "ota"
+unit = "fp6-updated.service"
 bus = "system"
-name = "com.fairphone6.Update1"
-path = "/com/fairphone6/Update1"
+name = "com.fairphone6.Update"
+path = "/com/fairphone6/Update"
 interface = "com.fairphone6.Update1"
-unverified = true
 
 [[probe]]
 id = "dnd"
-name = "com.fairphone6.Notifications1"
-path = "/com/fairphone6/Notifications1"
-interface = "com.fairphone6.Notifications1"
-unverified = true
+unit = "fp6-notifyd.service"
+name = "com.fairphone6.Dnd"
+path = "/com/fairphone6/Dnd"
+interface = "com.fairphone6.Dnd"
+property = "Active"
+shape = "bool"
 
 [[probe]]
 id = "battery"
-name = "com.fairphone6.Battery1"
-path = "/com/fairphone6/Battery1"
-interface = "com.fairphone6.Battery1"
-unverified = true
+unit = "fp6-batteryd.service"
+bus = "system"
+name = "com.fairphone6.Battery"
+path = "/com/fairphone6/Battery"
+interface = "com.fairphone6.Battery"
+method = "GetStatus"
+shape = "json-object"
+fields = { level = "number", charging = "object", health = "object" }
 
+# Status is a snapshot (memory counters, per-app state); it changes nothing.
 [[probe]]
 id = "app-ready"
-name = "com.fairphone6.AppReady1"
-path = "/com/fairphone6/AppReady1"
-interface = "com.fairphone6.AppReady1"
-unverified = true
+unit = "fp6-app-ready.service"
+name = "com.fairphone6.AppReady"
+path = "/com/fairphone6/AppReady"
+interface = "com.fairphone6.AppReady"
+method = "Status"
+shape = "json-object"
+fields = { apps = "array", mem = "object" }
 
+# fp6-privacyd has no bus name; its indicator is the D-Bus face.
 [[probe]]
 id = "privacy"
-name = "com.fairphone6.Privacy1"
-path = "/com/fairphone6/Privacy1"
-interface = "com.fairphone6.Privacy1"
-unverified = true
+unit = "fp6-privacy-indicator.service"
+name = "com.lomiri.indicator.privacy"
+path = "/com/lomiri/indicator/privacy"
+interface = "org.gtk.Actions"
 
+# The user daemon fp6-gestures has no bus name; it drives the repowerd
+# (fp6-lomiri-powerd) Gestures interface on the system bus.
 [[probe]]
 id = "gestures"
-name = "com.fairphone6.Gestures1"
-path = "/com/fairphone6/Gestures1"
-interface = "com.fairphone6.Gestures1"
-unverified = true
+unit = "fp6-lomiri-powerd.service"
+bus = "system"
+name = "com.lomiri.Repowerd"
+path = "/com/fairphone6/Gestures"
+interface = "com.fairphone6.Gestures"
