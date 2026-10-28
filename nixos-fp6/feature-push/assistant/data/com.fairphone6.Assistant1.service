@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=com.fairphone6.Assistant1
+Exec=@out@/bin/fp6-assistantd
+SystemdService=fp6-assistant.service

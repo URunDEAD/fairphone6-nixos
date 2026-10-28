@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Name=Assistant
+Comment=Type or say what you want; the assistant does it with your apps
+Keywords=assistant;ai;llm;chat;springboard;ask;agent;
+Exec=fp6-assistant %u
+Icon=@ICON@
+Terminal=false
+X-Lomiri-Touch=true
+X-Lomiri-Single-Instance=true
+MimeType=x-scheme-handler/assistant;
+Actions=new-chat;
+
+[Desktop Action new-chat]
+Name=New chat
+Exec=fp6-assistant assistant:///
