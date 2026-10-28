@@ -1,0 +1,16 @@
+[package]
+name = "fp6-charging-feedback"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Charger plug/unplug detection and charging state (speed, time to full, charge limit) for the Lomiri charging animation and lock-screen line on the Fairphone 6"
+
+[dependencies]
+gio = "0.20"
+glib = "0.20"
+libc = "0.2"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true

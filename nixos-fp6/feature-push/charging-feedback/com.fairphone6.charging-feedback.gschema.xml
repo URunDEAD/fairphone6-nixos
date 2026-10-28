@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- FP6 charging feedback: what the phone does when a charger is connected.
+     Written by Settings > Battery > Charging feedback, read live by Lomiri
+     (qml/Components/Fp6ChargingFeedback.qml, qml/Greeter/Fp6ChargingStatus.qml).
+     b/i keys only. -->
+<schemalist>
+  <schema id="com.fairphone6.charging-feedback" path="/com/fairphone6/charging-feedback/">
+    <key name="animation" type="b">
+      <default>true</default>
+      <summary>Charging animation</summary>
+      <description>A short animation with the battery level, the charging speed and the time to full when a charger is connected. Full screen while locked, a small banner while using the phone.</description>
+    </key>
+    <key name="wake-screen" type="b">
+      <default>true</default>
+      <summary>Turn the screen on to show it</summary>
+      <description>With the display off, plugging in turns it on for a few seconds (off again if not touched). Not in a pocket, during a call, or while Do Not Disturb keeps the screen dark.</description>
+    </key>
+    <key name="sound" type="b">
+      <default>true</default>
+      <summary>Charging sound</summary>
+      <description>A short sound when a charger is connected or disconnected. Silent in silent mode and during Do Not Disturb.</description>
+    </key>
+    <key name="vibrate" type="b">
+      <default>true</default>
+      <summary>Vibrate on plug</summary>
+      <description>A short vibration when a charger is connected or disconnected (follows the system vibration setting; not during Do Not Disturb).</description>
+    </key>
+    <key name="lockscreen-info" type="b">
+      <default>true</default>
+      <summary>Show charging info on lock screen</summary>
+      <description>While a charger is connected, a line under the clock: charging speed, level and time to full, or why charging is paused.</description>
+    </key>
+    <key name="preview-request" type="i">
+      <default>0</default>
+      <summary>Internal: Settings' "Preview" button</summary>
+      <description>Bumped by the Settings page; Lomiri plays the charging animation once with the current readings.</description>
+    </key>
+  </schema>
+</schemalist>
