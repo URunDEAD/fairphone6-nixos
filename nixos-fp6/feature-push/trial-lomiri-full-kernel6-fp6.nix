@@ -103,6 +103,11 @@ let
       # is off (Settings > Edge Lighting, off by default); always-on display
       # research. results/feature-push-20261024/edge-flash/README.md
       ({ ... }: { imports = [ ./edge-flash/edge-flash-fp6.nix ]; hardware.fairphone6.edgeFlash.enable = true; })
+      # Inline replies for any app's notifications (freedesktop/KDE "inline-reply",
+      # NotificationReplied): Reply in the bubbles and the pulled-down panel, only
+      # after unlock; KDE Connect peer replies. Overlay lib.mkOrder 3700.
+      # nixos-fp6/feature-push/notifications/inline-reply/README.md
+      ({ ... }: { imports = [ ./notifications/inline-reply/inline-reply-fp6.nix ]; hardware.fairphone6.inlineReply.enable = true; })
       ({ config, lib, ... }: let
       kernel = config.mobile.boot.stage-1.kernel.package;
     in {
