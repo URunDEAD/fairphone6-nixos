@@ -1,0 +1,15 @@
+[package]
+name = "fp6-lock-sounds"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Prepares the FP6 lock/unlock sounds: decodes, trims and normalises them into short 16-bit WAV files that Lomiri preloads"
+publish = false
+
+[dependencies]
+symphonia = { version = "0.5", default-features = false, features = ["ogg", "vorbis", "mp3", "flac", "wav", "pcm", "adpcm", "aac", "isomp4"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
