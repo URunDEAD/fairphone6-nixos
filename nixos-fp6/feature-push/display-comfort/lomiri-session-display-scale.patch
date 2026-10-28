@@ -1,6 +1,6 @@
 --- a/lomiri-session.in
 +++ b/lomiri-session.in
-@@ -33,12 +33,33 @@
+@@ -33,12 +33,38 @@
      export GRID_UNIT_PX=$(device-info get GridUnit)
      export QTWEBKIT_DPR=$(device-info get WebkitDpr)
      export NATIVE_ORIENTATION=$(device-info get PrimaryOrientation)
@@ -12,6 +12,7 @@
 +    # (UITK_FONT_SCALE) and point-sized Qt fonts (QT_WAYLAND_FORCE_DPI).
 +    # Defaults (24, 100 %) give the previous 288 dpi / GRID_UNIT_PX=8.
 +    fp6_dc_font_pct=100
++    fp6_dc_bold=0
 +    fp6_dc_env="${XDG_CONFIG_HOME:-$HOME/.config}/fp6-display-comfort/session.env"
 +    if [ -r "$fp6_dc_env" ]; then
 +        while IFS='=' read -r fp6_dc_key fp6_dc_value || [ -n "$fp6_dc_key" ]; do
@@ -20,15 +21,19 @@
 +                    export GRID_UNIT_PX=$fp6_dc_value ;;
 +                FP6_FONT_SCALE_PERCENT=[89][0-9]|FP6_FONT_SCALE_PERCENT=1[0-4][0-9]|FP6_FONT_SCALE_PERCENT=150)
 +                    fp6_dc_font_pct=$fp6_dc_value ;;
++                FP6_BOLD_TEXT=1)
++                    fp6_dc_bold=1 ;;
 +            esac
 +        done < "$fp6_dc_env"
 +    fi
 +    fp6_dc_client_scale=$(( (GRID_UNIT_PX + 7) / 8 ))
 +    export QT_WAYLAND_FORCE_DPI=$((96 * fp6_dc_client_scale * fp6_dc_font_pct / 100))
 +    export UITK_FONT_SCALE=$((fp6_dc_font_pct / 100)).$(printf '%02d' $((fp6_dc_font_pct % 100)))
++    export UITK_FONT_BOLD=$fp6_dc_bold
  
      dbus-update-activation-environment --systemd QT_WAYLAND_FORCE_DPI=${QT_WAYLAND_FORCE_DPI}
 +    dbus-update-activation-environment --systemd UITK_FONT_SCALE=${UITK_FONT_SCALE}
++    dbus-update-activation-environment --systemd UITK_FONT_BOLD=${UITK_FONT_BOLD}
      # The compositor uses native pixels; Wayland apps already apply display DPR.
      # Publish logical grid units without changing this shell's physical grid.
 -    dbus-update-activation-environment --systemd GRID_UNIT_PX=$((GRID_UNIT_PX * 96 / QT_WAYLAND_FORCE_DPI))

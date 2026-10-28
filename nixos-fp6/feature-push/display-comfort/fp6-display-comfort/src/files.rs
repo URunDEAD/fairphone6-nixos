@@ -83,13 +83,14 @@ pub fn ini_get(text: &str, section: &str, key: &str) -> Option<String> {
 }
 
 /// Content of ~/.config/fp6-display-comfort/session.env.
-pub fn session_env(grid_unit_px: i32, font_percent: i32) -> String {
+pub fn session_env(grid_unit_px: i32, font_percent: i32, bold: bool) -> String {
     format!(
         "# Written by fp6-display-comfort (System Settings > Display Comfort).\n\
          # Read by lomiri-session at the next login.\n\
-         FP6_GRID_UNIT_PX={}\nFP6_FONT_SCALE_PERCENT={}\n",
+         FP6_GRID_UNIT_PX={}\nFP6_FONT_SCALE_PERCENT={}\nFP6_BOLD_TEXT={}\n",
         grid_unit_px.clamp(18, 32),
-        font_percent.clamp(80, 150)
+        font_percent.clamp(80, 150),
+        u8::from(bold)
     )
 }
 
@@ -100,18 +101,19 @@ pub fn uitk_font_scale(font_percent: i32) -> String {
 }
 
 /// (grid unit, font percent) from a session.env text, as lomiri-session reads it.
-pub fn parse_session_env(text: &str) -> (i32, i32) {
-    let (mut gu, mut pct) = (24, 100);
+pub fn parse_session_env(text: &str) -> (i32, i32, bool) {
+    let (mut gu, mut pct, mut bold) = (24, 100, false);
     for line in text.lines() {
         if let Some((k, v)) = line.split_once('=') {
             match (k, v.parse::<i32>()) {
                 ("FP6_GRID_UNIT_PX", Ok(n)) if (18..=32).contains(&n) => gu = n,
                 ("FP6_FONT_SCALE_PERCENT", Ok(n)) if (80..=150).contains(&n) => pct = n,
+                ("FP6_BOLD_TEXT", Ok(n)) if (0..=1).contains(&n) => bold = n == 1,
                 _ => {}
             }
         }
     }
-    (gu, pct)
+    (gu, pct, bold)
 }
 
 /// Writes `content` atomically if it differs. Returns true if written.
@@ -165,12 +167,15 @@ mod tests {
 
     #[test]
     fn session_file() {
-        let s = session_env(21, 115);
-        assert!(s.contains("\nFP6_GRID_UNIT_PX=21\n") && s.ends_with("FP6_FONT_SCALE_PERCENT=115\n"));
-        assert_eq!(parse_session_env(&s), (21, 115));
-        assert_eq!(parse_session_env("FP6_GRID_UNIT_PX=40\nFP6_FONT_SCALE_PERCENT=1;x\n"), (24, 100));
+        let s = session_env(21, 115, false);
+        assert!(s.contains("\nFP6_GRID_UNIT_PX=21\n") && s.ends_with("FP6_FONT_SCALE_PERCENT=115\nFP6_BOLD_TEXT=0\n"));
+        assert_eq!(parse_session_env(&s), (21, 115, false));
+        assert_eq!(parse_session_env(&session_env(24, 100, true)), (24, 100, true));
+        assert_eq!(parse_session_env("FP6_GRID_UNIT_PX=40\nFP6_FONT_SCALE_PERCENT=1;x\nFP6_BOLD_TEXT=2\n"), (24, 100, false));
+        // Files from before bold text: off.
+        assert_eq!(parse_session_env("FP6_GRID_UNIT_PX=21\nFP6_FONT_SCALE_PERCENT=115\n"), (21, 115, false));
         assert_eq!(uitk_font_scale(115), "115\n");
         assert_eq!(uitk_font_scale(400), "150\n");
-        assert!(session_env(99, 10).contains("FP6_GRID_UNIT_PX=32\nFP6_FONT_SCALE_PERCENT=80\n"));
+        assert!(session_env(99, 10, true).contains("FP6_GRID_UNIT_PX=32\nFP6_FONT_SCALE_PERCENT=80\nFP6_BOLD_TEXT=1\n"));
     }
 }

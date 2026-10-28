@@ -129,6 +129,14 @@
       <default>100</default>
       <summary>Text size in percent (100 = default)</summary>
     </key>
+    <key name="bold-text" type="b">
+      <default>false</default>
+      <summary>Bold text: heavier default weight for Lomiri apps and the shell (next login)</summary>
+    </key>
+    <key name="session-bold-text" type="b">
+      <default>false</default>
+      <summary>Bold text of the running session (state)</summary>
+    </key>
     <key name="session-interface-scale" type="i">
       <range min="18" max="32"/>
       <default>24</default>

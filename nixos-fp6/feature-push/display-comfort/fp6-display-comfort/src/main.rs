@@ -14,6 +14,7 @@
 //!    login). The text size is also live: font-scale goes to
 //!    ~/.config/lomiri-ui-toolkit/font-scale (the font-scale UITK watches it)
 //!    and to the GTK text scale, at session start and on every change.
+//!    Bold text (bold-text) goes to session.env only (next login).
 //!  * Location: optional GeoClue lookup (city accuracy, only answers while
 //!    Location is on) every few hours for sunset/sunrise.
 //!
@@ -215,7 +216,7 @@ fn apply_dark(s: &gio::Settings, dark: bool) {
 
 /// session.env for the next login.
 fn write_scale_file(s: &gio::Settings) {
-    let content = files::session_env(s.int("interface-scale"), s.int("font-scale"));
+    let content = files::session_env(s.int("interface-scale"), s.int("font-scale"), s.boolean("bold-text"));
     if let Err(e) = files::write_if_changed(&config_dir().join("fp6-display-comfort/session.env"), &content) {
         eprintln!("fp6-display-comfort: session.env: {e}");
     }
@@ -415,9 +416,10 @@ fn run() {
     // At login: publish what lomiri-session read for this session, then
     // write the file for the next one.
     let env_path = config_dir().join("fp6-display-comfort/session.env");
-    let (gu, pct) = files::parse_session_env(&std::fs::read_to_string(&env_path).unwrap_or_default());
+    let (gu, pct, bold) = files::parse_session_env(&std::fs::read_to_string(&env_path).unwrap_or_default());
     let _ = settings.set_int("session-interface-scale", gu);
     let _ = settings.set_int("session-font-scale", pct);
+    let _ = settings.set_boolean("session-bold-text", bold);
     write_scale_file(&settings);
     write_uitk_font_scale(settings.int("font-scale"));
     apply_gtk_font_scale(settings.int("font-scale"));
@@ -427,11 +429,11 @@ fn run() {
         // Ignore our own state keys.
         if matches!(key, "night-light-current" | "status" | "dark-theme-active" | "located-time"
             | "located-latitude" | "located-longitude" | "greyscale-active"
-            | "session-interface-scale" | "session-font-scale")
+            | "session-interface-scale" | "session-font-scale" | "session-bold-text")
         {
             return;
         }
-        if matches!(key, "interface-scale" | "font-scale") {
+        if matches!(key, "interface-scale" | "font-scale" | "bold-text") {
             write_scale_file(s);
             if key == "font-scale" {
                 write_uitk_font_scale(s.int("font-scale"));
