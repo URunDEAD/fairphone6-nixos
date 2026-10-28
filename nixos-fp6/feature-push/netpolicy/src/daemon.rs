@@ -21,6 +21,10 @@ pub struct Status {
     pub foreground: String,
     pub route: String,
     pub message: String,
+    /// Why the policy cannot work on this system (empty: it can), e.g.
+    /// "kernel lacks nft socket matching (CONFIG_NFT_SOCKET)".
+    #[serde(default)]
+    pub unavailable: String,
     pub metrics: Option<crate::policy::Metrics>,
 }
 struct State {
@@ -104,6 +108,7 @@ pub fn serve() -> Result<()> {
     let mut last_error = String::new();
     let mut last_sample = 0;
     loop {
+        let mut unavailable = String::new();
         let (settings, foreground) = {
             let mut state = state
                 .lock()
@@ -126,6 +131,8 @@ pub fn serve() -> Result<()> {
                 &(serde_json::to_string(&settings)?, foreground.clone()),
             )?;
             let mut snapshot: Snapshot = serde_json::from_str(&raw)?;
+            unavailable = snapshot.unavailable.clone();
+            anyhow::ensure!(unavailable.is_empty(), "unavailable: {unavailable}");
             anyhow::ensure!(snapshot.error.is_empty(), "{}", snapshot.error);
             switcher.mobile_owned = snapshot.mobile.owned;
             let metrics = snapshot.metrics;
@@ -188,11 +195,17 @@ pub fn serve() -> Result<()> {
                     .into();
                 state.status.snapshot = snapshot;
                 state.status.metrics = metrics;
+                state.status.unavailable.clear();
                 last_error.clear();
             }
             Err(error) => {
                 let error = format!("{error:#}");
-                state.status.message = format!("Policy unavailable: {error}");
+                state.status.message = if unavailable.is_empty() {
+                    format!("Policy unavailable: {error}")
+                } else {
+                    format!("Unavailable: {unavailable}")
+                };
+                state.status.unavailable = unavailable;
                 if error != last_error {
                     eprintln!("netpolicyd: {error}");
                     notify(&session, "Network policy needs attention", &error);

@@ -34,8 +34,61 @@ pub struct Snapshot {
     pub network: nm::Network,
     pub apps: Vec<String>,
     pub error: String,
+    /// Non-empty when the policy cannot work on this system at all (not a
+    /// transient failure), e.g. [`NO_SOCKET_MATCH`]. Shown as the status.
+    #[serde(default)]
+    pub unavailable: String,
     pub metrics: Option<crate::policy::Metrics>,
     pub sample_id: u64,
+}
+/// Every rule set matches sockets by cgroup (`socket cgroupv2`), which needs
+/// the kernel's nft_socket expression (CONFIG_NFT_SOCKET).
+pub const NO_SOCKET_MATCH: &str = "kernel lacks nft socket matching (CONFIG_NFT_SOCKET)";
+/// Classify a reconcile error: `Some(reason)` when retrying cannot help.
+/// Without nft_socket the kernel rejects the first `socket cgroupv2` rule
+/// with ENOENT ("Could not process rule: No such file or directory").
+pub fn unavailable_reason(error: &str) -> Option<&'static str> {
+    (error.contains("socket cgroupv2") && error.contains("No such file or directory"))
+        .then_some(NO_SOCKET_MATCH)
+}
+/// Retry schedule for failed reconciles: `min`, doubling to `max`, reset by
+/// a success. A failure is worth logging only when the delay escalates or
+/// the error changes, so a permanent failure logs a handful of lines and
+/// then stays quiet at `max`.
+#[derive(Debug)]
+pub struct Backoff {
+    min: Duration,
+    max: Duration,
+    delay: Option<Duration>,
+    last_error: String,
+}
+impl Backoff {
+    pub fn new(min: Duration, max: Duration) -> Self {
+        Self {
+            min,
+            max,
+            delay: None,
+            last_error: String::new(),
+        }
+    }
+    /// Records a failure: (delay before the next attempt, log it?).
+    pub fn failure(&mut self, error: &str) -> (Duration, bool) {
+        let next = self.delay.map_or(self.min, |d| (d * 2).min(self.max));
+        let log = self.delay != Some(next) || error != self.last_error;
+        self.delay = Some(next);
+        if error != self.last_error {
+            self.last_error = error.into();
+        }
+        (next, log)
+    }
+    /// Records a success; true when it ends a failure streak.
+    pub fn success(&mut self) -> bool {
+        self.last_error.clear();
+        self.delay.take().is_some()
+    }
+    pub fn failing(&self) -> bool {
+        self.delay.is_some()
+    }
 }
 pub struct Engine {
     pub config: SystemConfig,
@@ -43,6 +96,8 @@ pub struct Engine {
     pub foreground: String,
     pub last_seen: Option<Instant>,
     pub snapshot: Snapshot,
+    /// Bumped when Sync brings different settings (cuts a retry backoff short).
+    pub settings_generation: u64,
     last_rules: Option<Rules>,
     last_system_inodes: Vec<u64>,
     /// App network permission (last successfully read permissions file).
@@ -69,6 +124,7 @@ impl Engine {
                 apps,
                 ..Snapshot::default()
             },
+            settings_generation: 0,
             last_rules: None,
             last_system_inodes: vec![],
             perm_apps: BTreeMap::new(),
@@ -127,6 +183,23 @@ impl Engine {
         self.snapshot.mobile = result;
         Ok(())
     }
+    /// Mobile is preferred but no longer allowed (settings, or the user
+    /// daemon's lease expired): it must go back to normal routing.
+    fn must_release_mobile(&self) -> bool {
+        self.snapshot.mobile.owned
+            && (!self.settings.smart_switching
+                || (self.settings.capped_plan && !self.settings.allow_capped)
+                || self
+                    .last_seen
+                    .is_none_or(|t| t.elapsed() >= Duration::from_secs(30)))
+    }
+    /// While a failing reconcile is backed off, still give mobile back on time.
+    pub fn release_mobile_if_required(&mut self) -> Result<()> {
+        if self.must_release_mobile() {
+            self.route(false)?;
+        }
+        Ok(())
+    }
     pub fn reconcile(&mut self) -> Result<()> {
         let mut observation_error = None;
         match self.adapter("status") {
@@ -139,13 +212,7 @@ impl Engine {
         {
             self.foreground.clear();
         }
-        if self.snapshot.mobile.owned
-            && (!self.settings.smart_switching
-                || (self.settings.capped_plan && !self.settings.allow_capped)
-                || self
-                    .last_seen
-                    .is_none_or(|t| t.elapsed() >= Duration::from_secs(30)))
-        {
+        if self.must_release_mobile() {
             if let Err(e) = self.route(false) {
                 observation_error = Some(e);
             }
@@ -473,6 +540,9 @@ impl Api {
         if !foreground.is_empty() && !engine.snapshot.apps.iter().any(|a| a == foreground) {
             return Err(failed("unknown foreground app"));
         }
+        if engine.settings != settings {
+            engine.settings_generation = engine.settings_generation.wrapping_add(1);
+        }
         engine.settings = settings;
         engine.foreground = foreground.into();
         engine.last_seen = Some(Instant::now());
@@ -506,20 +576,69 @@ pub fn serve(config: &Path, state: &Path) -> Result<()> {
             },
         )?
         .build()?;
+    const TICK: Duration = Duration::from_secs(5);
+    let mut backoff = Backoff::new(TICK, Duration::from_secs(600));
+    let mut next_attempt = Instant::now();
+    let mut generation = 0;
+    let mut release_error = String::new();
     loop {
         {
             let mut engine = engine
                 .lock()
                 .map_err(|_| anyhow::anyhow!("helper mutex poisoned"))?;
-            engine.snapshot.error = match engine.reconcile() {
-                Ok(()) => String::new(),
-                Err(e) => {
-                    eprintln!("helper: {e:#}");
-                    format!("{e:#}")
+            let now = Instant::now();
+            if engine.settings_generation != generation {
+                // New settings: try them now instead of at the end of a backoff.
+                generation = engine.settings_generation;
+                next_attempt = now;
+            }
+            if now >= next_attempt {
+                match engine.reconcile() {
+                    Ok(()) => {
+                        if backoff.success() {
+                            eprintln!("helper: policy applied again");
+                        }
+                        engine.snapshot.error.clear();
+                        engine.snapshot.unavailable.clear();
+                        next_attempt = now + TICK;
+                    }
+                    Err(e) => {
+                        let error = format!("{e:#}");
+                        let first = !backoff.failing();
+                        let (delay, log) = backoff.failure(&error);
+                        let reason = unavailable_reason(&error);
+                        if log {
+                            let secs = delay.as_secs();
+                            match reason {
+                                // The full nft output once, then one line per escalation.
+                                Some(r) if first => eprintln!(
+                                    "helper: unavailable: {r}; next attempt in {secs}s\n{error}"
+                                ),
+                                Some(r) => {
+                                    eprintln!("helper: unavailable: {r}; next attempt in {secs}s")
+                                }
+                                None => eprintln!("helper: {error}; next attempt in {secs}s"),
+                            }
+                        }
+                        engine.snapshot.unavailable = reason.unwrap_or_default().into();
+                        engine.snapshot.error = error;
+                        next_attempt = now + delay;
+                    }
                 }
-            };
+            } else {
+                match engine.release_mobile_if_required() {
+                    Ok(()) => release_error.clear(),
+                    Err(e) => {
+                        let e = format!("{e:#}");
+                        if e != release_error {
+                            eprintln!("helper: restoring normal routing: {e}");
+                            release_error = e;
+                        }
+                    }
+                }
+            }
         }
-        std::thread::sleep(Duration::from_secs(5));
+        std::thread::sleep(TICK);
     }
 }
 pub fn main() -> Result<()> {
