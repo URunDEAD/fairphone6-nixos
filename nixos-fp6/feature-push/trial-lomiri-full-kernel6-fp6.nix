@@ -122,6 +122,13 @@ let
       # Charging feedback (all on by default). Overlay lib.mkOrder 3900.
       # results/feature-push-20261024/charging-feedback/README.md
       ({ ... }: { imports = [ ./charging-feedback/charging-feedback-fp6.nix ]; hardware.fairphone6.chargingFeedback.enable = true; })
+      # App permissions: prompts (Allow / Only while using / Don't allow) for USB
+      # devices, NFC, Bluetooth, contacts, calendar, call log & messages, files,
+      # sensors (fp6-permd broker + agent); per-app network access (Wi-Fi/mobile/
+      # VPN/local, through netpolicy; every app allowed until changed);
+      # Settings > Security & Privacy > App permissions. Overlay lib.mkOrder 4200.
+      # results/feature-push-20261024/app-permissions/README.md
+      ({ ... }: { imports = [ ./app-permissions/app-permissions-fp6.nix ]; hardware.fairphone6.appPermissions.enable = true; })
       # Crash isolation: Mir input-method modifiers_map use-after-free fix (the
       # 2026-10-28 shell SIGSEGV), a crashed shell restarts locked in the same
       # session instead of logging out, shell/OSK OOM-protected, restart
