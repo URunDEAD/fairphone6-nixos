@@ -122,6 +122,11 @@ let
       # Charging feedback (all on by default). Overlay lib.mkOrder 3900.
       # results/feature-push-20261024/charging-feedback/README.md
       ({ ... }: { imports = [ ./charging-feedback/charging-feedback-fp6.nix ]; hardware.fairphone6.chargingFeedback.enable = true; })
+      # Bluetooth audio codec/profile choice per device (Settings > Bluetooth > device >
+      # Audio quality; com.fairphone6.BluetoothAudio1 helper), built by a Codex worker.
+      # Hardware volume / HFP auto-switch unchanged (options default null).
+      # nixos-fp6/feature-push/bt-codecs/README.md
+      ({ ... }: { imports = [ ./bt-codecs/module.nix ]; hardware.fairphone6.bluetoothAudio = { enable = true; user = "user"; }; })
       ({ config, lib, ... }: let
       kernel = config.mobile.boot.stage-1.kernel.package;
     in {
