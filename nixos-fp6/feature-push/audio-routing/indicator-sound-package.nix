@@ -13,7 +13,10 @@
 { ayatana-indicator-sound, vala, pkg-config, libgee, libpulseaudio, glib }:
 ayatana-indicator-sound.overrideAttrs (old: {
   pname = "ayatana-indicator-sound-fp6";
-  patches = (old.patches or [ ]) ++ [ ./indicator-sound-device-selection.patch ];
+  # indicator-sound-restore-codec.patch (bt-codecs feature): after the
+  # indicator's own call routing, return a headset to the exact A2DP profile
+  # it had before the call (e.g. a chosen SBC), else the old priority pick.
+  patches = (old.patches or [ ]) ++ [ ./indicator-sound-device-selection.patch ./indicator-sound-restore-codec.patch ];
   doCheck = false;
   postInstall = (old.postInstall or "") + ''
     mkdir -p $out/libexec/ayatana-indicator-sound

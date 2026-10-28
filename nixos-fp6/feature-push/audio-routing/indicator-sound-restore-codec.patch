@@ -1,0 +1,45 @@
+diff --git a/src/audio-device-selector.vala b/src/audio-device-selector.vala
+--- a/src/audio-device-selector.vala
++++ b/src/audio-device-selector.vala
+@@ -142,6 +142,8 @@
+     private Gee.ArrayList<Pending> pending = new Gee.ArrayList<Pending> ();
+     /* Bluetooth cards put on the headset profile for a call (back to A2DP after it) */
+     private Gee.HashSet<string> call_headsets = new Gee.HashSet<string> ();
++    // Restore the user's exact music codec, including an explicit stable/SBC choice.
++    private Gee.HashMap<string, string> pre_call_profiles = new Gee.HashMap<string, string> ();
+     private string last_signature = "";
+ 
+     public Gee.ArrayList<Device> outputs { get; private set; default = new Gee.ArrayList<Device> (); }
+@@ -1012,7 +1014,12 @@
+                 continue;
+             string? best = null;
+             uint32 best_prio = 0;
++            string? saved = this.pre_call_profiles.get (name);
++            if (saved != null && profile_family (card, saved) == "a2dp" && card.profile_available.lookup (saved))
++                best = saved;
+             foreach (var prof in card.profile_priority.get_keys ()) {
++                if (best == saved && saved != null)
++                    break;
+                 if (profile_family (card, prof) != "a2dp" || !card.profile_available.lookup (prof))
+                     continue;
+                 uint32 prio = card.profile_priority.lookup (prof);
+@@ -1027,6 +1034,7 @@
+             }
+         }
+         this.call_headsets.clear ();
++        this.pre_call_profiles.clear ();
+     }
+ 
+     private void apply_node (Node node, string? port)
+@@ -1124,6 +1132,11 @@
+                 port = p;
+         if (port == null)
+             return;
++
++        if (output && this.in_call && card.is_bluetooth () &&
++            profile_family (card, card.active_profile) == "a2dp" &&
++            !this.pre_call_profiles.has_key (card.name))
++            this.pre_call_profiles.set (card.name, card.active_profile);
+ 
+         this.select_card_port (card, port);
+ 
