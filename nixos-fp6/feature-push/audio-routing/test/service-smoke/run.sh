@@ -5,7 +5,7 @@
 # "interested" media player (the 2026-10-27 crash: an empty Output/Input
 # section made find_player_section() read item 0 of an empty menu).
 # Checks: the service stays up, the volume action reaches the sink, scroll
-# steps work, output selection works.
+# steps work, output selection works, SIGTERM exits cleanly.
 #   dbus-run-session -- test/service-smoke/run.sh
 set -u
 D=$(dirname "$(readlink -f "$0")")
@@ -33,5 +33,10 @@ $A.Activate volume '[<int32 5>]' '{}' >/dev/null; sleep 1
 v=$(vol); echo "after +5 steps: $v"; [ "$v" = "vol: 0.40" ] || fail=1
 $A.Describe output-devices | grep -q fake_speaker || { echo "no output list"; fail=1; }
 kill -0 $SVC 2>/dev/null && echo "service alive" || { echo "SERVICE DIED"; fail=1; }
-kill $SVC; kill %1 %2 %3 %4 2>/dev/null; sleep 0.5; rm -rf "$R"
+# Clean exit on SIGTERM (session end, e.g. greeter logout): finalizing the
+# device selector used to free the PulseAudio context after its main loop
+# (SIGSEGV in glib_io_free on the phone; the laptop heap never faulted, so
+# this only catches a crash, the order itself is checked in the binary).
+kill $SVC; wait $SVC; rc=$?; echo "exit status after SIGTERM: $rc"; [ $rc -lt 128 ] || fail=1
+kill %1 %2 %3 %4 2>/dev/null; sleep 0.5; rm -rf "$R"
 [ $fail = 0 ] && echo PASS || { echo "FAIL (logs in $W)"; exit 1; }

@@ -35,10 +35,10 @@ index 4c57477..2d6b7ce 100644
      options
 diff --git a/src/audio-device-selector.vala b/src/audio-device-selector.vala
 new file mode 100644
-index 0000000..d0761c2
+index 0000000..2a2908a
 --- /dev/null
 +++ b/src/audio-device-selector.vala
-@@ -0,0 +1,1189 @@
+@@ -0,0 +1,1198 @@
 +/*
 + * Copyright 2026 Paul Schuldesz
 + *
@@ -160,7 +160,12 @@ index 0000000..d0761c2
 +        public int64 deadline;
 +    }
 +
-+    private unowned PulseAudio.GLibMainLoop loop;
++    /* The selector owns its PulseAudio main loop. The loop must outlive the
++     * context: freeing a context unlinks its I/O events through the loop's
++     * API, so a loop freed first (it used to be a separate field of the
++     * service, freed before the selector) made every exit of the service
++     * segfault in glib_io_free (seen at each greeter logout). */
++    private PulseAudio.GLibMainLoop loop = new PulseAudio.GLibMainLoop ();
 +    private PulseAudio.Context context = null;
 +    private uint reconnect_timer = 0;
 +    private uint refresh_idle = 0;
@@ -196,9 +201,8 @@ index 0000000..d0761c2
 +
 +    public signal void changed ();
 +
-+    public AudioDeviceSelector (PulseAudio.GLibMainLoop loop)
++    public AudioDeviceSelector ()
 +    {
-+        this.loop = loop;
 +        this.load_settings ();
 +        this.reconnect ();
 +    }
@@ -298,8 +302,13 @@ index 0000000..d0761c2
 +            Source.remove (this.reconnect_timer);
 +        if (this.refresh_idle != 0)
 +            Source.remove (this.refresh_idle);
-+        if (this.context != null)
++        if (this.context != null) {
++            this.context.set_state_callback (null);
 +            this.context.disconnect ();
++            /* Unref now, while this.loop is still alive: fields are freed
++             * only after this body, and the loop may go first. */
++            this.context = null;
++        }
 +    }
 +
 +    /* Connection */
@@ -1229,7 +1238,7 @@ index 0000000..d0761c2
 +    }
 +}
 diff --git a/src/service.vala b/src/service.vala
-index fdc27fd..d25b54c 100644
+index fdc27fd..997ded2 100644
 --- a/src/service.vala
 +++ b/src/service.vala
 @@ -101,8 +101,10 @@ public class IndicatorSound.Service: Object {
@@ -1245,12 +1254,11 @@ index fdc27fd..d25b54c 100644
  
          this.menus.@foreach ( (profile, menu) => {
              this.volume_control.bind_property ("active-mic", menu, "show-mic-volume", BindingFlags.SYNC_CREATE);
-@@ -176,6 +178,82 @@ public class IndicatorSound.Service: Object {
+@@ -176,6 +178,80 @@ public class IndicatorSound.Service: Object {
          }
      }
  
 +    /* Output/input device selection (sections in the menu, actions for Settings > Sound) */
-+    PulseAudio.GLibMainLoop devices_loop;
 +    AudioDeviceSelector devices;
 +    SimpleAction output_device_action;
 +    SimpleAction input_device_action;
@@ -1260,8 +1268,7 @@ index fdc27fd..d25b54c 100644
 +    SimpleAction apps_action;
 +
 +    void setup_device_selection () {
-+        this.devices_loop = new PulseAudio.GLibMainLoop ();
-+        this.devices = new AudioDeviceSelector (this.devices_loop);
++        this.devices = new AudioDeviceSelector ();
 +
 +        this.output_device_action = new SimpleAction.stateful ("output-device", VariantType.STRING, new Variant.string (""));
 +        this.output_device_action.activate.connect ((action, param) => {

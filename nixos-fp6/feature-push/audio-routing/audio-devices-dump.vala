@@ -8,8 +8,7 @@
 int main (string[] args)
 {
     var loop = new MainLoop ();
-    var pa_loop = new PulseAudio.GLibMainLoop ();
-    var selector = new AudioDeviceSelector (pa_loop);
+    var selector = new AudioDeviceSelector ();
     selector.read_only = true;
     int status = 1;
 
