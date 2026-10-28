@@ -49,6 +49,18 @@ pub fn wifi_interfaces(names: &[String]) -> Result<Vec<Wifi>> {
         })
         .collect())
 }
+/// Like [`wifi_interfaces`], but an enumeration failure (for example netlink
+/// being denied by the unit's sandbox, which made r4 exit every 5 s) is shown
+/// as an event and treated as "no usable Wi-Fi" instead of ending the daemon.
+pub async fn current_wifi(app: &App) -> Vec<Wifi> {
+    match wifi_interfaces(&app.interfaces) {
+        Ok(interfaces) => interfaces,
+        Err(e) => {
+            app.event(format!("Cannot list Wi-Fi interfaces: {e}")).await;
+            Vec::new()
+        }
+    }
+}
 pub fn same_network(local: &Ifv4Addr, peer: Ipv4Addr) -> bool {
     (u32::from(local.ip) & u32::from(local.netmask)) == (u32::from(peer) & u32::from(local.netmask))
         && !peer.is_multicast()
@@ -77,7 +89,7 @@ pub async fn run(app: Arc<App>) -> Result<()> {
                 let (size, source) = recv?;
                 if size > protocol::MAX_IDENTITY { continue; }
                 let IpAddr::V4(ip) = source.ip() else {continue};
-                let Some(wifi) = wifi_interfaces(&app.interfaces)?.into_iter().find(|w|same_network(&w.address, ip)) else {continue};
+                let Some(wifi) = current_wifi(&app).await.into_iter().find(|w|same_network(&w.address, ip)) else {continue};
                 let Ok(packet) = Packet::decode(&buffer[..size]) else {continue};
                 let Ok(identity) = Identity::parse(&packet) else {continue};
                 if identity.id == app.inner.lock().await.store.id {continue;}
@@ -101,7 +113,7 @@ pub async fn run(app: Arc<App>) -> Result<()> {
             }
         }
         attempts.retain(|_, t| t.elapsed() < Duration::from_secs(30));
-        let interfaces = wifi_interfaces(&app.interfaces)?;
+        let interfaces = current_wifi(&app).await;
         let removed: Vec<_> = listeners
             .keys()
             .filter(|ip| !interfaces.iter().any(|w| w.address.ip == **ip))
@@ -362,4 +374,19 @@ async fn disconnect(app: &App, id: &str, session: u64) {
     drop(i);
     app.input.lock().await.revoke(id);
     let _ = app.clipboard_state().await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: getifaddrs() needs an AF_NETLINK socket. The r4 unit only
+    /// allowed AF_UNIX/AF_INET, so this failed with EAFNOSUPPORT (os error 97).
+    /// Run this test binary under the unit's RestrictAddressFamilies to check
+    /// the sandbox (see tests/module.nix for the unit-side assertion).
+    #[test]
+    fn interface_enumeration_works() {
+        let found = wifi_interfaces(&["lo".to_string()]).expect("getifaddrs failed");
+        assert!(found.is_empty(), "loopback is never a Wi-Fi interface");
+    }
 }

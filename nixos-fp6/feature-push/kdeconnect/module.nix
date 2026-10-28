@@ -3,6 +3,15 @@ let
   cfg = config.hardware.fairphone6.kdeconnect;
   package = cfg.package;
   interfaceArgs = lib.concatMapStringsSep " " (i: "--interface ${lib.escapeShellArg i}") cfg.wifiInterfaces;
+  # A failing daemon must not spin: back off 5 s -> 5 min and give up after
+  # 10 starts in 30 min (r4 restarted it every 5 s, 548 times in one boot).
+  restartPolicy = {
+    Restart = "on-failure";
+    RestartSec = 5;
+    RestartSteps = 6;
+    RestartMaxDelaySec = 300;
+  };
+  startLimit = { StartLimitIntervalSec = 1800; StartLimitBurst = 10; };
 in {
   options.hardware.fairphone6.kdeconnect = {
     enable = lib.mkEnableOption "KDE Connect for Lomiri";
@@ -32,16 +41,16 @@ in {
       wantedBy = [ "graphical-session.target" ];
       partOf = [ "graphical-session.target" ];
       after = [ "graphical-session-pre.target" ];
-      unitConfig.ConditionUser = cfg.user;
-      serviceConfig = {
+      unitConfig = { ConditionUser = cfg.user; } // startLimit;
+      serviceConfig = restartPolicy // {
         ExecStart = "${package}/bin/lomiri-kdeconnectd ${interfaceArgs}";
-        Restart = "on-failure";
-        RestartSec = 5;
         UMask = "0077";
         NoNewPrivileges = true;
         PrivateTmp = true;
         ProtectSystem = "full";
-        RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" ];
+        # AF_NETLINK: getifaddrs() (if-addrs) lists the Wi-Fi addresses over
+        # rtnetlink; without it every start failed with EAFNOSUPPORT (r4).
+        RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_NETLINK" ];
         LockPersonality = true;
         # DevicePolicy/PrivateDevices would deny the explicitly opted-in uinput.
       };
@@ -55,11 +64,9 @@ in {
       wantedBy = [ "graphical-session.target" ];
       partOf = [ "graphical-session.target" "lomiri-kdeconnect.service" ];
       after = [ "lomiri-kdeconnect.service" ];
-      unitConfig.ConditionUser = cfg.user;
-      serviceConfig = {
+      unitConfig = { ConditionUser = cfg.user; } // startLimit;
+      serviceConfig = restartPolicy // {
         ExecStart = "${package}/bin/lomiri-kdeconnect --clipboard-agent";
-        Restart = "on-failure";
-        RestartSec = 5;
         UMask = "0077";
         NoNewPrivileges = true;
       };
