@@ -1,0 +1,41 @@
+--- a/src/modules/module-protocol-pulse/pulse-server.c
++++ b/src/modules/module-protocol-pulse/pulse-server.c
+@@ -1029,6 +1029,22 @@
+ 	.object_data_timeout = manager_object_data_timeout,
+ };
+ 
++/* FP6 app permissions: the client's process as the socket shows it
++ * (SO_PEERCRED), for the session manager to tell apps apart. Set again after
++ * every merge of the client's own property list, so a client cannot choose
++ * it; PipeWire refuses later changes of an existing pipewire.* key anyway. */
++static void client_set_peer_pid(struct client *client)
++{
++	pid_t pid = 0;
++
++	if (client->source != NULL)
++		pid = get_client_pid(client, client->source->fd);
++	if (pid > 0)
++		pw_properties_setf(client->props, "pipewire.pulse.peer.pid", "%d", (int)pid);
++	else
++		pw_properties_set(client->props, "pipewire.pulse.peer.pid", NULL);
++}
++
+ static int do_set_client_name(struct client *client, uint32_t command, uint32_t tag, struct message *m)
+ {
+ 	struct impl *impl = client->impl;
+@@ -1051,6 +1067,7 @@
+ 		changed++;
+ 	}
+ 
++	client_set_peer_pid(client);
+ 	client_update_quirks(client);
+ 
+ 	client->name = pw_properties_get(client->props, PW_KEY_APP_NAME);
+@@ -3270,6 +3287,7 @@
+ 			stream_update_tag_param(stream);
+ 	} else {
+ 		if (pw_properties_update(client->props, &props->dict) > 0) {
++			client_set_peer_pid(client);
+ 			client_update_quirks(client);
+ 			client->name = pw_properties_get(client->props, PW_KEY_APP_NAME);
+ 			pw_core_update_properties(client->core, &client->props->dict);

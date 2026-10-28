@@ -8,6 +8,7 @@
 pub mod appid;
 pub mod broker;
 pub mod device;
+pub mod media;
 pub mod model;
 pub mod policy;
 pub mod render;

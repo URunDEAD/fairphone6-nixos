@@ -3,7 +3,7 @@ name = "fp6-permissions"
 version = "0.1.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
-description = "Runtime app permissions for Lomiri on the Fairphone 6: prompt broker (USB/NFC/Bluetooth/contacts/calendar/messages/files/sensors), session agent and CLI"
+description = "Runtime app permissions for Lomiri on the Fairphone 6: prompt broker (USB/NFC/Bluetooth/contacts/calendar/messages/files/sensors/camera/microphone/location), session agent, PipeWire media gate and CLI"
 
 [lib]
 name = "fp6_permissions"
@@ -16,6 +16,10 @@ path = "src/bin/permd.rs"
 [[bin]]
 name = "fp6-permission-agent"
 path = "src/bin/agent.rs"
+
+[[bin]]
+name = "fp6-media-gate"
+path = "src/bin/media_gate.rs"
 
 [[bin]]
 name = "fp6-permctl"
