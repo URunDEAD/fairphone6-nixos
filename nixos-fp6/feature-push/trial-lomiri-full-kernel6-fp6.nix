@@ -122,6 +122,12 @@ let
       # Charging feedback (all on by default). Overlay lib.mkOrder 3900.
       # results/feature-push-20261024/charging-feedback/README.md
       ({ ... }: { imports = [ ./charging-feedback/charging-feedback-fp6.nix ]; hardware.fairphone6.chargingFeedback.enable = true; })
+      # Crash isolation: Mir input-method modifiers_map use-after-free fix (the
+      # 2026-10-28 shell SIGSEGV), a crashed shell restarts locked in the same
+      # session instead of logging out, shell/OSK OOM-protected, restart
+      # back-off for failing helpers, "<App> stopped" + Report notifications.
+      # Overlay lib.mkOrder 4100. results/feature-push-20261024/crash-isolation/README.md
+      ({ ... }: { imports = [ ./crash-isolation/crash-isolation-fp6.nix ]; hardware.fairphone6.crashIsolation.enable = true; })
       # Bluetooth audio codec/profile choice per device (Settings > Bluetooth > device >
       # Audio quality; com.fairphone6.BluetoothAudio1 helper), built by a Codex worker.
       # Hardware volume / HFP auto-switch unchanged (options default null).
