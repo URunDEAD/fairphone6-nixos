@@ -122,6 +122,12 @@ let
       # Charging feedback (all on by default). Overlay lib.mkOrder 3900.
       # results/feature-push-20261024/charging-feedback/README.md
       ({ ... }: { imports = [ ./charging-feedback/charging-feedback-fp6.nix ]; hardware.fairphone6.chargingFeedback.enable = true; })
+      # Assistant: type-first Springboard + chat; a local (on-device) or remote
+      # LLM uses the phone's apps through permission-gated tools (per-resource
+      # dialogs, per-action confirmation, activity log). Drawer "Ask the
+      # assistant" row and opt-in quick-settings tile: overlay lib.mkOrder 4300.
+      # results/feature-push-20261024/assistant/README.md
+      ({ ... }: { imports = [ ./assistant/assistant-fp6.nix ]; hardware.fairphone6.assistant.enable = true; })
       # App permissions: prompts (Allow / Only while using / Don't allow) for USB
       # devices, NFC, Bluetooth, contacts, calendar, call log & messages, files,
       # sensors (fp6-permd broker + agent); per-app network access (Wi-Fi/mobile/
