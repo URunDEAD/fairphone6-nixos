@@ -3,6 +3,6 @@
 # a release that is not newer than the channel's current one, and phones
 # only offer a manifest whose release is higher than the running one.
 {
-  release = 3;
+  release = 6;
   channel = "kernel6";
 }
