@@ -141,3 +141,25 @@ kernel7 candidates (staged 2026-10-26; NOT in kernel6, whose pinned drv is uncha
   Test kernel (kernel6 recipe + 0005-0008, modDirVersion 7.2.0-fp6-nixos6,
   for the supervised RAM boot only): cs-call-audio-kernel/default.nix,
   used by nixos-fp6/feature-push/cs-call-audio/trial-lomiri-full-kernel6-csvoice-fp6.nix.
+
+0009-drm-panel-novatek-nt37705-add-90-60-and-30-hz-modes.patch
+0010-drm-panel-novatek-nt37705-runtime-panel-rate-without-modeset.patch
+  (refresh-rate agent, 2026-10-28; UNVERIFIED on hardware, never booted)
+  0009: the FP6 panel (BOE BJ631JHM-T71-D900 / NT37705, command mode, DSC)
+  gets 90, 60 and 30 Hz DRM modes next to the existing 120 Hz (still
+  preferred, so nothing changes unless userspace picks another mode). The
+  rate-dependent init bytes come from the vendor timings @0/@2/@1/@3 of
+  dsi-panel-nt37705-boe-amoled-cmd.dtsi (fp6-aosp devicetrees 790d407);
+  checked byte for byte by a script (README). prepare() finds the mode
+  through the connector's CRTC state (as panel-novatek-nt35950). A rate
+  change is a full modeset (panel power cycle, short blank).
+  0010 (after 0009): panel_rate_hz (rw) and panel_rates (ro) on the DSI
+  device: 120/60/30/10 Hz on the 120 Hz scan via the vendor
+  timing-switch-command, no modeset; reset to the mode's rate at every
+  prepare. Used by the refresh-rate "Adaptive" mode
+  (nixos-fp6/feature-push/refresh-rate).
+  Compile check on the LAPTOP (x86_64 host, clang --target arm64, kernel6
+  config.final, single object, W=1, 0 warnings): panel-refresh-compile-check.nix ->
+    /nix/store/zm4z1cza8dw7mqnz1cyhk718wmf4ggdj-fp6-kernel7-candidate-nt37705-refresh-compile-check-63289f441152-nixos6
+  To check on a supervised RAM boot (never flash): see
+  results/feature-push-20261024/refresh-rate/README.md "Supervised test".
