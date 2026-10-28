@@ -12,7 +12,7 @@ stdenvNoCC.mkDerivation {
   installPhase = ''
     runHook preInstall
     install -Dm644 gesture-shortcuts.settings $out/share/lomiri-system-settings/gesture-shortcuts.settings
-    install -Dm644 -t $out/share/lomiri-system-settings/qml-plugins/gesture-shortcuts PageComponent.qml ActionSettings.qml
+    install -Dm644 -t $out/share/lomiri-system-settings/qml-plugins/gesture-shortcuts PageComponent.qml ActionSettings.qml BackTapSettings.qml
     # The wrapper lndir's these from every plugin.
     mkdir -p $out/lib/lomiri-system-settings $out/share/locale
     schemas=$out/share/gsettings-schemas/$name/glib-2.0/schemas

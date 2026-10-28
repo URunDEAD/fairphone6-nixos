@@ -34,8 +34,14 @@ ItemPage {
         return out
     }
 
-    // Ask the daemon for a fresh app list whenever the page opens.
-    Component.onCompleted: gs.appListRequest = (gs.appListRequest + 1) % 1000000
+    // Ask the daemon for a fresh app list whenever the page opens; drop an
+    // old back tap log (calibration result of an earlier visit).
+    Component.onCompleted: {
+        gs.appListRequest = (gs.appListRequest + 1) % 1000000
+        if (gs.backTapMode === "normal" && gs.backTapLog.length > 0) gs.backTapLog = []
+    }
+    // Leaving the page ends a calibration or test run.
+    Component.onDestruction: if (gs.backTapMode !== "normal") gs.backTapMode = "normal"
 
     Flickable {
         id: flick
@@ -290,26 +296,15 @@ ItemPage {
                 apps: root.apps
             }
 
-            Column {
-                visible: gs.backDoubleTapAction !== "none" || gs.backTripleTapAction !== "none"
-                anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
-                spacing: units.gu(1)
-                Label { text: i18n.tr("Back tap sensitivity"); font.weight: Font.Medium }
-                OptionSelector {
-                    objectName: "backTapSensitivitySelector"
-                    width: parent.width
-                    readonly property var values: ["low", "medium", "high"]
-                    model: [i18n.tr("Low (firm taps)"), i18n.tr("Medium"), i18n.tr("High (light taps)")]
-                    selectedIndex: Math.max(0, values.indexOf(gs.backTapSensitivity))
-                    onDelegateClicked: gs.backTapSensitivity = values[index]
-                }
-            }
-
             Label {
                 anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
                 wrapMode: Text.WordWrap
                 fontSize: "small"
-                text: i18n.tr("Tap the back of the phone firmly with a fingertip, two or three times in quick succession, while holding it still. Taps on the screen are ignored. The accelerometer only wakes up when the phone moves. Same rules as the power key: the flashlight works locked, apps open after unlocking.")
+                text: i18n.tr("Tap the back of the phone with a fingertip, two or three times in quick succession, while holding it still. Taps on the screen, typing, walking, putting the phone down and knocks on the table are ignored. The accelerometer only wakes up when the phone moves. Same rules as the power key: the flashlight works locked, apps open after unlocking.")
+            }
+
+            BackTapSettings {
+                settings: gs
             }
 
             ListItem.ThinDivider {}
