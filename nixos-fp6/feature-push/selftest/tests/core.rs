@@ -339,13 +339,6 @@ fn inherited_array_keys_are_rejected_even_from_non_fairphone_parent() {
     );
 }
 #[test]
-fn exec_search_covers_session_profiles() {
-    let dirs = files::exec_search_dirs();
-    for d in ["/run/wrappers/bin", "/run/current-system/sw/bin"] {
-        assert!(dirs.iter().any(|p| p == std::path::Path::new(d)), "{d}");
-    }
-}
-#[test]
 fn keyboard_names_ignore_nix_wrappers() {
     for argv0 in [
         "/nix/store/x-maliit-keyboard-2.3.1/bin/maliit-keyboard",
@@ -358,4 +351,21 @@ fn keyboard_names_ignore_nix_wrappers() {
     for argv0 in ["", "maliit-keyboard-settings", "/bin/sh", "keyboard"] {
         assert!(!base::is_keyboard(argv0), "{argv0}");
     }
+}
+#[test]
+fn exec_search_covers_session_profiles() {
+    let dirs = files::exec_search_dirs();
+    for d in ["/run/wrappers/bin", "/run/current-system/sw/bin"] {
+        assert!(dirs.iter().any(|p| p == std::path::Path::new(d)), "{d}");
+    }
+}
+#[test]
+fn schema_data_dir_list_keeps_absolute_paths() {
+    assert_eq!(
+        files::schema_data_dirs_from("/nix/store/a-x/share\n\nrelative/share\n /nix/store/b-y/share \n"),
+        vec![
+            std::path::PathBuf::from("/nix/store/a-x/share"),
+            std::path::PathBuf::from("/nix/store/b-y/share")
+        ]
+    );
 }

@@ -24,12 +24,25 @@ in {
     user = lib.mkOption { type = lib.types.str; default = "phablet"; description = "Existing phone login user owning reports."; };
     probeFile = lib.mkOption { type = lib.types.nullOr lib.types.path; default = null; description = "Audited TOML probe list replacing the packaged list."; };
     sessionTarget = lib.mkOption { type = lib.types.str; default = "graphical-session.target"; description = "Target started by the phone shell session."; };
+    schemaPackages = lib.mkOption {
+      type = lib.types.listOf lib.types.package;
+      default = lib.filter lib.isDerivation
+        ((pkgs.lomiri.lomiri-system-settings.buildInputs or [ ]) ++ config.environment.systemPackages);
+      defaultText = lib.literalExpression "lomiri-system-settings plugins ++ environment.systemPackages";
+      description = ''
+        Packages whose share/gsettings-schemas the schema check scans. Fairphone
+        schemas are not linked into the system profile; they reach their apps
+        through wrapper XDG_DATA_DIRS (mostly the lomiri-system-settings plugins).
+      '';
+    };
     automatic = lib.mkOption { type = lib.types.bool; default = true; description = "Run after boot and graphical session startup, including OTA reboots."; };
   };
   config = lib.mkIf cfg.enable {
     assertions = [{ assertion = builtins.hasAttr cfg.user config.users.users; message = "selftest.user must name an existing user"; }];
     environment.systemPackages = [ cfg.package ];
     environment.etc."fp6-selftest/probes.toml".source = if cfg.probeFile != null then cfg.probeFile else "${cfg.package}/share/fp6-selftest/probes.toml";
+    environment.etc."fp6-selftest/schema-data-dirs".text =
+      lib.concatMapStrings (p: "${p}/share\n") (lib.unique cfg.schemaPackages);
     environment.pathsToLink = [ "/share/lomiri-system-settings" ];
     xdg.mime.defaultApplications."x-scheme-handler/fp6-selftest" = "com.fairphone6.selftest.desktop";
     systemd.services.fp6-selftest-system = {

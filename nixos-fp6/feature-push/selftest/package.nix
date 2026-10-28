@@ -19,7 +19,7 @@ rustPlatform.buildRustPackage {
     cp data/probes.toml "$out/share/fp6-selftest/"
     cp README.md DESIGN.md LICENSE "$out/share/doc/fp6-selftest/"
     wrapProgram "$out/bin/fp6-selftest" \
-      --prefix PATH : ${lib.makeBinPath [ systemd procps wireplumber coreutils glib ]}
+      --prefix PATH : ${lib.makeBinPath [ systemd procps wireplumber coreutils glib (lib.getDev glib) ]}
   '' + lib.optionalString withGui ''
     cp -r qml "$out/share/fp6-selftest/"
     install -Dm644 nix/com.fairphone6.selftest.desktop "$out/share/applications/com.fairphone6.selftest.desktop"

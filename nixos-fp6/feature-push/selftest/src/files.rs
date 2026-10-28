@@ -66,12 +66,29 @@ pub fn exec_search_dirs() -> Vec<PathBuf> {
     dirs.retain(|d| !d.as_os_str().is_empty() && seen.insert(d.clone()));
     dirs
 }
+/// Package-private schema locations. NixOS wraps settings plugins and
+/// daemons with their own XDG_DATA_DIRS/GSETTINGS_SCHEMA_DIR instead of
+/// linking schemas into the system profile, so the module writes the share
+/// directories of those packages here (one per line).
+pub const SCHEMA_DATA_DIRS_FILE: &str = "/etc/fp6-selftest/schema-data-dirs";
+pub fn schema_data_dirs_from(text: &str) -> Vec<PathBuf> {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with('/') && !l.contains('\0'))
+        .take(4096)
+        .map(PathBuf::from)
+        .collect()
+}
 pub fn schema_dirs() -> Vec<PathBuf> {
     let mut dirs = vec![];
     if let Some(p) = std::env::var_os("GSETTINGS_SCHEMA_DIR") {
-        dirs.push(PathBuf::from(p));
+        dirs.extend(std::env::split_paths(&p));
     }
-    for data in data_dirs() {
+    let mut data = data_dirs();
+    if let Ok(text) = read_small(Path::new(SCHEMA_DATA_DIRS_FILE)) {
+        data.extend(schema_data_dirs_from(&text));
+    }
+    for data in data {
         dirs.push(data.join("glib-2.0/schemas"));
         if let Ok(entries) = fs::read_dir(data.join("gsettings-schemas")) {
             for entry in entries.flatten().take(4096) {
