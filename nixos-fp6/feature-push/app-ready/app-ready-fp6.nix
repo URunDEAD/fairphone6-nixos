@@ -26,11 +26,21 @@
 #    app or the shell), hidden prelaunch at login, page-cache preload
 #    (fadvise WILLNEED on the app's learned mapped files / package files),
 #    zram on/off, status JSON for the page; D-Bus com.fairphone6.AppReady.
-#  * zram swap (zstd, 50 % of RAM, swappiness 100, page-cluster 0) and
+#  * zram swap (zstd, size by memory profile, page-cluster 0) and
 #    earlyoom as the root backstop (avoids the shell and core services).
+#  * Memory & performance (2026-10-28, results/feature-push-20261024/
+#    memory-performance/README.md): on-device usage prediction keeps the
+#    likely next apps ready (GSettings "predicted", suspended by Stage.qml:
+#    lomiri-memory-predicted.patch, overlay lib.mkOrder 4000), starts them
+#    hidden and warms their files; the shell's files are warmed after login
+#    and after a reclaim; profiles Conservative / Balanced / Aggressive set
+#    the daemon's numbers and, as root (fp6-memory-profile@<name>.service,
+#    `fp6-app-ready apply-profile`), vm sysctls, read-ahead and MGLRU; the
+#    zram size follows the profile (fp6-zram-size@<pct>.service).
 #
-# Defaults: zram on, low-memory killer on, nothing kept ready / prelaunched /
-# preloaded until the user picks apps.
+# Defaults: zram on, low-memory killer on, profile Aggressive with
+# prediction on; nothing in the user's always-keep / prelaunch / preload
+# lists until the user picks apps.
 { config, lib, pkgs, ... }:
 let
   cfg = config.hardware.fairphone6.appReady;
@@ -38,6 +48,9 @@ let
   schema = pkgs.callPackage ./schema.nix { };
   lssPlugin = pkgs.callPackage ./lomiri-system-settings-app-ready.nix { };
   user = config.services.fp6LomiriSensors.user or "user";
+  # zram size per profile; profile.rs checks it says the same.
+  zramPercentFor = builtins.fromJSON (builtins.readFile ./fp6-app-ready/zram-percent.json);
+  profiles = [ "conservative" "balanced" "aggressive" ];
   # earlyoom matches /proc/<pid>/comm (15 chars): Lomiri is ".lomiri-wrapped",
   # Maliit "..maliit-keyboa"/"maliit-server". No backslashes: "[.]" for a dot.
   avoid = "^([.]lomiri-wrapped|lomiri|[.]{0,2}maliit.*|maliit-server|systemd|systemd-.*|[(]sd-pam[)]|dbus-daemon|dbus-broker.*|pipewire.*|wireplumber|lightdm|sshd.*|ofonod|NetworkManager|ModemManager|rmtfs|pd-mapper|tqftpserv|qrtr-ns|fp6-.*|[.]fp6-.*|hfd-service|repowerd|biometryd|lomiri-app-laun.*|Xwayland)$";
@@ -52,14 +65,50 @@ in {
         and preload lists start empty; the user picks apps in Settings.
       '';
     };
+    memoryProfile = lib.mkOption {
+      type = lib.types.enum profiles;
+      default = "aggressive";
+      description = ''
+        Memory profile applied at boot (vm sysctls, read-ahead, zram size)
+        until the user's Settings > Memory & performance choice is applied
+        at login (GSettings com.fairphone6.app-ready profile, default
+        aggressive too).
+      '';
+    };
     zram = {
       enable = lib.mkOption {
         type = lib.types.bool;
         default = true;
         description = "zram swap device (the Settings switch can still turn it off at runtime).";
       };
-      memoryPercent = lib.mkOption { type = lib.types.int; default = 50; };
-      swappiness = lib.mkOption { type = lib.types.int; default = 100; };
+      memoryPercent = lib.mkOption {
+        type = lib.types.int;
+        default = zramPercentFor.${cfg.memoryProfile};
+        defaultText = "the boot profile's size (25 / 50 / 75 %)";
+      };
+    };
+    appQmlCache = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        QML disk cache for the apps (QML_FORCE_DISK_CACHE=1 in the systemd
+        user manager's DefaultEnvironment): nixpkgs' Qt 5 compiles every QML
+        file again on each start without it (System Settings, Messages,
+        Phone, Gallery had no cache on the phone, 2026-10-28). fp6-app-ready
+        empties the app caches once after a system change (qmlcache.rs).
+      '';
+    };
+    loopDirectIo = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Experimental, needs a supervised test: switch the loop devices under
+        "/" to direct I/O at boot, so file pages of the root image are cached
+        once instead of up to three times (root file system, the image file
+        on the outer file system, the outer partition's block cache). On the
+        phone (2026-10-28) "Buffers" was 2.3 GiB next to 3.0 GiB "Cached"
+        20 minutes after boot.
+      '';
     };
     earlyoom = lib.mkOption {
       type = lib.types.bool;
@@ -84,9 +133,17 @@ in {
 
     environment.etc = lib.mapAttrs' (app: paths: lib.nameValuePair "fp6-app-ready/preload.d/${app}.list" {
       text = lib.concatMapStrings (p: "${p}\n") paths;
-    }) cfg.extraPreload;
+    }) cfg.extraPreload // lib.optionalAttrs cfg.appQmlCache {
+      # App QML disk caches (see appQmlCache). A drop-in of its own:
+      # lomiri-polish sets systemd.user.settings.Manager.DefaultEnvironment,
+      # and DefaultEnvironment= lines add up across user.conf.d files.
+      "systemd/user.conf.d/fp6-app-qmlcache.conf".text = ''
+        [Manager]
+        DefaultEnvironment=QML_FORCE_DISK_CACHE=1
+      '';
+    };
 
-    nixpkgs.overlays = lib.mkOrder 2600 [ (_final: prev: {
+    nixpkgs.overlays = lib.mkMerge [ (lib.mkOrder 2600 [ (_final: prev: {
       lomiri = prev.lomiri.overrideScope (_lfinal: lprev: {
         lomiri = lprev.lomiri.overrideAttrs (old: {
           patches = (old.patches or [ ]) ++ [ ./lomiri-app-ready.patch ];
@@ -103,7 +160,21 @@ in {
           plugins = (old.plugins or [ ]) ++ [ lssPlugin ];
         });
       });
-    }) ];
+    }) ])
+    # Memory & performance: predicted apps suspended like keep-ready ones,
+    # never-keep apps not, hidden-started windows not in the app switcher.
+    # In postPatch, after spread-close-all's (mkOrder 3300, also postPatch):
+    # its card-opacity line is in this patch's context.
+    (lib.mkOrder 4000 [ (_final: prev: {
+      lomiri = prev.lomiri.overrideScope (_lfinal: lprev: {
+        lomiri = lprev.lomiri.overrideAttrs (old: {
+          postPatch = (old.postPatch or "") + ''
+            patch -p1 --no-backup-if-mismatch < ${./lomiri-memory-predicted.patch}
+          '';
+          passthru = (old.passthru or { }) // { fp6MemoryPredicted = true; };
+        });
+      });
+    }) ]) ];
 
     systemd.user.services.fp6-app-ready = {
       description = "FP6 keep apps ready (OOM priorities, low-memory killer, prelaunch, preload)";
@@ -132,9 +203,76 @@ in {
       priority = 100;
     };
     boot.kernel.sysctl = lib.mkIf cfg.zram.enable {
-      "vm.swappiness" = lib.mkDefault cfg.zram.swappiness;
-      # zram: no readahead clustering of swap-ins.
+      # zram: no readahead clustering of swap-ins. Swappiness, cache pressure
+      # and watermarks come from the profile (fp6-memory-profile@).
       "vm.page-cluster" = lib.mkDefault 0;
+    };
+
+    # Root side of a memory profile: vm sysctls, read-ahead of the root
+    # device chain, MGLRU when the kernel has it. At boot with the configured
+    # profile, at login / on a Settings change with the user's (fp6-app-ready
+    # starts the instance; polkit below).
+    systemd.services."fp6-memory-profile@" = {
+      description = "Memory profile %i (Settings > Memory & performance)";
+      after = [ "systemd-sysctl.service" ];
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = "${package}/bin/fp6-app-ready apply-profile %i";
+      };
+    };
+    systemd.services.fp6-memory-profile-boot = {
+      description = "Memory profile at boot";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "systemd-sysctl.service" "local-fs.target" ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = "${package}/bin/fp6-app-ready apply-profile ${cfg.memoryProfile}";
+      };
+      path = [ pkgs.util-linux ];
+      # Experimental (loopDirectIo): one copy of the root image's pages in the cache.
+      postStart = lib.optionalString cfg.loopDirectIo ''
+        for dev in /sys/block/loop*; do
+          [ -e "$dev/loop/backing_file" ] || continue
+          losetup --direct-io=on "/dev/$(basename "$dev")" || true
+          echo "$(basename "$dev") dio=$(cat "$dev/loop/dio")"
+        done
+      '';
+    };
+
+    # zram size from Settings (25/50/75/100 % of RAM). Not through
+    # systemd-zram-setup@zram0 (see fp6-zram-off). Refuses when the data now
+    # in zram would not fit back into available RAM: the size then applies
+    # at the next login, when zram is nearly empty.
+    systemd.services."fp6-zram-size@" = lib.mkIf cfg.zram.enable {
+      description = "Compressed swap size %i % of RAM (Settings > Memory & performance)";
+      serviceConfig = { Type = "oneshot"; TimeoutStartSec = 300; };
+      path = [ pkgs.util-linux pkgs.gnugrep pkgs.coreutils pkgs.gawk ];
+      scriptArgs = "%i";
+      script = ''
+        pct=$1
+        case $pct in 25|50|75|100) ;; *) echo "bad size $pct"; exit 1 ;; esac
+        z=/sys/block/zram0
+        [ -e $z/disksize ] || exit 0
+        total=$(awk '/^MemTotal:/ {print $2 * 1024}' /proc/meminfo)
+        avail=$(awk '/^MemAvailable:/ {print $2 * 1024}' /proc/meminfo)
+        want=$(( total / 100 * pct ))
+        have=$(cat $z/disksize)
+        stored=$(awk '{print $1}' $z/mm_stat)
+        if [ "$have" -gt 0 ] && [ $(( (want - have) / (total / 100) )) -ge -2 ] && [ $(( (want - have) / (total / 100) )) -le 2 ]; then
+          echo "zram already $have bytes"; exit 0
+        fi
+        if [ "''${stored:-0}" -gt $(( avail / 2 )) ]; then
+          echo "zram holds $stored bytes, $avail available: not now"; exit 0
+        fi
+        if grep -q '^/dev/zram0 ' /proc/swaps; then swapoff /dev/zram0; fi
+        echo 1 > $z/reset
+        echo zstd > $z/comp_algorithm
+        echo "$want" > $z/disksize
+        mkswap /dev/zram0 >/dev/null
+        swapon -p 100 /dev/zram0
+        echo "zram now $want bytes ($pct % of RAM)"
+      '';
     };
 
     # Settings > App Launch zram switch. Not by stopping dev-zram0.swap: its
@@ -167,12 +305,22 @@ in {
         fi
       '';
     };
-    security.polkit.extraConfig = lib.mkIf cfg.zram.enable ''
+    security.polkit.extraConfig = lib.optionalString cfg.zram.enable ''
       polkit.addRule(function(action, subject) {
         if (action.id == "org.freedesktop.systemd1.manage-units" &&
             subject.user == "${user}" &&
             (action.lookup("unit") == "fp6-zram-on.service" ||
-             action.lookup("unit") == "fp6-zram-off.service") &&
+             action.lookup("unit") == "fp6-zram-off.service" ||
+             ${lib.concatMapStringsSep " ||\n             " (p: ''action.lookup("unit") == "fp6-zram-size@${toString p}.service"'') [ 25 50 75 100 ]}) &&
+            action.lookup("verb") == "start") {
+          return polkit.Result.YES;
+        }
+      });
+    '' + ''
+      polkit.addRule(function(action, subject) {
+        if (action.id == "org.freedesktop.systemd1.manage-units" &&
+            subject.user == "${user}" &&
+            (${lib.concatMapStringsSep " ||\n             " (p: ''action.lookup("unit") == "fp6-memory-profile@${p}.service"'') profiles}) &&
             action.lookup("verb") == "start") {
           return polkit.Result.YES;
         }

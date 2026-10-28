@@ -1,0 +1,42 @@
+FP6 memory & performance (nixos-fp6/feature-push/app-ready, overlay lib.mkOrder 4000,
+applied in postPatch after lomiri-app-ready.patch (2600) and spread-close-all (3300,
+postPatch); regenerate against test/patched-src.nix if their context moves): the apps fp6-app-ready
+predicts (GSettings com.fairphone6.app-ready "predicted") are suspended in the background
+like keep-ready ones, "never-keep" apps never are (unless every background app is), and a
+window started hidden is not shown as a card in the app switcher until the user opens it.
+
+--- a/qml/Stage/Stage.qml
++++ b/qml/Stage/Stage.qml
+@@ -212,7 +212,15 @@
+         if (fp6AppReady.freezeBackground === true || fp6AppReady.saverFreeze === true) {
+             return true;
+         }
+-        var lists = [fp6AppReady.keepReady, fp6AppReady.prelaunch];
++        // FP6 memory & performance: "never keep" apps are not kept ready;
++        // the apps fp6-app-ready predicts are (GSettings "predicted").
++        var never = fp6AppReady.neverKeep || [];
++        for (var n = 0; n < never.length; n++) {
++            if (shortAppId === never[n]) {
++                return false;
++            }
++        }
++        var lists = [fp6AppReady.keepReady, fp6AppReady.prelaunch, fp6AppReady.predicted];
+         for (var l = 0; l < lists.length; l++) {
+             var list = lists[l] || [];
+             for (var i = 0; i < list.length; i++) {
+@@ -1770,11 +1778,13 @@
+                             y: spreadMaths.targetY
+                             z: index
+                             height: spreadItem.spreadItemHeight
+-                            visible: spreadMaths.itemVisible
++                            // FP6 memory & performance: an app started hidden (predicted,
++                            // never opened) is not shown as a card until the user opens it.
++                            visible: spreadMaths.itemVisible && !(model.window && model.window.fp6Background)
+                             opacity: fp6CloseAll.isClosable(appDelegate.appId) ? 1 - fp6CloseAll.fade : 1
+                         }
+                         PropertyChanges { target: dragArea; enabled: true }
+-                        PropertyChanges { target: windowInfoItem; opacity: spreadMaths.tileInfoOpacity; visible: spreadMaths.itemVisible }
++                        PropertyChanges { target: windowInfoItem; opacity: spreadMaths.tileInfoOpacity; visible: spreadMaths.itemVisible && !(model.window && model.window.fp6Background) }
+                         PropertyChanges { target: touchControls; enabled: false }
+                     },
+                     State {
