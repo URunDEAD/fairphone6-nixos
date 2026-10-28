@@ -31,6 +31,17 @@
 #    an empty Icon= (a blank tile in the app drawer; fp6-selftest's desktops
 #    check failed on it on r4). It is set to NoDisplay=true; the binary stays
 #    installed.
+#  * alarmsMkcal: Lomiri UITK's Alarm API (the Clock app, the Assistant) uses
+#    the QtOrganizer manager named by ALARM_BACKEND, default "eds". There is
+#    no QtOrganizer EDS plugin on NixOS, so UITK fell back to "memory" plus a
+#    private ~/.local/share/<app>/alarms.json: the Clock app saw its own
+#    alarms, but indicator-datetime (built with ENABLE_MKCAL; it is what
+#    rings alarms, from the mkcal notebook "Alarms") never did. The session
+#    now sets ALARM_BACKEND=mkcal and puts only the qtorganizer-mkcal plugin
+#    on QT_PLUGIN_PATH (its own plugin root in the system profile), the store
+#    lomiri-calendar-app and indicator-datetime already use. Alarms made
+#    before the change stay in that app's alarms.json (set them again).
+#    Laptop test: nix-build lomiri-misc/alarms-mkcal-test.nix.
 { config, lib, pkgs, ... }:
 let
   cfg = config.hardware.fairphone6.lomiriMisc;
@@ -65,6 +76,8 @@ let
     echo "fp6: no Wayland compositor socket ($socket); not starting maliit-keyboard" >&2
     exit 1
   '';
+
+  mkcalPlugins = import ./alarms-mkcal-plugins.nix { inherit pkgs; };
 
   pinCheck = pkgs.runCommand "fp6-lomiri-launcher-pins-check" { } ''
     for id in ${lib.escapeShellArgs cfg.launcherPins}; do
@@ -107,6 +120,11 @@ in {
       default = true;
       description = "Hide Lomiri's indicators-client test app from the app drawer.";
     };
+    alarmsMkcal = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = "UITK alarms (Clock app) in mkcal, where indicator-datetime rings them: ALARM_BACKEND=mkcal plus the qtorganizer-mkcal plugin.";
+    };
     keyboardSocketWaitSeconds = lib.mkOption {
       type = lib.types.ints.between 1 30;
       default = 5;
@@ -139,6 +157,14 @@ in {
           });
         });
       }) ];
+    })
+    (lib.mkIf cfg.alarmsMkcal {
+      environment.sessionVariables.ALARM_BACKEND = "mkcal";
+      # Profile-relative, so it joins the QT_PLUGIN_PATH string set in
+      # configuration.nix (maliit) instead of conflicting with it.
+      environment.systemPackages = [ mkcalPlugins ];
+      environment.profileRelativeSessionVariables.QT_PLUGIN_PATH = [ "/${mkcalPlugins.pluginRoot}" ];
+      system.build.fp6-alarms-mkcal-plugins = mkcalPlugins;
     })
     {
       assertions = [{
