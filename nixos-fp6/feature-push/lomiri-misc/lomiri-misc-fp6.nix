@@ -42,7 +42,7 @@
 #    lomiri-calendar-app and indicator-datetime already use. Alarms made
 #    before the change stay in that app's alarms.json (set them again).
 #    Laptop test: nix-build lomiri-misc/alarms-mkcal-test.nix.
-{ config, lib, pkgs, ... }:
+{ config, options, lib, pkgs, ... }:
 let
   cfg = config.hardware.fairphone6.lomiriMisc;
 
@@ -125,6 +125,15 @@ in {
       default = true;
       description = "UITK alarms (Clock app) in mkcal, where indicator-datetime rings them: ALARM_BACKEND=mkcal plus the qtorganizer-mkcal plugin.";
     };
+    dbusDedupe = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Drop the system profile's copy of a D-Bus .service file that another
+        services.dbus.packages entry already provides (dbus-broker "Ignoring
+        duplicate name" warnings).
+      '';
+    };
     keyboardSocketWaitSeconds = lib.mkOption {
       type = lib.types.ints.between 1 30;
       default = 5;
@@ -133,6 +142,40 @@ in {
   };
 
   config = lib.mkIf cfg.enable (lib.mkMerge [
+    # NixOS puts config.system.path itself into services.dbus.packages, so
+    # every package that is both in environment.systemPackages and in
+    # services.dbus.packages (fp6 Share/OCR/Quick Share, dconf, Lomiri's
+    # download manager, content-hub, history, media scanner, thumbnailer,
+    # URL dispatcher, telephony; libusermetrics on the system bus) had two
+    # (with XDG_DATA_DIRS three) copies of its .service file, and
+    # dbus-broker-launch logged "Ignoring duplicate name" for each, on the
+    # greeter's and the user's session bus and the system bus. Remove the
+    # system profile's copy when another D-Bus package provides the same
+    # file name; that package's own directory stays a servicedir. The
+    # packages are taken from every definition except the NixOS dbus
+    # module's own ([ dbus system.path ]): touching system.path here (even
+    # its name) would recurse into this very postBuild.
+    (lib.mkIf cfg.dbusDedupe {
+      environment.extraSetup = let
+        defs = builtins.filter (d: !lib.hasSuffix "/services/system/dbus.nix" (toString d.file))
+          options.services.dbus.packages.definitionsWithLocations;
+        others = lib.concatMap (d: d.value) defs;
+      in ''
+        for kind in services system-services; do
+          [ -d "$out/share/dbus-1/$kind" ] || continue
+          for pkg in ${lib.escapeShellArgs (map toString others)}; do
+            for f in "$pkg/share/dbus-1/$kind"/*.service; do
+              [ -e "$f" ] || continue
+              n=$(basename "$f")
+              if [ -L "$out/share/dbus-1/$kind/$n" ] || [ -f "$out/share/dbus-1/$kind/$n" ]; then
+                rm -f "$out/share/dbus-1/$kind/$n"
+                echo "fp6 dbus dedupe: $kind/$n (in $pkg)"
+              fi
+            done
+          done
+        done
+      '';
+    })
     (lib.mkIf (cfg.launcherPins != [ ]) {
       programs.dconf.enable = true;
       programs.dconf.profiles.user.databases = [{
