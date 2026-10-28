@@ -1,0 +1,49 @@
+--- a/qml/Greeter/CoverPage.qml
++++ b/qml/Greeter/CoverPage.qml
+@@ -37,6 +37,9 @@
+     property real panelHeight
+     property var infographicModel
+     property bool draggable: true
++    // FP6 charging feedback: the lock-screen charging line under the clock
++    // (Greeter/Fp6ChargingStatus.qml) replaces the "... until full" hint.
++    property bool fp6HideChargingHint: false
+ 
+     // FP6: fingerprint unlock feedback (set by GreeterView from the greeter's
+     // biometryd identification): an icon while the reader listens, a pulse
+@@ -208,7 +211,7 @@
+         font.weight: Font.Light
+         // FP6: give way to swipeHint while it shows an error ("Try again"),
+         // otherwise fingerprint failures are invisible while charging.
+-        visible: gsettings.showChargingInformationWhileLocked && (BatteryMonitor.charging || BatteryMonitor.fullyCharged)
++        visible: !root.fp6HideChargingHint && gsettings.showChargingInformationWhileLocked && (BatteryMonitor.charging || BatteryMonitor.fullyCharged)
+                  && d.errorMessage === ""
+     }
+ 
+--- a/qml/Greeter/GreeterView.qml
++++ b/qml/Greeter/GreeterView.qml
+@@ -371,6 +371,7 @@
+         showInfographic: !root.multiUser && root.usageMode != "desktop"
+         fingerprintActive: root.fingerprintActive
+         fp6EdgeHint: true // FP6 lockscreen-polish: no fingerprint icon mid-screen
++        fp6HideChargingHint: fp6ChargingStatus.shown // FP6 charging feedback
+ 
+         onShowProgressChanged: {
+             if (showProgress === 0) {
+@@ -387,6 +388,17 @@
+             anchors.centerIn: parent
+         }
+ 
++        // FP6 charging feedback: "Charging · 45 % · Full in 1 h 10 min"
++        // under the clock and date while a charger is connected.
++        Fp6ChargingStatus {
++            id: fp6ChargingStatus
++            anchors.top: clock.bottom
++            anchors.topMargin: units.gu(2)
++            anchors.horizontalCenter: clock.horizontalCenter
++            width: Math.min(coverPage.width - units.gu(4), units.gu(60))
++            animate: coverPage.shown && coverPage.showProgress > 0.5
++        }
++
+         states: [
+             State {
+                 name: "landscape-with-infographics"
