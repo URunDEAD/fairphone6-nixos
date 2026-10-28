@@ -1,7 +1,9 @@
-//! Small-context models (the on-device runtime runs llama.cpp with a 2048
-//! token context): pick the few tools the request is about, shorten their
-//! schemas, keep the recent history only, and cut long tool results, so
-//! system prompt + tools + history + answer fit.
+//! Small-context models (the on-device runtime runs llama.cpp with an
+//! 8192-token context by default, down to 2048 when RAM is short; it
+//! reports the effective size as Status.n_ctx): pick the few tools the
+//! request is about, shorten their schemas, keep the recent history only,
+//! and cut long tool results, so system prompt + tools + history + answer
+//! fit.
 
 use crate::llm::{Message, Part, Role, ToolDef};
 use serde_json::{json, Value};

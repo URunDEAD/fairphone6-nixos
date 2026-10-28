@@ -288,7 +288,7 @@ fn preview_reply(method: &str, args: &[String]) -> String {
                 {"kind": "search", "title": format!("Search the web for \u{201c}{t}\u{201d}"), "url": "https://duckduckgo.com/?q=test"}
             ]).to_string()
         }
-        "LocalStatus" => json!({"state": "idle", "model": "qwen3-4b-instruct-q4_k_m"}).to_string(),
+        "LocalStatus" => json!({"state": "idle", "model": "qwen3-4b-instruct-q4_k_m", "n_ctx": 8192}).to_string(),
         "syscheck" => json!({"ok": true, "result": "absent"}).to_string(),
         _ => String::new(),
     }

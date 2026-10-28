@@ -1,7 +1,9 @@
 //! The on-device runtime (fp6-llm, built separately): D-Bus
 //! com.fairphone6.LocalLlm1 on the session bus. The assistant only needs
 //! Endpoint() (starts llama-server on demand, 127.0.0.1) and Status();
-//! Unload() frees the RAM when the user leaves the assistant.
+//! Unload() frees the RAM when the user leaves the assistant. Status()
+//! carries `n_ctx`, the runtime's effective context window (RAM-dependent:
+//! 8192 tokens by default, less when memory is short).
 //!
 //! The reply shapes are read tolerantly (the runtime is developed in
 //! parallel): Endpoint() may return (s url, s model) or one JSON string
@@ -87,6 +89,18 @@ pub async fn status(conn: &Connection) -> String {
     String::new()
 }
 
+/// The effective context window from a Status() JSON (`n_ctx`), if the
+/// runtime reports one (older runtimes did not: the caller assumes 2048).
+pub fn parse_n_ctx(status: &str) -> Option<u32> {
+    let v: Value = serde_json::from_str(status).ok()?;
+    let n = v.get("n_ctx")?.as_u64()?;
+    (n >= 512).then(|| n.min(u32::MAX as u64) as u32)
+}
+
+pub async fn n_ctx(conn: &Connection) -> Option<u32> {
+    parse_n_ctx(&status(conn).await)
+}
+
 pub async fn unload(conn: &Connection) {
     let _ = call(conn, "Unload").await;
 }
@@ -99,5 +113,12 @@ mod tests {
         let e = parse_endpoint_json(r#"{"url":"http://127.0.0.1:41234","model":"qwen3-4b-q4_k_m"}"#).unwrap();
         assert_eq!(e.url, "http://127.0.0.1:41234");
         assert_eq!(e.model, "qwen3-4b-q4_k_m");
+    }
+    #[test]
+    fn parses_n_ctx_from_status() {
+        assert_eq!(parse_n_ctx(r#"{"loaded":false,"n_ctx":8192,"context_tokens":0}"#), Some(8192));
+        assert_eq!(parse_n_ctx(r#"{"state":"running"}"#), None);
+        assert_eq!(parse_n_ctx(r#"{"n_ctx":0}"#), None);
+        assert_eq!(parse_n_ctx(""), None);
     }
 }

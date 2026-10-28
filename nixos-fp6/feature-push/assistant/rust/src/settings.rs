@@ -26,8 +26,9 @@ pub struct Backend {
     /// Model ids last listed by the endpoint (Settings picker).
     #[serde(default)]
     pub models: Vec<String>,
-    /// Context window in tokens (0 = automatic: 2048 for the on-device
-    /// runtime, large for the others). Below 16k the compact mode is used.
+    /// Context window in tokens (0 = automatic: what the on-device runtime
+    /// reports, else 2048 for it; large for the others). Below 16k the
+    /// compact mode is used.
     #[serde(default)]
     pub context_tokens: u32,
 }
@@ -38,6 +39,17 @@ impl Backend {
             (0, Kind::Local) => 2048,
             (0, _) => 128_000,
             (n, _) => n.max(1024),
+        }
+    }
+    /// The context to plan requests for. `served` is the on-device
+    /// runtime's effective n_ctx (Status), when this backend resolved to it:
+    /// it is used when automatic and caps a manual value (a larger request
+    /// would not fit the running llama-server).
+    pub fn effective_context(&self, served: Option<u32>) -> u32 {
+        match (self.kind == Kind::Local, served) {
+            (true, Some(n)) if self.context_tokens == 0 => n.max(1024),
+            (true, Some(n)) => self.context().min(n.max(1024)),
+            _ => self.context(),
         }
     }
     pub fn secret_key(&self) -> String {
@@ -314,6 +326,20 @@ mod tests {
         let lan = Backend { id: "o".into(), name: "Ollama".into(), kind: Kind::Ollama, base_url: "http://192.168.1.20:11434".into(), model: "m".into(), effort: String::new(), models: vec![], context_tokens: 0 };
         assert!(lan.is_remote());
         assert_eq!(lan.provider_label(), "192.168.1.20:11434");
+    }
+
+    #[test]
+    fn local_context_follows_the_runtime() {
+        let s = Settings::default();
+        let local = s.backend("local").unwrap().clone();
+        assert_eq!(local.effective_context(None), 2048, "older runtime without n_ctx");
+        assert_eq!(local.effective_context(Some(8192)), 8192);
+        assert_eq!(local.effective_context(Some(4096)), 4096, "runtime lowered it (RAM)");
+        let manual = Backend { context_tokens: 6000, ..local.clone() };
+        assert_eq!(manual.effective_context(Some(8192)), 6000);
+        assert_eq!(manual.effective_context(Some(4096)), 4096, "capped by the running server");
+        let cloud = s.backend("anthropic").unwrap();
+        assert_eq!(cloud.effective_context(Some(4096)), 128_000, "only the on-device backend");
     }
 
     #[test]

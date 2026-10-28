@@ -13,6 +13,11 @@ Page {
     property string status: ""
     readonly property var kinds: ["local", "openai", "anthropic", "ollama"]
     readonly property bool isNew: backend.id === ""
+    // The on-device runtime's effective context (Status.n_ctx; RAM-dependent).
+    readonly property int localCtx: {
+        try { return JSON.parse(settingsPage && settingsPage.localStatus ? settingsPage.localStatus : "{}").n_ctx || 0 }
+        catch (e) { return 0 }
+    }
 
     function slug(t) { return (t.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "service") + "-" + Date.now() % 100000 }
     function current() {
@@ -126,7 +131,8 @@ Page {
             TextField {
                 id: contextField; width: parent.width
                 text: backend.context_tokens ? String(backend.context_tokens) : ""
-                placeholderText: page.kinds[kindSel.selectedIndex] === "local" ? "2048" : "128000"
+                placeholderText: page.kinds[kindSel.selectedIndex] !== "local" ? "128000"
+                               : page.localCtx > 0 ? i18n.tr("%1 (set by the on-device service)").arg(page.localCtx) : "2048"
                 inputMethodHints: Qt.ImhDigitsOnly
             }
             Label {
@@ -137,7 +143,12 @@ Page {
             Button {
                 text: i18n.tr("Manage on-device models…")
                 visible: page.kinds[kindSel.selectedIndex] === "local"
-                onClicked: Qt.openUrlExternally("application:///com.fairphone6.local-llm.desktop")
+                onClicked: {
+                    // In place when the runtime's QML module is installed, else its own app.
+                    var c = Qt.createComponent(Qt.resolvedUrl("LocalModelsPage.qml"))
+                    if (c.status === Component.Ready) stack.push(c)
+                    else Qt.openUrlExternally("application:///com.fairphone6.local-llm.desktop")
+                }
             }
             Label { text: page.hasKey ? i18n.tr("API key (saved; type to replace)") : i18n.tr("API key"); visible: page.kinds[kindSel.selectedIndex] !== "local" }
             TextField {
