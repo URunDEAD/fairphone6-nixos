@@ -254,6 +254,7 @@ pub fn score_counts(out: &Outcome, want: Counts) -> Score {
 
 /// Time-based score: a gesture matches a truth (first tap time, count) with
 /// the same count whose first tap is within 0.3 s of the detected one.
+#[cfg(test)]
 pub fn score_times(out: &Outcome, truth: &[(f64, u32)]) -> Score {
     let mut used = vec![false; truth.len()];
     let mut s = Score::default();

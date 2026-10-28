@@ -206,10 +206,6 @@ impl Calibrator {
         }
     }
 
-    pub fn groups(&self) -> usize {
-        self.groups.len()
-    }
-
     /// Feed the permissive detector's events. `touched(t)`: the touchscreen
     /// was touched around t (a tap on the screen, not the back).
     pub fn event(&mut self, e: &TapEvent, touched: impl Fn(f64) -> bool, noise: f64) {

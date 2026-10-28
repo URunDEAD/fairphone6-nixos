@@ -677,7 +677,7 @@ fn write_example_traces() {
     let scale = 0.004788403 / 9.80665;
     let mut r = Rng::new(1);
     let u = User::random(&mut r);
-    let mut write = |name: &str, samples: &[(f64, V3)], touches: &[f64], truth: &[(f64, u32)], display_on: bool| {
+    let write = |name: &str, samples: &[(f64, V3)], touches: &[f64], truth: &[(f64, u32)], display_on: bool| {
         let mut out = format!("# fp6-gestures record synthetic scale_g_per_lsb={scale:.9} hz=50\n");
         let d = truth.iter().filter(|x| x.1 == 2).count();
         let t = truth.iter().filter(|x| x.1 == 3).count();

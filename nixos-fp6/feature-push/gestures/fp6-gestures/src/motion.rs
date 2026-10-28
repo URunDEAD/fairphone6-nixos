@@ -340,8 +340,6 @@ pub enum Why {
     Close,
     /// Just after a gesture.
     Cooldown,
-    /// Lasting motion just before (walking, a pick-up, setting it down).
-    Moving,
     /// Lying flat face up: knocks on the table.
     Flat,
     /// The touchscreen was touched (taps on the screen).
@@ -363,7 +361,6 @@ impl Why {
             Why::Sideways => "sideways",
             Why::Close => "close",
             Why::Cooldown => "cooldown",
-            Why::Moving => "moving",
             Why::Flat => "flat",
             Why::Touch => "touch",
             Why::Typing => "typing",

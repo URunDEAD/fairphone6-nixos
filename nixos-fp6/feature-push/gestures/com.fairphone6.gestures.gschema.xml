@@ -13,6 +13,11 @@
     <value nick="app" value="2"/>
     <value nick="command" value="3"/>
   </enum>
+  <enum id="com.fairphone6.gestures.BackTapMode">
+    <value nick="normal" value="0"/>
+    <value nick="calibrate" value="1"/>
+    <value nick="test" value="2"/>
+  </enum>
   <enum id="com.fairphone6.gestures.Sensitivity">
     <value nick="low" value="0"/>
     <value nick="medium" value="1"/>
@@ -116,9 +121,30 @@
       <default>''</default>
       <summary>Shell command for the back triple tap</summary>
     </key>
-    <key name="back-tap-sensitivity" enum="com.fairphone6.gestures.Sensitivity">
-      <default>'medium'</default>
-      <summary>Back tap sensitivity</summary>
+    <key name="back-tap-level" type="i">
+      <range min="0" max="100"/>
+      <default>50</default>
+      <summary>Back tap sensitivity (0 firm taps only, 100 light taps)</summary>
+      <description>Scales the tap threshold from twice to half its middle value. With a calibration the middle value is half of the user's typical tap, else 0.4 g.</description>
+    </key>
+    <key name="back-tap-profile" type="s">
+      <default>''</default>
+      <summary>Back tap calibration ('' = not calibrated), written by fp6-gestures</summary>
+      <description>"v1 peak=… min=… ratio=… gapmin=… gapmax=… noise=… sign=… n=…": the user's tap strength (g), z/xy ratio, spacing (s), hand noise and direction from Settings > Gesture Shortcuts > Calibrate.</description>
+    </key>
+    <key name="back-tap-mode" enum="com.fairphone6.gestures.BackTapMode">
+      <default>'normal'</default>
+      <summary>Back tap calibration or test mode (set by the Settings page)</summary>
+      <description>calibrate: record pairs of taps and write back-tap-profile; test: report taps in back-tap-log without running any shortcut. fp6-gestures sets it back to normal when done, after a timeout, or when the display turns off.</description>
+    </key>
+    <key name="back-tap-log" type="as">
+      <default>[]</default>
+      <summary>Internal: recent back tap events for the Settings page ("seq TAB kind TAB details")</summary>
+    </key>
+    <key name="back-tap-cal-progress" type="i">
+      <range min="0" max="10"/>
+      <default>0</default>
+      <summary>Internal: pairs of taps recorded in the running calibration</summary>
     </key>
     <key name="volume-long-press-tracks" type="b">
       <default>false</default>

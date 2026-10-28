@@ -1,8 +1,28 @@
 // SPDX-License-Identifier: MIT
 //! Settings snapshot (GSettings com.fairphone6.gestures) and the lock policy.
 
+use crate::backtap::{self, Calibrator, Profile};
 use crate::detector::Sensitivity;
-use crate::motion::Armed;
+use crate::motion::{Armed, TapParams};
+
+/// back-tap-mode: the Settings page's calibration and test mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum BackMode {
+    #[default]
+    Normal,
+    Calibrate,
+    Test,
+}
+
+impl BackMode {
+    pub fn parse(text: &str) -> BackMode {
+        match text {
+            "calibrate" => BackMode::Calibrate,
+            "test" => BackMode::Test,
+            _ => BackMode::Normal,
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
@@ -72,7 +92,10 @@ pub struct Config {
     pub raise_to_wake: bool,
     pub back_double: Action,
     pub back_triple: Action,
-    pub back_sensitivity: Sensitivity,
+    /// Slider 0-100 (back-tap-level).
+    pub back_level: u8,
+    pub back_profile: Option<Profile>,
+    pub back_mode: BackMode,
     pub volume_tracks: bool,
     /// Stay on while held (powerd HoldCheck; accelerometer burst per check).
     pub stay_on_held: bool,
@@ -94,7 +117,9 @@ impl Default for Config {
             raise_to_wake: false,
             back_double: Action::None,
             back_triple: Action::None,
-            back_sensitivity: Sensitivity::Medium,
+            back_level: backtap::DEFAULT_LEVEL,
+            back_profile: None,
+            back_mode: BackMode::Normal,
             volume_tracks: false,
             stay_on_held: false,
         }
@@ -126,13 +151,31 @@ impl Config {
     /// Which wake-on-motion gestures need the accelerometer now. Raise to
     /// wake only with the display off; nothing but flip while covered (a
     /// pocket is no place for taps or raises, and it saves the IMU reads
-    /// while walking).
+    /// while walking). Calibration and test mode listen for up to three
+    /// taps while the display is on (the Settings page is open).
     pub fn armed(&self, display_on: bool, covered: bool) -> Armed {
-        Armed {
-            flip: self.flip_to_silence,
-            raise: self.raise_to_wake && !display_on && !covered,
-            tap: if covered { 0 } else { self.back_tap_max() },
+        let tap = if covered {
+            0
+        } else if self.back_mode != BackMode::Normal && display_on {
+            3
+        } else {
+            self.back_tap_max()
+        };
+        Armed { flip: self.flip_to_silence, raise: self.raise_to_wake && !display_on && !covered, tap }
+    }
+
+    /// Tap detector settings for the current mode.
+    pub fn tap_params(&self) -> TapParams {
+        match self.back_mode {
+            BackMode::Calibrate => Calibrator::detector_params(),
+            _ => backtap::params(self.back_level, self.back_profile.as_ref()),
         }
+    }
+
+    /// The touchscreen is read (back tap veto, calibration) only while
+    /// back tap can fire or the Settings page calibrates / tests.
+    pub fn wants_touch(&self) -> bool {
+        self.back_tap_max() > 0 || self.back_mode != BackMode::Normal
     }
 
     /// iio-sensor-proxy proximity is needed for pocket mode, and for raise
@@ -267,6 +310,18 @@ mod tests {
         assert!(c.wants_proximity(false) && !c.wants_proximity(true));
         let c = Config { back_triple: Action::App("x".into()), ..c };
         assert_eq!(c.back_tap_max(), 3);
+        // Calibration / test: three taps while the display is on, the
+        // touchscreen read, the permissive detector while calibrating.
+        let c = Config { back_mode: BackMode::Calibrate, ..Config::default() };
+        assert_eq!(c.armed(true, false).tap, 3);
+        assert_eq!(c.armed(false, false).tap, 0);
+        assert_eq!(c.armed(true, true).tap, 0);
+        assert!(c.wants_touch() && !Config::default().wants_touch());
+        assert_eq!(c.tap_params(), Calibrator::detector_params());
+        let t = Config { back_mode: BackMode::Test, back_level: 100, ..Config::default() };
+        assert!((t.tap_params().threshold - 0.2).abs() < 1e-9);
+        assert_eq!(BackMode::parse("test"), BackMode::Test);
+        assert_eq!(BackMode::parse("bogus"), BackMode::Normal);
         assert_eq!(decide(&Action::Flashlight, Source::BackDouble, true, false), Decision::Run);
         assert_eq!(decide(&Action::Command("true".into()), Source::BackTriple, true, true), Decision::Refuse);
     }

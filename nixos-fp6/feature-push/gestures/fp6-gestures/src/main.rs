@@ -47,10 +47,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use actions::{log, Buses};
-use config::{decide, Action, Config, Decision, Source};
+use backtap::{CalProgress, Calibrator, Context, TouchLog};
+use config::{decide, Action, BackMode, Config, Decision, Source};
 use detector::{AdaptiveRate, Params, Sensitivity, ShakeDetector};
 use gio::prelude::*;
-use motion::{FlipDetector, FlipParams, RaiseDetector, RaiseParams, Scheduler, TapDetector, TapParams};
+use motion::{FlipDetector, FlipParams, RaiseDetector, RaiseParams, Scheduler, TapDetector, TapEvent, TapParams};
 use volume::{LongPress, Track, VolEvent};
 use wom::monotonic;
 
@@ -140,7 +141,9 @@ fn read_config(s: &gio::Settings) -> Config {
         raise_to_wake: s.boolean("raise-to-wake"),
         back_double: action("back-double-tap"),
         back_triple: action("back-triple-tap"),
-        back_sensitivity: Sensitivity::parse(&s.string("back-tap-sensitivity")),
+        back_level: s.int("back-tap-level").clamp(0, 100) as u8,
+        back_profile: backtap::Profile::decode(&s.string("back-tap-profile")),
+        back_mode: BackMode::parse(&s.string("back-tap-mode")),
         volume_tracks: s.boolean("volume-long-press-tracks"),
         stay_on_held: s.boolean("stay-on-while-held"),
     }
@@ -194,8 +197,10 @@ struct Shared {
     covered: AtomicBool,
     /// Last proximity reading while claimed.
     prox_near: Mutex<Option<bool>>,
-    /// Monotonic time of the last touchscreen event (back tap veto).
-    last_touch: Mutex<f64>,
+    /// Touchscreen activity (back tap veto, typing, calibration).
+    touches: Mutex<TouchLog>,
+    /// Recent back tap events for the Settings page (calibration / test).
+    tap_log: Mutex<(u32, std::collections::VecDeque<String>)>,
     /// Silenced by flip (GSettings flip-silenced, survives restarts).
     flip_silenced: AtomicBool,
     /// WoM enable attribute, switched off on exit.
@@ -206,6 +211,49 @@ fn set_flip_flag(shared: &Shared, on: bool) {
     shared.flip_silenced.store(on, Ordering::SeqCst);
     glib::MainContext::default().invoke(move || {
         let _ = gio::Settings::new(SCHEMA).set_boolean("flip-silenced", on);
+    });
+}
+
+/// Write GSettings from any thread (on the main context, like the page's
+/// own writes).
+fn settings_set(f: impl FnOnce(&gio::Settings) + Send + 'static) {
+    glib::MainContext::default().invoke(move || f(&gio::Settings::new(SCHEMA)));
+}
+
+/// Append "seq TAB entry" to back-tap-log (the last 12), for the page.
+fn tap_log(shared: &Shared, entry: String) {
+    let list: Vec<String> = {
+        let mut l = shared.tap_log.lock().unwrap();
+        l.0 = l.0.wrapping_add(1);
+        let line = format!("{}\t{entry}", l.0);
+        l.1.push_back(line);
+        while l.1.len() > 12 {
+            l.1.pop_front();
+        }
+        l.1.iter().cloned().collect()
+    };
+    settings_set(move |s| {
+        let refs: Vec<&str> = list.iter().map(String::as_str).collect();
+        let _ = s.set_strv("back-tap-log", refs.as_slice());
+    });
+}
+
+fn clear_tap_log(shared: &Shared) {
+    shared.tap_log.lock().unwrap().1.clear();
+    settings_set(|s| {
+        let _ = s.set_strv("back-tap-log", &[] as &[&str]);
+        let _ = s.set_int("back-tap-cal-progress", 0);
+    });
+}
+
+/// Calibration and test mode end by themselves (page closed without
+/// resetting, display off).
+const TEST_TIMEOUT: f64 = 300.0;
+
+fn end_back_mode(why: &str) {
+    log(format!("back tap mode back to normal ({why})"));
+    settings_set(|s| {
+        let _ = s.set_string("back-tap-mode", "normal");
     });
 }
 
@@ -241,7 +289,8 @@ fn run() -> i32 {
         display_on: AtomicBool::new(true),
         covered: AtomicBool::new(false),
         prox_near: Mutex::new(None),
-        last_touch: Mutex::new(f64::NEG_INFINITY),
+        touches: Mutex::new(TouchLog::default()),
+        tap_log: Mutex::new((0, std::collections::VecDeque::new())),
         flip_silenced: AtomicBool::new(settings.boolean("flip-silenced")),
         wom_en: Mutex::new(None),
     });
@@ -261,7 +310,8 @@ fn run() -> i32 {
         let prox_tx = prox_tx.clone();
         let input_tx = input_tx.clone();
         settings.connect_changed(None, move |s, key| {
-            if key == "installed-apps" || key == "flip-silenced" {
+            // Written by this daemon for the Settings page.
+            if matches!(key, "installed-apps" | "flip-silenced" | "back-tap-log" | "back-tap-cal-progress") {
                 return;
             }
             if key == "app-list-request" {
@@ -365,13 +415,29 @@ fn run_job(buses: &Buses, shared: &Shared, job: Job) {
         Job::BackTaps(taps) => {
             // Taps on the screen shake the phone too. The touchscreen reports
             // them (with the display off, double tap to wake sends KEY_WAKEUP
-            // right after the second tap): give it a moment, then veto.
-            std::thread::sleep(Duration::from_millis(150));
-            if *shared.last_touch.lock().unwrap() >= taps.first - 0.25 {
-                log(format!("{} taps ignored: the touchscreen was touched (screen tap)", taps.count));
+            // right after the second tap): give it a moment, then judge.
+            std::thread::sleep(Duration::from_secs_f64(tapsim::JUDGE_DELAY));
+            let verdict = {
+                let touches = shared.touches.lock().unwrap();
+                backtap::judge(&taps, &touches, display_on, config.back_profile.as_ref(), Context::Full)
+            };
+            let test = config.back_mode == BackMode::Test;
+            if let Err(why) = verdict {
+                log(format!("{} taps ignored: {} (peak {:.2} g, signs {:?})", taps.count, why.code(), taps.peak, taps.signs));
+                if test {
+                    tap_log(shared, format!("rejected\t{}\t{}", why.code(), taps.count));
+                }
                 return;
             }
-            log(format!("back tap x{} (first impulse sign {})", taps.count, taps.sign));
+            log(format!("back tap x{} (peak {:.2} g, signs {:?})", taps.count, taps.peak, taps.signs));
+            if test {
+                // Test mode: show it, buzz, run nothing.
+                tap_log(shared, format!("gesture\t{}", taps.count));
+                if config.vibrate {
+                    actions::vibrate(buses.system.as_ref(), 30);
+                }
+                return;
+            }
             let source = if taps.count >= 3 { Source::BackTriple } else { Source::BackDouble };
             execute(buses, &config, source, display_on, config.action_for(source).clone(), true)
         }
@@ -650,7 +716,12 @@ fn sampler(shared: Arc<Shared>, wake_rx: mpsc::Receiver<Wake>, wake_tx: mpsc::Se
         flip.assume_face_down();
     }
     let mut raise = RaiseDetector::new(RaiseParams::default());
-    let mut tap: Option<((Sensitivity, u32), TapDetector)> = None;
+    let mut tap: Option<((u8, Option<backtap::Profile>, BackMode, u32), TapDetector)> = None;
+    let mut mode = BackMode::Normal;
+    let mut mode_since = f64::NEG_INFINITY;
+    let mut calibrator: Option<Calibrator> = None;
+    let mut cal_groups = 0usize;
+    let mut moving_logged = f64::NEG_INFINITY;
     let mut raise_quiet_until = f64::NEG_INFINITY;
     let mut was_flip = false;
     let mut force_read = true;
@@ -704,12 +775,32 @@ fn sampler(shared: Arc<Shared>, wake_rx: mpsc::Receiver<Wake>, wake_tx: mpsc::Se
         if !armed.raise {
             raise.reset();
         }
+        if config.back_mode != mode {
+            log(format!("back tap mode: {:?}", config.back_mode));
+            mode = config.back_mode;
+            mode_since = now;
+            calibrator = (mode == BackMode::Calibrate).then(|| Calibrator::new(now));
+            cal_groups = 0;
+            clear_tap_log(&shared);
+        }
+        if mode == BackMode::Test && now - mode_since > TEST_TIMEOUT {
+            end_back_mode("test mode timeout");
+            mode_since = now; // once
+        }
+        let key = (config.back_level, config.back_profile, mode, armed.tap);
         match armed.tap {
             0 => tap = None,
-            max if tap.as_ref().map(|t| t.0) != Some((config.back_sensitivity, max)) => {
-                tap = Some(((config.back_sensitivity, max), TapDetector::new(TapParams::for_sensitivity(config.back_sensitivity), max)));
+            _ if tap.as_ref().map(|t| t.0) != Some(key) => {
+                let mut d = TapDetector::new(config.tap_params(), armed.tap);
+                d.record_events = true;
+                tap = Some((key, d));
             }
             _ => {}
+        }
+        if let Some((_, t)) = &mut tap {
+            // Display off: no touchscreen veto, so wait for quiet and reject
+            // bursts (taps on the dark screen).
+            t.confirm = !display_on;
         }
         if let Some(w) = &wom {
             if armed.any() != wom_on {
@@ -730,7 +821,40 @@ fn sampler(shared: Arc<Shared>, wake_rx: mpsc::Receiver<Wake>, wake_tx: mpsc::Se
         }
         if let Some((_, t)) = &mut tap {
             if let Some(taps) = t.poll(now) {
-                send_taps(&shared, &exec_tx, taps);
+                send_taps(&shared, &exec_tx, taps, mode);
+            }
+            tap_events(&shared, t, mode, calibrator.as_mut(), &mut moving_logged);
+        }
+        if let Some(c) = &mut calibrator {
+            match c.poll(now) {
+                CalProgress::Listening(n) => {
+                    if n != cal_groups {
+                        cal_groups = n;
+                        log(format!("back tap calibration: {n} of {}", backtap::CAL_GROUPS));
+                        settings_set(move |s| {
+                            let _ = s.set_int("back-tap-cal-progress", n as i32);
+                        });
+                    }
+                }
+                CalProgress::Done(result) => {
+                    calibrator = None;
+                    match result {
+                        Ok(p) => {
+                            let text = p.encode();
+                            log(format!("back tap calibrated: {text}"));
+                            tap_log(&shared, format!("calibrated\t{:.2}\t{:.2}", p.peak, p.gap_max));
+                            settings_set(move |s| {
+                                let _ = s.set_int("back-tap-cal-progress", backtap::CAL_GROUPS as i32);
+                                let _ = s.set_string("back-tap-profile", &text);
+                            });
+                        }
+                        Err(e) => {
+                            log(format!("back tap calibration failed: {}", e.code()));
+                            tap_log(&shared, format!("failed\t{}", e.code()));
+                        }
+                    }
+                    end_back_mode("calibration finished");
+                }
             }
         }
         let tap_moving = tap.as_ref().map_or(false, |t| t.1.moving(now));
@@ -785,8 +909,9 @@ fn sampler(shared: Arc<Shared>, wake_rx: mpsc::Receiver<Wake>, wake_tx: mpsc::Se
                     }
                     if let Some((_, t)) = &mut tap {
                         if let Some(taps) = t.push(now, m) {
-                            send_taps(&shared, &exec_tx, taps);
+                            send_taps(&shared, &exec_tx, taps, mode);
                         }
+                        tap_events(&shared, t, mode, calibrator.as_mut(), &mut moving_logged);
                     }
                     if debug && armed.any() {
                         log(format!("sample {:.3} {:.3} {:.3}", m[0], m[1], m[2]));
@@ -836,6 +961,9 @@ fn sampler(shared: Arc<Shared>, wake_rx: mpsc::Receiver<Wake>, wake_tx: mpsc::Se
                     // Turned off by hand while holding it: no instant re-wake.
                     raise_quiet_until = monotonic() + 2.0;
                     force_read = true;
+                    if mode != BackMode::Normal {
+                        end_back_mode("display off");
+                    }
                 }
             }
             Some(Wake::HoldCheck(token)) => {
@@ -847,8 +975,44 @@ fn sampler(shared: Arc<Shared>, wake_rx: mpsc::Receiver<Wake>, wake_tx: mpsc::Se
     }
 }
 
-fn send_taps(_shared: &Shared, exec_tx: &mpsc::Sender<Job>, taps: motion::Taps) {
-    let _ = exec_tx.send(Job::BackTaps(taps));
+fn send_taps(_shared: &Shared, exec_tx: &mpsc::Sender<Job>, taps: motion::Taps, mode: BackMode) {
+    // While calibrating, the permissive detector's sequences are only data.
+    if mode != BackMode::Calibrate {
+        let _ = exec_tx.send(Job::BackTaps(taps));
+    }
+}
+
+/// Hand the detector's events to the calibrator, the test log (Settings
+/// page) or the journal. Nothing is written to GSettings in normal mode.
+fn tap_events(shared: &Shared, t: &mut TapDetector, mode: BackMode, cal: Option<&mut Calibrator>, moving_logged: &mut f64) {
+    if t.events.is_empty() {
+        return;
+    }
+    let events = std::mem::take(&mut t.events);
+    let threshold = t.p.threshold;
+    if let Some(cal) = cal {
+        let touches = shared.touches.lock().unwrap().clone();
+        for e in &events {
+            cal.event(e, |x| touches.any_in(x - backtap::TOUCH_BEFORE, x + backtap::TOUCH_AFTER), t.noise());
+            if let TapEvent::Tap { peak, .. } = e {
+                tap_log(shared, format!("tap\t{peak:.2}\t{threshold:.2}"));
+            }
+        }
+        return;
+    }
+    for e in events {
+        match (mode, e) {
+            (BackMode::Test, TapEvent::Tap { peak, .. }) => tap_log(shared, format!("tap\t{peak:.2}\t{threshold:.2}")),
+            (BackMode::Test, TapEvent::Ignored { peak, why, .. }) => tap_log(shared, format!("ignored\t{}\t{peak:.2}", why.code())),
+            (BackMode::Test, TapEvent::Moving { t }) if t - *moving_logged > 2.0 => {
+                *moving_logged = t;
+                tap_log(shared, "moving".to_string());
+            }
+            (BackMode::Test, TapEvent::Rejected(x, why)) => tap_log(shared, format!("rejected\t{}\t{}", why.code(), x.count)),
+            (_, TapEvent::Rejected(x, why)) => log(format!("{} taps ignored: {} (peak {:.2} g)", x.count, why.code(), x.peak)),
+            _ => {}
+        }
+    }
 }
 
 /// Proximity claim, pocket detection, SetPocket to powerd.
@@ -1037,7 +1201,7 @@ fn input_thread(shared: Arc<Shared>, buses: Arc<Buses>, rx: mpsc::Receiver<()>, 
     loop {
         let config = shared.config.lock().unwrap().clone();
         let want_keys = config.volume_tracks;
-        let want_touch = config.back_tap_max() > 0;
+        let want_touch = config.wants_touch();
         if want_keys && keys.is_empty() {
             for node in input_nodes(&[volume::KEY_VOLUMEUP, volume::KEY_VOLUMEDOWN, volume::KEY_POWER], "") {
                 match std::fs::File::open(&node) {
@@ -1105,7 +1269,7 @@ fn input_thread(shared: Arc<Shared>, buses: Arc<Buses>, rx: mpsc::Receiver<()>, 
                     let value = i32::from_ne_bytes([ev[20], ev[21], ev[22], ev[23]]);
                     if i >= key_count {
                         if etype == EV_ABS || etype == EV_KEY {
-                            *shared.last_touch.lock().unwrap() = now;
+                            shared.touches.lock().unwrap().touch(now);
                         }
                     } else if etype == EV_KEY {
                         handle(lp.key(code, value, now, armed));

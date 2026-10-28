@@ -21,6 +21,11 @@
 #    interrupt (IIO event, no polling at rest); pocket = iio-sensor-proxy
 #    proximity near + dark (direct lux read) > 1 s, gated in
 #    fp6-lomiri-powerd (com.fairphone6.Gestures SetPocket / Peek).
+#  * Back tap tuning (2026-10-28): sensitivity slider, guided calibration
+#    and a live test mode on the Settings page (GSettings back-tap-mode /
+#    -profile / -log, no extra service); touch, typing, table and motion
+#    rejection; 10 Hz instead of 50 Hz while walking. Evaluation:
+#    `cargo test eval_report -- --nocapture`, real traces: `eval-taps`.
 #  * Stay on while held (2026-10-27, edge-flash README): powerd asks
 #    (HoldCheck) shortly before the idle dim; one 1.5 s IMU burst decides
 #    "held in a reading pose" (hold.rs); nothing is read while it is off.
