@@ -21,13 +21,16 @@
 #    fp6-app-ready SIGCONTs an app still fully stopped 1.5 s after a resume
 #    request as the fallback ("still frozen ... after a start request").
 #  * fp6-app-ready (Rust, user service): oom_score_adj by state (foreground
-#    300 > shell 200; kept ready 600; background 800/900), PSI-triggered
-#    low-memory killer (background apps, unpinned first, never the focused
-#    app or the shell), hidden prelaunch at login, page-cache preload
+#    300 > session services 200 > shell/OSK 100; kept ready 600; background
+#    800/900), PSI-triggered low-memory killer (background lomiri-app-launch
+#    apps, unpinned first, never the focused app, never a process at
+#    oom_score_adj <= 200, never lomiri.service / lomiri-keyboard.service:
+#    crash-isolation's interface), hidden prelaunch at login, page-cache preload
 #    (fadvise WILLNEED on the app's learned mapped files / package files),
 #    zram on/off, status JSON for the page; D-Bus com.fairphone6.AppReady.
 #  * zram swap (zstd, size by memory profile, page-cluster 0) and
-#    earlyoom as the root backstop (avoids the shell and core services).
+#    earlyoom as the root backstop (never kills the shell or Maliit:
+#    --ignore; avoids core services).
 #  * Memory & performance (2026-10-28, results/feature-push-20261024/
 #    memory-performance/README.md): on-device usage prediction keeps the
 #    likely next apps ready (GSettings "predicted", suspended by Stage.qml:
@@ -53,6 +56,10 @@ let
   profiles = [ "conservative" "balanced" "aggressive" ];
   # earlyoom matches /proc/<pid>/comm (15 chars): Lomiri is ".lomiri-wrapped",
   # Maliit "..maliit-keyboa"/"maliit-server". No backslashes: "[.]" for a dot.
+  # Shell (lomiri.service, also the greeter) and OSK (lomiri-keyboard.service)
+  # are never killed (crash-isolation interface); --avoid only lowers a
+  # process's rank, --ignore excludes it.
+  ignore = "^([.]lomiri-wrapped|lomiri|[.]{0,2}maliit.*|maliit-server)$";
   avoid = "^([.]lomiri-wrapped|lomiri|[.]{0,2}maliit.*|maliit-server|systemd|systemd-.*|[(]sd-pam[)]|dbus-daemon|dbus-broker.*|pipewire.*|wireplumber|lightdm|sshd.*|ofonod|NetworkManager|ModemManager|rmtfs|pd-mapper|tqftpserv|qrtr-ns|fp6-.*|[.]fp6-.*|hfd-service|repowerd|biometryd|lomiri-app-laun.*|Xwayland)$";
 in {
   options.hardware.fairphone6.appReady = {
@@ -338,7 +345,7 @@ in {
     # with literal quote characters. Own ExecStart instead ("$$" = "$").
     systemd.services.earlyoom.serviceConfig.ExecStart = lib.mkIf cfg.earlyoom (lib.mkForce [
       ""
-      "${lib.getExe' config.services.earlyoom.package "earlyoom"} -m 4 -s 10 -r 3600 --avoid \"${lib.replaceStrings [ "$" ] [ "$$" ] avoid}\""
+      "${lib.getExe' config.services.earlyoom.package "earlyoom"} -m 4 -s 10 -r 3600 --ignore \"${lib.replaceStrings [ "$" ] [ "$$" ] ignore}\" --avoid \"${lib.replaceStrings [ "$" ] [ "$$" ] avoid}\""
     ]);
 
     assertions = [{

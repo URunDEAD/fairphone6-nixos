@@ -172,6 +172,32 @@ pub fn has_protected(cgroup: &Path) -> bool {
     pids(cgroup).iter().any(|p| std::fs::read_to_string(format!("/proc/{p}/comm")).is_ok_and(|c| is_protected_comm(&c)))
 }
 
+/// crash-isolation's interface (results/feature-push-20261024/crash-isolation/
+/// README.md, section 3): a reclaimer never kills a process whose
+/// oom_score_adj is at or below this (the shell and OSK run at 100, session
+/// services at 200, the user manager's DefaultOOMScoreAdjust), nor these units.
+pub const MAX_PROTECTED_ADJ: i32 = 200;
+pub const PROTECTED_UNITS: [&str; 2] = ["lomiri.service", "lomiri-keyboard.service"];
+
+/// Whether the low-memory killer may close this cgroup, from the unit name and
+/// the oom_score_adj of its processes (`None` = unreadable or gone). Every
+/// readable process must be above MAX_PROTECTED_ADJ and at least one must be
+/// readable; an app that was just started (still at the inherited 0 or 200,
+/// before reconcile raises it) is therefore not a candidate yet.
+pub fn killable_by_adj(unit: &str, adjs: &[Option<i32>]) -> bool {
+    if PROTECTED_UNITS.contains(&unit) {
+        return false;
+    }
+    let known: Vec<i32> = adjs.iter().flatten().copied().collect();
+    !known.is_empty() && known.iter().all(|&a| a > MAX_PROTECTED_ADJ)
+}
+
+/// killable_by_adj for a live app unit (reads /proc/<pid>/oom_score_adj).
+pub fn killable(unit: &AppUnit) -> bool {
+    let adjs: Vec<Option<i32>> = pids(&unit.cgroup).into_iter().map(oom_adj).collect();
+    killable_by_adj(&unit.unit, &adjs)
+}
+
 /// SIGKILL the whole app cgroup (cgroup.kill, Linux 5.14+); signal fallback.
 pub fn kill(cgroup: &Path) -> bool {
     if std::fs::write(cgroup.join("cgroup.kill"), "1").is_ok() {
@@ -384,6 +410,23 @@ mod tests {
         for c in ["morph-browser", ".lomiri-system-", "camera-app", "firefox"] {
             assert!(!is_protected_comm(c), "{c}");
         }
+    }
+
+    #[test]
+    fn reclaim_respects_crash_isolation_adj_and_units() {
+        let app = "lomiri-app-launch--application-legacy--morph-browser--.service";
+        assert!(killable_by_adj(app, &[Some(800), Some(900)]));
+        assert!(killable_by_adj(app, &[Some(201), None]));
+        assert!(!killable_by_adj(app, &[Some(800), Some(200)]));
+        assert!(!killable_by_adj(app, &[Some(800), Some(100)]));
+        assert!(!killable_by_adj(app, &[Some(0)]));
+        assert!(!killable_by_adj(app, &[None]));
+        assert!(!killable_by_adj(app, &[]));
+        assert!(!killable_by_adj("lomiri.service", &[Some(900)]));
+        assert!(!killable_by_adj("lomiri-keyboard.service", &[Some(900)]));
+        // The unit scan only ever yields lomiri-app-launch app units.
+        assert_eq!(parse_unit("lomiri.service"), None);
+        assert_eq!(parse_unit("lomiri-keyboard.service"), None);
     }
 
     #[test]

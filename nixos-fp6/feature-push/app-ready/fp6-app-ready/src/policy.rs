@@ -2,7 +2,8 @@
 //! OOM priorities and the low-memory kill order (Android lmkd-like).
 //!
 //! oom_score_adj (higher = killed first by the kernel / earlyoom):
-//!   shell and session services     200 (user units; we never touch them)
+//!   shell and keyboard (OSK)       100 (crash-isolation; never killed by us)
+//!   other session services         200 (user manager default; never killed by us)
 //!   foreground (focused) app       300
 //!   kept-ready app in background   600 (the user's "always keep")
 //!   predicted app in background    650..700 (more likely = lower)
@@ -15,8 +16,9 @@
 //! background apps (their cgroup) in class order - "never keep", plain
 //! background, predicted, always keep - and inside a class the app least
 //! likely to be used next first (prediction), then the least recently used,
-//! then the largest; never the focused app and never anything that is not a
-//! lomiri-app-launch app.
+//! then the largest; never the focused app, never anything that is not a
+//! lomiri-app-launch app, and never a unit with a process at oom_score_adj
+//! <= 200 (procs::killable).
 
 use crate::procs::MemInfo;
 

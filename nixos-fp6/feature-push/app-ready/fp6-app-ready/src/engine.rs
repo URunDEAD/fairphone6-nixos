@@ -466,8 +466,11 @@ impl Engine {
             return;
         }
         // Only app processes: never a unit holding the shell, keyboard,
-        // session, telephony, audio or modem processes.
-        let units: Vec<AppUnit> = self.apps().into_iter().filter(|u| !procs::has_protected(&u.cgroup)).collect();
+        // session, telephony, audio or modem processes, and (crash-isolation
+        // interface) never a process at oom_score_adj <= 200 or the
+        // lomiri / lomiri-keyboard units.
+        let units: Vec<AppUnit> =
+            self.apps().into_iter().filter(|u| !procs::has_protected(&u.cgroup) && procs::killable(u)).collect();
         let cands: Vec<Candidate> = units
             .iter()
             .map(|u| Candidate {
