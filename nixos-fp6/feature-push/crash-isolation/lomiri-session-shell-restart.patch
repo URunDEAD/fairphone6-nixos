@@ -1,0 +1,53 @@
+diff --git a/systemd/run-systemd-session b/systemd/run-systemd-session
+index d09a280..1198ff1 100755
+--- a/systemd/run-systemd-session
++++ b/systemd/run-systemd-session
+@@ -66,9 +66,48 @@ session_ended() {
+ }
+ trap 'session_ended "$1"' TERM HUP INT
+ 
++# FP6 crash isolation (feature-push/crash-isolation): lomiri.service has
++# Restart=on-failure and comes back locked after a crash. A new login starts
++# clean: no start limit left from crashes in a previous session, no stale
++# "shell crashed" marker (it would lock the fresh session).
++systemctl --user reset-failed "$1" 2>/dev/null || true
++rm -f "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/fp6-crash-isolation/shell-crashed"
++
++# fp6-shell-wait-begin
++# `start --wait` returns as soon as the shell fails, even when systemd is about
++# to restart it. Ending here ended the LightDM session: every shell crash was a
++# logout. Keep the session while the unit is (re)starting or running; a stop,
++# a clean exit or a hit start limit (repeated crashes) still ends it.
++# Polls only while the shell is coming back; otherwise blocks in --wait.
++shell_restarting() {
++    # Waits (polling only while the shell is coming back) until the unit is
++    # running again (0) or has stopped for good (1). No `start` here: starts
++    # count against the start limit and would race systemd's own restart.
++    tries=0
++    while :; do
++        state=$(systemctl --user show -p ActiveState --value "$1" 2>/dev/null) || return 1
++        case "$state" in
++            active|reloading|refreshing) return 0 ;;
++            # auto-restart delay, ExecStopPost, or the new shell starting up.
++            activating|deactivating)
++                [ "$tries" -lt 240 ] || return 1
++                tries=$((tries + 1))
++                sleep 0.5 ;;
++            *) return 1 ;;
++        esac
++    done
++}
++# fp6-shell-wait-end
++
+ # In the background, so that the trap runs as soon as the signal arrives.
+ systemctl --user start --wait "$1" &
+ wait $! || true
++while shell_restarting "$1"; do
++    echo "run-systemd-session: $1 was restarted after a failure; keeping the session" >&2
++    # The unit is active: this start is a no-op that just waits for its end.
++    systemctl --user start --wait "$1" &
++    wait $! || true
++done
+ trap - TERM HUP INT
+ 
+ dbus-update-activation-environment --systemd GNOME_DESKTOP_SESSION_ID=
