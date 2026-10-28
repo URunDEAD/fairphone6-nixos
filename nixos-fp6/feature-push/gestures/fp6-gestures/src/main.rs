@@ -22,12 +22,14 @@
 
 mod actions;
 mod apps;
+mod backtap;
 mod config;
 mod detector;
 mod hold;
 mod iio;
 mod motion;
 mod pocket;
+mod tapsim;
 mod volume;
 mod wom;
 
@@ -724,8 +726,9 @@ fn sampler(shared: Arc<Shared>, wake_rx: mpsc::Receiver<Wake>, wake_tx: mpsc::Se
                 send_taps(&shared, &exec_tx, taps);
             }
         }
+        let tap_moving = tap.as_ref().map_or(false, |t| t.1.moving(now));
         let motion_next = sched
-            .poll_hz(now, armed, flip.pending(), raise.pending(), tap.as_ref().map_or(false, |t| t.1.pending()))
+            .poll_hz(now, armed, flip.pending(), raise.pending(), tap.as_ref().map_or(false, |t| t.1.pending()), tap_moving)
             .map(|hz| sched.last_read + 1.0 / hz);
         let shake_next = rate.as_ref().map(|_| next_shake);
         let hold_next = hold_window.as_ref().map(|w| w.next);
@@ -810,7 +813,7 @@ fn sampler(shared: Arc<Shared>, wake_rx: mpsc::Receiver<Wake>, wake_tx: mpsc::Se
         };
         match msg {
             Some(Wake::Motion(t)) => {
-                if wom_on && sched.on_event(t) {
+                if wom_on && sched.on_event(t, armed, tap_moving) {
                     force_read = true;
                 }
             }

@@ -7,15 +7,18 @@
 //! * WoM fires on a sample when an axis changed by more than
 //!   motion::WOM_THRESHOLD_G since the previous sample; the event reaches the
 //!   daemon ~2 ms later, which then reads the latest sample;
-//! * otherwise samples are read only at the rates motion::Scheduler asks for.
+//! * otherwise samples are read only at the rates motion::Scheduler asks for
+//!   (the loop itself is tapsim::run, shared with the evaluation harness).
 //!
 //! The noise is the real at-rest trace recorded on the phone
 //! (tests/data/rest-window-50hz.txt); the motions are synthetic.
 
+use crate::backtap::Context;
 use crate::detector::Sensitivity;
 use crate::iio::apply_mount;
 use crate::load_trace;
 use crate::motion::*;
+use crate::tapsim::{self, Setup};
 use crate::FP6_MOUNT;
 use std::f64::consts::PI;
 
@@ -24,7 +27,7 @@ const REST: &str = include_str!("../tests/data/rest-window-50hz.txt");
 const REST_RUST: &str = include_str!("../tests/data/rest-window-50hz-rust.txt");
 const ODR: f64 = 50.0;
 
-fn noise() -> Vec<V3> {
+pub(crate) fn noise() -> Vec<V3> {
     let rows = load_trace(REST, SCALE);
     let n = rows.len() as f64;
     let mean = rows.iter().fold([0.0; 3], |m, (_, a)| [m[0] + a[0] / n, m[1] + a[1] / n, m[2] + a[2] / n]);
@@ -40,16 +43,14 @@ struct Out {
     events: usize,
 }
 
-/// Run the sampler model for `seconds` over the mounted signal `sig(t)` (g).
-fn simulate(seconds: f64, armed: Armed, sens: Sensitivity, phase: f64, sig: impl Fn(f64) -> V3) -> Out {
+/// ODR samples of the mounted signal `sig(t)` (g): each the average of 8
+/// points over the last 16 ms, plus the recorded rest noise.
+pub(crate) fn odr_samples(seconds: f64, phase: f64, sig: impl Fn(f64) -> V3) -> Vec<(f64, V3)> {
     let noise = noise();
-    // ODR samples: average of 8 points over the last 16 ms, plus noise.
     let count = (seconds * ODR) as usize + 1;
-    let times: Vec<f64> = (0..count).map(|k| k as f64 / ODR + phase).collect();
-    let samples: Vec<V3> = times
-        .iter()
-        .enumerate()
-        .map(|(k, &t)| {
+    (0..count)
+        .map(|k| {
+            let t = k as f64 / ODR + phase;
             let mut acc = [0.0; 3];
             for j in 0..8 {
                 let s = sig(t - 0.016 * j as f64 / 7.0);
@@ -58,91 +59,35 @@ fn simulate(seconds: f64, armed: Armed, sens: Sensitivity, phase: f64, sig: impl
                 }
             }
             let n = noise[k % noise.len()];
-            [acc[0] + n[0], acc[1] + n[1], acc[2] + n[2]]
+            (t, [acc[0] + n[0], acc[1] + n[1], acc[2] + n[2]])
         })
-        .collect();
-    let events: Vec<f64> = (1..count)
-        .filter(|&k| (0..3).any(|i| (samples[k][i] - samples[k - 1][i]).abs() > WOM_THRESHOLD_G))
-        .map(|k| times[k] + 0.002)
-        .collect();
-    let latest = |t: f64| -> Option<V3> {
-        let k = ((t - phase) * ODR).floor();
-        (k >= 0.0 && (k as usize) < count).then(|| samples[k as usize])
-    };
-    let mut out = Out { events: events.len(), ..Out::default() };
-    let mut sched = Scheduler::new(true);
-    let mut flip = FlipDetector::new(FlipParams::default());
-    let mut raise = RaiseDetector::new(RaiseParams::default());
-    let mut tap = TapDetector::new(TapParams::for_sensitivity(sens), armed.tap.max(2));
-    let mut ev = events.iter().peekable();
-    let mut t = phase + 0.001;
-    let mut read = true; // the daemon reads once when it arms
-    loop {
-        if read {
-            if let Some(a) = latest(t) {
-                out.reads += 1;
-                sched.last_read = t;
-                if armed.flip {
-                    if let Some(f) = flip.push(t, a) {
-                        out.flips.push((t, f));
-                    }
-                }
-                if armed.raise && raise.push(t, a) {
-                    out.raises.push(t);
-                }
-                if armed.tap > 0 {
-                    if let Some(x) = tap.push(t, a) {
-                        out.taps.push((t, x));
-                    }
-                }
-            }
-        }
-        if armed.tap > 0 {
-            if let Some(x) = tap.poll(t) {
-                out.taps.push((t, x));
-            }
-        }
-        let due = sched
-            .poll_hz(t, armed, flip.pending(), raise.pending(), tap.pending())
-            .map(|hz| sched.last_read + 1.0 / hz)
-            .unwrap_or(f64::INFINITY);
-        let next_ev = ev.peek().copied().copied().unwrap_or(f64::INFINITY);
-        let next = due.min(next_ev).max(t + 1e-6);
-        if !next.is_finite() || next > seconds {
-            break;
-        }
-        t = next;
-        if next_ev <= due {
-            ev.next();
-            read = sched.on_event(t);
-        } else {
-            read = true;
-        }
-    }
-    if armed.tap > 0 {
-        if let Some(x) = tap.poll(seconds + 1.0) {
-            out.taps.push((seconds + 1.0, x));
-        }
-    }
-    out
+        .collect()
+}
+
+/// Run the sampler model (tapsim) for `seconds` over the mounted signal.
+fn simulate(seconds: f64, armed: Armed, sens: Sensitivity, phase: f64, sig: impl Fn(f64) -> V3) -> Out {
+    let samples = odr_samples(seconds, phase, sig);
+    let setup = Setup { armed, params: TapParams::for_sensitivity(sens), profile: None, ctx: Context::Full, display_on: true };
+    let o = tapsim::run(&samples, &[], &setup);
+    Out { flips: o.flips, raises: o.raises, taps: o.gestures, reads: o.reads, events: o.wom_events }
 }
 
 const ALL: Armed = Armed { flip: true, raise: true, tap: 3 };
 const SENS: [Sensitivity; 3] = [Sensitivity::Low, Sensitivity::Medium, Sensitivity::High];
 
-fn normalize(a: V3) -> V3 {
+pub(crate) fn normalize(a: V3) -> V3 {
     let n = norm(a);
     [a[0] / n, a[1] / n, a[2] / n]
 }
 
-fn smooth(x: f64) -> f64 {
+pub(crate) fn smooth(x: f64) -> f64 {
     let x = x.clamp(0.0, 1.0);
     x * x * (3.0 - 2.0 * x)
 }
 
 /// Gravity turning from `a` to `b` during [t0, t0 + dur] (slerp-ish), plus a
 /// lift's dynamic acceleration `lift` g along -gravity (bell-shaped).
-fn turn(a: V3, b: V3, t0: f64, dur: f64, lift: f64) -> impl Fn(f64) -> V3 {
+pub(crate) fn turn(a: V3, b: V3, t0: f64, dur: f64, lift: f64) -> impl Fn(f64) -> V3 {
     move |t| {
         let x = smooth((t - t0) / dur);
         let g = normalize([a[0] + (b[0] - a[0]) * x, a[1] + (b[1] - a[1]) * x, a[2] + (b[2] - a[2]) * x]);
@@ -152,25 +97,25 @@ fn turn(a: V3, b: V3, t0: f64, dur: f64, lift: f64) -> impl Fn(f64) -> V3 {
 }
 
 /// Hand tremor (8.5 Hz, 4 mg) and sway (0.4 Hz, 8 mg).
-fn tremor(t: f64) -> V3 {
+pub(crate) fn tremor(t: f64) -> V3 {
     let a = 0.004 * (2.0 * PI * 8.5 * t).sin();
     let s = 0.008 * (2.0 * PI * 0.4 * t).sin();
     [a + s, 0.5 * a, -s]
 }
 
-fn add(a: V3, b: V3) -> V3 {
+pub(crate) fn add(a: V3, b: V3) -> V3 {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 
-const UPRIGHT: V3 = [0.0, -1.0, 0.0];
-const FLAT_UP: V3 = [0.0, 0.0, -1.0];
-const FLAT_DOWN: V3 = [0.0, 0.0, 1.0];
+pub(crate) const UPRIGHT: V3 = [0.0, -1.0, 0.0];
+pub(crate) const FLAT_UP: V3 = [0.0, 0.0, -1.0];
+pub(crate) const FLAT_DOWN: V3 = [0.0, 0.0, 1.0];
 /// Held in front of the face, tilted back 40 degrees from vertical.
-const VIEW: V3 = [0.0, -0.766, -0.643];
+pub(crate) const VIEW: V3 = [0.0, -0.766, -0.643];
 
 /// A back tap at t0: the phone is pushed towards the screen side (dz < 0 in
 /// this convention), ~12 ms, then the hand pushes back for ~30 ms.
-fn back_tap(t0: f64, amp: f64) -> impl Fn(f64) -> V3 {
+pub(crate) fn back_tap(t0: f64, amp: f64) -> impl Fn(f64) -> V3 {
     move |t| {
         let tau = t - t0;
         let z = if (0.0..0.012).contains(&tau) {
@@ -184,7 +129,7 @@ fn back_tap(t0: f64, amp: f64) -> impl Fn(f64) -> V3 {
     }
 }
 
-fn taps_at(times: Vec<f64>, amp: f64) -> impl Fn(f64) -> V3 {
+pub(crate) fn taps_at(times: Vec<f64>, amp: f64) -> impl Fn(f64) -> V3 {
     move |t| times.iter().fold([0.0; 3], |acc, &t0| add(acc, back_tap(t0, amp)(t)))
 }
 
@@ -291,7 +236,7 @@ fn raise_ignores_bumps_slides_walking_and_quick_lift_back() {
 }
 
 /// In the hand (viewing pose with tremor) plus taps.
-fn in_hand(extra: impl Fn(f64) -> V3) -> impl Fn(f64) -> V3 {
+pub(crate) fn in_hand(extra: impl Fn(f64) -> V3) -> impl Fn(f64) -> V3 {
     move |t| add(add(VIEW, tremor(t)), extra(t))
 }
 
