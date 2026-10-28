@@ -51,11 +51,21 @@ struct App {
 
 type Shared = Rc<RefCell<App>>;
 
-/// Value of `key` in an a{sv} or a{sa{sv}} dictionary ('v' unwrapped).
+/// Value of `key` in an a{sv} or a{sa{sv}} dictionary. A boxed 'v' value is
+/// unwrapped; an unboxed one (the inner a{sv} of a{sa{sv}}) is returned as is.
+/// Only `g_variant_get_variant` on a real 'v' is safe: on anything else GLib
+/// logs a type assertion (and returns NULL).
 fn lookup(dict: &glib::Variant, key: &str) -> Option<glib::Variant> {
+    if !dict.type_().is_array() || !dict.type_().element().is_dict_entry() {
+        return None;
+    }
     (0..dict.n_children()).map(|i| dict.child_value(i)).find(|e| e.child_value(0).str() == Some(key)).map(|e| {
         let v = e.child_value(1);
-        v.as_variant().unwrap_or(v)
+        if v.type_() == glib::VariantTy::VARIANT {
+            v.as_variant().unwrap_or(v)
+        } else {
+            v
+        }
     })
 }
 
@@ -71,7 +81,8 @@ impl App {
 
     fn get_prop(&self, path: &str, iface: &str, prop: &str) -> Option<glib::Variant> {
         let r = self.call(path, PROPS, "Get", Some(&(iface, prop).to_variant())).ok()?;
-        r.child_value(0).as_variant()
+        let v = r.child_value(0);
+        if v.type_() == glib::VariantTy::VARIANT { v.as_variant() } else { Some(v) }
     }
 
     /// NM's VPN profiles (uuid, id), and their settings paths.
@@ -307,4 +318,72 @@ fn main() {
     });
 
     glib::MainLoop::new(None, false).run();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::lookup;
+    use glib::prelude::*;
+    use glib::{Variant, VariantDict};
+
+    /// GetSettings-shaped reply body: a{sa{sv}}.
+    fn settings(ty: &str) -> Variant {
+        let con = VariantDict::new(None);
+        con.insert_value("type", &ty.to_variant());
+        con.insert_value("uuid", &"0000-test".to_variant());
+        con.insert_value("id", &"Test VPN".to_variant());
+        let vpn = VariantDict::new(None);
+        vpn.insert_value("service-type", &"org.freedesktop.NetworkManager.test".to_variant());
+        Variant::array_from_iter_with_type(
+            glib::VariantTy::new("{sa{sv}}").unwrap(),
+            [
+                Variant::from_dict_entry(&"connection".to_variant(), &con.end()),
+                Variant::from_dict_entry(&"vpn".to_variant(), &vpn.end()),
+            ],
+        )
+    }
+
+    #[test]
+    fn nested_settings_dict_is_not_unboxed() {
+        let s = settings("vpn");
+        assert_eq!(s.type_().as_str(), "a{sa{sv}}");
+        let con = lookup(&s, "connection").expect("connection section");
+        assert_eq!(con.type_().as_str(), "a{sv}");
+        let field = |k: &str| lookup(&con, k).and_then(|v| v.str().map(str::to_string));
+        assert_eq!(field("type").as_deref(), Some("vpn"));
+        assert_eq!(field("uuid").as_deref(), Some("0000-test"));
+        assert_eq!(field("id").as_deref(), Some("Test VPN"));
+        assert!(lookup(&s, "ipv4").is_none());
+    }
+
+    #[test]
+    fn boxed_values_are_unwrapped() {
+        let d = VariantDict::new(None);
+        d.insert_value("Uuid", &"u-1".to_variant());
+        d.insert_value("Vpn", &true.to_variant());
+        d.insert_value("State", &2u32.to_variant());
+        let d = d.end();
+        assert_eq!(lookup(&d, "Uuid").unwrap().str(), Some("u-1"));
+        assert_eq!(lookup(&d, "Vpn").unwrap().get::<bool>(), Some(true));
+        assert_eq!(lookup(&d, "State").unwrap().get::<u32>(), Some(2));
+    }
+
+    #[test]
+    fn variant_holding_a_variant_unwraps_one_level() {
+        // Dict value (already a v) whose content is itself a v holding u.
+        let inner = Variant::from_variant(&Variant::from_variant(&7u32.to_variant()));
+        let d = Variant::array_from_iter_with_type(
+            glib::VariantTy::new("{sv}").unwrap(),
+            [Variant::from_dict_entry(&"k".to_variant(), &inner)],
+        );
+        let v = lookup(&d, "k").unwrap();
+        assert_eq!(v.type_(), glib::VariantTy::VARIANT);
+        assert_eq!(v.as_variant().unwrap().get::<u32>(), Some(7));
+    }
+
+    #[test]
+    fn non_dict_input_is_rejected() {
+        assert!(lookup(&"x".to_variant(), "k").is_none());
+        assert!(lookup(&vec!["a", "b"].to_variant(), "a").is_none());
+    }
 }
