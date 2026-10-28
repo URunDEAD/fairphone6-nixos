@@ -1,0 +1,15 @@
+[package]
+name = "fp6-crash-notify"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Tell the user when a Lomiri app (or the shell) crashed, with a Report action, on the Fairphone 6"
+
+[dependencies]
+gio = "0.20"
+glib = "0.20"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
