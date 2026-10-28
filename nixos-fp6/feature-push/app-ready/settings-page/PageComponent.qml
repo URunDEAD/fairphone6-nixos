@@ -1,7 +1,9 @@
 /*
- * System Settings > App Launch (FP6): keep chosen apps ready (suspended in
- * memory, started hidden at login, files preloaded), compressed memory
- * (zram) and the low-memory policy. Backend: fp6-app-ready (user service),
+ * System Settings > Memory & performance (FP6; was "App Launch"): the RAM
+ * picture, the memory profile, the apps the phone predicts and keeps ready,
+ * the apps the user always keeps ready (suspended in memory, started hidden
+ * at login, files preloaded); compressed memory, the low-memory policy and
+ * the rest on the Advanced page. Backend: fp6-app-ready (user service),
  * GSettings com.fairphone6.app-ready; Lomiri reads the same keys to decide
  * which background apps it suspends.
  * SPDX-License-Identifier: GPL-3.0-only
@@ -15,7 +17,7 @@ import SystemSettings.ListItems 1.0 as SettingsListItems
 ItemPage {
     id: root
     objectName: "appLaunchPage"
-    title: i18n.tr("App Launch")
+    title: i18n.tr("Memory & performance")
     flickable: flick
 
     AppReadyModel { id: ar }
@@ -32,6 +34,16 @@ ItemPage {
             }
         }
         return { ram: ram, swap: swap, count: n }
+    }
+
+    // RAM picture: apps (their cgroups), cache (droppable), free, the rest = system.
+    readonly property var ram: {
+        if (!st || !st.ram || !st.mem) return null
+        var total = st.mem.total
+        var apps = Math.min(st.ram.apps, total)
+        var cache = Math.min(st.ram.cache, total - apps)
+        var free = Math.min(st.ram.free, total - apps - cache)
+        return { total: total, apps: apps, cache: cache, free: free, system: Math.max(0, total - apps - cache - free) }
     }
 
     Flickable {
@@ -53,7 +65,7 @@ ItemPage {
                 anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
                 wrapMode: Text.WordWrap
                 fontSize: "small"
-                text: i18n.tr("Apps you choose here open almost instantly: they stay in memory, suspended (no CPU, no battery) while you use other apps, they can start hidden when you log in, and their files are kept in the cache.")
+                text: i18n.tr("Free memory makes nothing faster. The phone learns which apps you use when (on the phone only), keeps the likely next ones ready in memory, suspended (no CPU, no battery), and keeps their files in the cache, so they open fast. Apps you choose below are always kept ready.")
             }
 
             // ------------------------------------------------------ memory
@@ -65,14 +77,45 @@ ItemPage {
                 visible: ar.statusOk
 
                 Label {
-                    text: st ? i18n.tr("In use: %1 of %2").arg(ar.mb(st.mem.total - st.mem.available)).arg(ar.mb(st.mem.total)) : ""
+                    text: st ? i18n.tr("Available: %1 of %2").arg(ar.mb(st.mem.available)).arg(ar.mb(st.mem.total)) : ""
                 }
-                ProgressBar {
+                // apps | system | cache | free
+                Row {
+                    id: ramBar
+                    objectName: "ramBar"
                     width: parent.width
-                    minimumValue: 0
-                    maximumValue: st ? st.mem.total : 1
-                    value: st ? st.mem.total - st.mem.available : 0
-                    showProgressPercentage: false
+                    height: units.gu(1.5)
+                    visible: !!root.ram
+                    readonly property var parts: root.ram ? [
+                        { v: root.ram.apps, c: theme.palette.normal.focus },
+                        { v: root.ram.system, c: LomiriColors.orange },
+                        { v: root.ram.cache, c: theme.palette.normal.positive },
+                        { v: root.ram.free, c: theme.palette.normal.base }
+                    ] : []
+                    Repeater {
+                        model: ramBar.parts
+                        delegate: Rectangle {
+                            width: root.ram ? Math.round(ramBar.width * modelData.v / root.ram.total) : 0
+                            height: ramBar.height
+                            color: modelData.c
+                        }
+                    }
+                }
+                Label {
+                    objectName: "ramLegend"
+                    width: parent.width
+                    wrapMode: Text.WordWrap
+                    fontSize: "small"
+                    visible: !!root.ram
+                    text: !root.ram ? "" : i18n.tr("Apps %1 · system %2 · cache %3 · free %4")
+                        .arg(ar.mb(root.ram.apps)).arg(ar.mb(root.ram.system)).arg(ar.mb(root.ram.cache)).arg(ar.mb(root.ram.free))
+                }
+                Label {
+                    width: parent.width
+                    wrapMode: Text.WordWrap
+                    fontSize: "small"
+                    color: theme.palette.normal.backgroundTertiaryText
+                    text: i18n.tr("Cache is memory used to keep files ready; it is given back at once when apps need it.")
                 }
                 Label {
                     width: parent.width
@@ -92,42 +135,59 @@ ItemPage {
                 text: i18n.tr("Memory details are not available: the fp6-app-ready service is not running.")
             }
 
-            SettingsListItems.Standard {
-                text: i18n.tr("Compressed memory (zram)")
-                Switch {
-                    objectName: "zramSwitch"
-                    property bool serverChecked: gs.zramEnabled
-                    onServerCheckedChanged: checked = serverChecked
-                    Component.onCompleted: checked = serverChecked
-                    onTriggered: gs.zramEnabled = checked
-                }
-                showDivider: false
+            // --------------------------------------------------- profile
+            SettingsItemTitle { text: i18n.tr("Profile") }
+
+            OptionSelector {
+                objectName: "profileSelector"
+                anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
+                model: [ar.profileName("conservative"), ar.profileName("balanced"), ar.profileName("aggressive")]
+                selectedIndex: Math.max(0, ar.profiles.indexOf(gs.profile))
+                onDelegateClicked: gs.profile = ar.profiles[index]
             }
             Label {
+                objectName: "profileText"
                 anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
                 wrapMode: Text.WordWrap
                 fontSize: "small"
-                text: i18n.tr("Rarely used memory of background apps is compressed in RAM (zstd, up to half of the RAM) instead of the app being closed. Costs a little CPU when an app is swapped back in. Recommended: on.")
+                text: ar.profileText(gs.profile)
             }
 
-            SettingsListItems.Standard {
-                text: i18n.tr("Close apps when memory is low")
-                Switch {
-                    objectName: "lmkSwitch"
-                    property bool serverChecked: gs.lowMemoryKiller
-                    onServerCheckedChanged: checked = serverChecked
-                    Component.onCompleted: checked = serverChecked
-                    onTriggered: gs.lowMemoryKiller = checked
-                }
-                showDivider: false
-            }
+            // ----------------------------------------------- predicted apps
+            SettingsItemTitle { text: i18n.tr("Ready for you") }
+
             Label {
                 anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
+                visible: !gs.prediction || ar.predicted.length === 0
                 wrapMode: Text.WordWrap
                 fontSize: "small"
-                text: i18n.tr("Other background apps are closed first, apps kept ready last, the least recently used first. The app on screen and the shell are never closed. A closed app stays in the app switcher and restarts when you open it.")
+                text: !gs.prediction
+                    ? i18n.tr("Prediction is off (Advanced).")
+                    : i18n.tr("Nothing learned yet: the phone learns from the apps you open.")
+            }
+            Repeater {
+                model: gs.prediction ? ar.predicted.slice(0, Math.max(3, st && st.readyApps ? st.readyApps : 0)) : []
+                delegate: ListItem.Subtitled {
+                    objectName: "predicted_" + modelData.id
+                    readonly property var info: ar.app(modelData.id)
+                    iconSource: ar.iconSource(info.icon)
+                    iconFrame: false
+                    text: info.name
+                    subText: i18n.tr("%1 % likely next · %2").arg(Math.round(modelData.p * 100)).arg(ar.predictedState(modelData))
+                        + (modelData.ready ? " · " + i18n.tr("kept ready") : "")
+                    showDivider: false
+                }
+            }
+            Label {
+                objectName: "hitRate"
+                anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
+                visible: gs.prediction && !!(st && st.hits)
+                wrapMode: Text.WordWrap
+                fontSize: "small"
+                text: st && st.hits ? i18n.tr("Since the phone started: %1").arg(ar.hitText(st.hits.boot)) : ""
             }
 
+            // closed by the low-memory killer
             Repeater {
                 model: st && st.lowMemoryKills ? st.lowMemoryKills : []
                 delegate: Label {
@@ -142,7 +202,7 @@ ItemPage {
             ListItem.ThinDivider {}
 
             // -------------------------------------------------- keep ready
-            SettingsItemTitle { text: i18n.tr("Keep apps ready") }
+            SettingsItemTitle { text: i18n.tr("Always keep ready") }
 
             Label {
                 anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
@@ -182,24 +242,10 @@ ItemPage {
                 text: i18n.tr("Battery saver is on: every app is suspended in the background, starting apps at login and preloading wait until it is off, and background apps are closed earlier when memory gets low.")
             }
 
-            SettingsListItems.Standard {
-                text: i18n.tr("Suspend all other apps in the background")
-                Switch {
-                    objectName: "freezeAllSwitch"
-                    property bool serverChecked: gs.freezeBackground
-                    onServerCheckedChanged: checked = serverChecked
-                    Component.onCompleted: checked = serverChecked
-                    onTriggered: gs.freezeBackground = checked
-                }
-                showDivider: false
-            }
-            Label {
-                anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
-                wrapMode: Text.WordWrap
-                fontSize: "small"
-                text: gs.freezeBackground
-                    ? i18n.tr("Every app you leave is suspended: best for the battery, but music, downloads and terminal jobs pause too while their app is in the background.")
-                    : i18n.tr("Off: only the apps above are suspended; other apps keep running in the background (music, downloads, terminal jobs).")
+            SettingsListItems.StandardProgression {
+                objectName: "advancedItem"
+                text: i18n.tr("Advanced")
+                onClicked: pageStack.addPageToNextColumn(root, Qt.resolvedUrl("AdvancedPage.qml"), { model: ar })
             }
 
             ListItem.ThinDivider {}
@@ -217,18 +263,6 @@ ItemPage {
                     + i18n.tr("Memory: a kept app holds its memory (typically 100–400 MB; a browser with tabs more). Battery: suspended apps use no CPU; on this phone, 3 apps kept ready used 83 % less CPU in the background than the same apps running (4 s instead of 25 s in 5 minutes with the screen off). Starting apps at login costs a few seconds of CPU once; preloading reads up to the preload budget from storage at login and every two hours (a fraction of a mAh). Cached files are given back as soon as other apps need the memory.")
             }
 
-            SettingsListItems.Standard {
-                text: i18n.tr("Preload budget per app")
-                showDivider: false
-            }
-            OptionSelector {
-                objectName: "budgetSelector"
-                anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
-                readonly property var values: [200, 400, 800]
-                model: [i18n.tr("200 MB"), i18n.tr("400 MB"), i18n.tr("800 MB")]
-                selectedIndex: Math.max(0, values.indexOf(gs.preloadBudgetMb))
-                onDelegateClicked: gs.preloadBudgetMb = values[index]
-            }
         }
     }
 }

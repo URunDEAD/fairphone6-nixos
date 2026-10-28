@@ -1,6 +1,6 @@
 {
     "icon": "flash-on",
-    "name": "App Launch",
+    "name": "Memory & performance",
     "translations": "lomiri-system-settings",
     "category": "system",
     "priority": 8,
@@ -20,7 +20,12 @@
         "zram",
         "swap",
         "preload",
-        "background"
+        "background",
+        "performance",
+        "speed",
+        "predict",
+        "profile",
+        "cache"
     ],
     "has-dynamic-keywords": false,
     "has-dynamic-visibility": false,

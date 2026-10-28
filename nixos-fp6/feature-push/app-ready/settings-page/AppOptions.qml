@@ -1,5 +1,6 @@
 /*
- * App Launch > one app: keep ready / start at login / preload.
+ * Memory & performance > one app: keep ready / start at login / preload /
+ * never keep.
  * SPDX-License-Identifier: GPL-3.0-only
  */
 import QtQuick 2.12
@@ -90,6 +91,24 @@ ItemPage {
                 wrapMode: Text.WordWrap
                 fontSize: "small"
                 text: i18n.tr("The app's program, libraries and data are read into the file cache at login and every two hours, so even a fresh start does not wait for storage. The list is learned from the files the app uses.")
+            }
+
+            SettingsListItems.Standard {
+                text: i18n.tr("Never keep ready")
+                Switch {
+                    objectName: "neverKeepSwitch"
+                    property bool serverChecked: model.has("neverKeep", appId)
+                    onServerCheckedChanged: checked = serverChecked
+                    Component.onCompleted: checked = serverChecked
+                    onTriggered: model.setNever(appId, checked)
+                }
+                showDivider: false
+            }
+            Label {
+                anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
+                wrapMode: Text.WordWrap
+                fontSize: "small"
+                text: i18n.tr("Not started in advance or kept ready by prediction, and closed first when memory runs low.")
             }
 
             ListItem.ThinDivider {}

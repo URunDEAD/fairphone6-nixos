@@ -1,5 +1,6 @@
 /*
- * App Launch > Add apps: tap an app to keep it ready (and preload it).
+ * Memory & performance > Add apps: tap an app to always keep it ready (and
+ * preload it), or, with target "never", to never keep it ready.
  * SPDX-License-Identifier: GPL-3.0-only
  */
 import QtQuick 2.12
@@ -11,13 +12,15 @@ ItemPage {
     id: picker
     objectName: "appLaunchPickerPage"
     property var model
-    title: i18n.tr("Add apps")
+    // "keep": always keep ready; "never": never keep ready
+    property string target: "keep"
+    title: target === "never" ? i18n.tr("Never keep ready") : i18n.tr("Add apps")
     flickable: list
 
     readonly property var candidates: {
         var out = []
         for (var i = 0; i < model.apps.length; i++)
-            if (model.chosen.indexOf(model.apps[i].id) < 0) out.push(model.apps[i])
+            if ((target === "never" ? model.neverList : model.chosen).indexOf(model.apps[i].id) < 0) out.push(model.apps[i])
         return out
     }
 
@@ -31,8 +34,13 @@ ItemPage {
             iconFrame: false
             text: modelData.name
             onClicked: {
-                picker.model.set("keepReady", modelData.id, true)
-                picker.model.set("preload", modelData.id, true)
+                if (picker.target === "never") {
+                    picker.model.setNever(modelData.id, true)
+                } else {
+                    picker.model.set("neverKeep", modelData.id, false)
+                    picker.model.set("keepReady", modelData.id, true)
+                    picker.model.set("preload", modelData.id, true)
+                }
             }
         }
         Label {

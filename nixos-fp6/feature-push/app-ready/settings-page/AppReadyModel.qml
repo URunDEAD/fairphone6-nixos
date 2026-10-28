@@ -76,6 +76,54 @@ QtObject {
         set("preload", id, false)
     }
 
+    // Memory & performance -------------------------------------------
+    readonly property var profiles: ["conservative", "balanced", "aggressive"]
+
+    function profileName(p) {
+        if (p === "conservative") return i18n.tr("Conservative")
+        if (p === "balanced") return i18n.tr("Balanced")
+        return i18n.tr("Aggressive")
+    }
+
+    function profileText(p) {
+        if (p === "conservative")
+            return i18n.tr("Keeps much of the memory free. No app is started in advance; only a little of the likely apps' files is cached. Background apps are closed early.")
+        if (p === "balanced")
+            return i18n.tr("Keeps the 3 apps you most likely open next ready, starts them in advance while at least 45 % of memory is free, and caches the files of the next 5.")
+        return i18n.tr("Uses free memory to make apps open fast: the 6 apps you most likely open next are kept ready and started in advance while at least 30 % of memory is free, the files of the next 8 are cached, and more is compressed instead of closed. When memory is needed, the least likely app is closed first; the app on screen and the shell never are.")
+    }
+
+    // Never-keep apps, in list order.
+    readonly property var neverList: settings.neverKeep || []
+
+    function setNever(id, on) {
+        set("neverKeep", id, on)
+        if (on) remove(id)
+    }
+
+    // Predicted apps from the status (id, p, ready, running, frozen, ...).
+    readonly property var predicted: status && status.predicted ? status.predicted : []
+
+    function predictedState(a) {
+        if (a.running && a.frozen) return i18n.tr("ready (suspended)")
+        if (a.running) return i18n.tr("running")
+        if (a.cachedBytes > 0 && a.warmBytes > 0 && a.cachedBytes >= a.warmBytes * 0.6) return i18n.tr("files cached")
+        return i18n.tr("not loaded")
+    }
+
+    // "Opened ready": share of launches that found the app running or cached.
+    function hitText(h) {
+        if (!h || !h.launches) return i18n.tr("No apps opened yet.")
+        var warm = h.ready + h.cached
+        return i18n.tr("%1 % of %2 app openings were fast (%3 resumed from memory, %4 from cached files); %5 % of the apps were predicted.")
+            .arg(Math.round(100 * warm / h.launches)).arg(h.launches).arg(h.ready).arg(h.cached)
+            .arg(Math.round(100 * h.predicted / h.launches))
+    }
+
+    function clearHistory() {
+        settings.clearHistoryRequest = (settings.clearHistoryRequest + 1) % 1000000
+    }
+
     function mb(bytes) {
         var v = bytes / 1048576
         return v >= 1024 ? (v / 1024).toFixed(1) + " GB" : Math.round(v) + " MB"
