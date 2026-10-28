@@ -94,7 +94,7 @@ MainView {
                 }
                 Label {
                     width: parent.width; wrapMode: Text.WordWrap; fontSize: "small"; color: "#555555"
-                    text: i18n.tr("Changes apply to the next recording. Hold or tap the keyboard microphone to speak, then release or tap again to insert text. Maximum 30 seconds.")
+                    text: i18n.tr("Changes apply to the next recording. Tap the keyboard microphone and speak, then tap it again to insert the text; hold it to cancel. Maximum 30 seconds. Show or hide the key in System Settings > Voice Dictation.")
                 }
                 Rectangle {
                     width: parent.width; height: installText.height + units.gu(3); radius: units.gu(1); color: "#ffffff"

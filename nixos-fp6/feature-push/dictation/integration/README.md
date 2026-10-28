@@ -1,5 +1,7 @@
 # Maliit and Lomiri integration
 
+**Status 2026-10-28:** the keyboard part below is implemented in `../../keyboard/maliit-keyboard-dictation-key.patch` (see `results/feature-push-20261024/keyboard/README.md`, item 6). It uses tap to start / tap to stop with hold to cancel, rather than hold-to-talk. `maliit-keyboard.patch` here is the original sketch and is kept for reference only. The privacy indicator section is still open.
+
 This repository supplies a working service and a **patch sketch**, not a compiled replacement keyboard/shell. The sketch targets the structure of upstream [maliit/keyboard](https://github.com/maliit/keyboard/tree/cbb0bbfa67354df76c25dbc3b1ea99a376fd15bb) inspected on 2026-10-27. Adapt paths and input-context notifications to the Lomiri fork being shipped.
 
 1. Link the existing keyboard plugin to Qt5::DBus. Add a DictationBridge QObject to `src/plugin`, expose it as `dictation` before `d->view->setSource()` in `InputMethod` construction. Keep **one** QDBusConnection for Start/Stop/Cancel, since reconnecting changes the owner identity. All calls use QDBusPendingCallWatcher and a 100,000 ms timeout; never block the GUI thread.
