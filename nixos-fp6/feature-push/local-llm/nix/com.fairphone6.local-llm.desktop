@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=On-device AI models
+Comment=Manage the assistant's offline models
+Exec=fp6-llm-settings
+Icon=preferences-system
+Terminal=false
+Categories=Settings;
+X-Lomiri-Touch=true

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# Explicit coordinator action. Never starts downloads or changes the active model.
+"@out@/bin/fp6-llm" unload
+exec "@out@/bin/fp6-llm-bench" "$@"

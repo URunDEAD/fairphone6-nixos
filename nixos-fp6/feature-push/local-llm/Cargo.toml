@@ -1,0 +1,40 @@
+[package]
+name = "fp6-llm"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "On-device model manager and lazy OpenAI endpoint for Fairphone 6"
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[features]
+default = []
+ui = ["dep:qmetaobject", "dep:cstr"]
+
+[dependencies]
+anyhow = "1"
+async-stream = "0.3"
+axum = "0.8"
+clap = { version = "4", features = ["derive", "env"] }
+cstr = { version = "0.2", optional = true }
+futures-util = "0.3"
+qmetaobject = { version = "0.2.10", optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["full"] }
+zbus = { version = "5", default-features = false, features = ["tokio", "blocking-api"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[[bin]]
+name = "fp6-llm-settings"
+path = "src/bin/settings.rs"
+required-features = ["ui"]
+
+[[bin]]
+name = "fake-llama-server"
+path = "tests/support/fake-server.rs"

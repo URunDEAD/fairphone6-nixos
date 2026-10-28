@@ -1,0 +1,3 @@
+module Fairphone.LocalLlm
+plugin fp6_llm
+ModelsView 1.0 ModelsView.qml

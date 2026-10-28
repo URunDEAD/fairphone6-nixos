@@ -1,0 +1,5 @@
+{ pkgs ? import (import ../../upstream/mobile-nixos/npins).nixpkgs { } }:
+pkgs.callPackage ./package.nix {
+  lomiriUiToolkit = import ./nix/qt5-toolkit.nix { inherit pkgs; };
+  suruIconTheme = pkgs.lomiri.suru-icon-theme;
+}

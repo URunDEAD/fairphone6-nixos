@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=com.fairphone6.LocalLlm1
+Exec=@out@/bin/fp6-llm daemon
+SystemdService=fp6-llm.service
