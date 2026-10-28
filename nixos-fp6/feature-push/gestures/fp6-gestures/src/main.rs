@@ -4,7 +4,9 @@
 //! to silence, raise to wake, back tap and volume-key track skipping.
 //!
 //!   fp6-gestures [run]                 daemon (GSettings com.fairphone6.gestures)
-//!   fp6-gestures record SECONDS [HZ]   raw accelerometer trace "t_ns x y z"
+//!   fp6-gestures record SECONDS [HZ] [--touch] [--expect "double 4"]
+//!                                      raw accelerometer trace "t_ns x y z"
+//!                                      (+ "touch t_ns" lines, expectations)
 //!   fp6-gestures replay FILE [SENS] [SCALE]  detector over a trace; prints triggers
 //!   fp6-gestures action ACTION [SOURCE]      run an action path now
 //!                                      (flashlight | app:<id> | command:<text>;
@@ -13,6 +15,10 @@
 //!   fp6-gestures replay-motion FILE [low|medium|high]
 //!                                      flip / raise / back tap over a raw trace
 //!   fp6-gestures wom SECONDS           wake-on-motion events + detectors live
+//!   fp6-gestures eval-taps [--level N] [--profile P] [--calibrate FILE]
+//!                          [--display on|off] FILE...
+//!                                      back tap pipeline over recorded traces:
+//!                                      gestures, rejections, precision/recall
 //!   fp6-gestures silent [on|off]       Lomiri silent mode (flip to silence path)
 //!   fp6-gestures media next|previous   MPRIS skip (volume long press path)
 //!   fp6-gestures volume [0..1]         indicator-sound volume
@@ -64,6 +70,7 @@ fn main() {
         Some("replay") => replay(&args[1..]),
         Some("action") => action_cli(&args[1..]),
         Some("replay-motion") => replay_motion(&args[1..]),
+        Some("eval-taps") => eval_taps(&args[1..]),
         Some("wom") => wom_cli(&args[1..]),
         Some("silent") => {
             let b = Buses::connect();
@@ -1173,8 +1180,21 @@ fn execute(buses: &Buses, config: &Config, source: Source, display_on: bool, act
 
 // ---------------------------------------------------------------- test CLIs
 fn record(args: &[String]) -> i32 {
-    let seconds: f64 = args.first().and_then(|s| s.parse().ok()).unwrap_or(10.0);
-    let hz: f64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(50.0);
+    use std::io::Read;
+    use std::os::fd::AsRawFd;
+    let mut pos = Vec::new();
+    let mut touch = false;
+    let mut expect: Vec<String> = Vec::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--touch" => touch = true,
+            "--expect" => expect.extend(it.next().cloned()),
+            _ => pos.push(a.clone()),
+        }
+    }
+    let seconds: f64 = pos.first().and_then(|s| s.parse().ok()).unwrap_or(10.0);
+    let hz: f64 = pos.get(1).and_then(|s| s.parse().ok()).unwrap_or(50.0);
     let accel = match iio::Accel::find(Path::new(IIO_ROOT)) {
         Ok(a) => a,
         Err(e) => {
@@ -1182,12 +1202,29 @@ fn record(args: &[String]) -> i32 {
             return 1;
         }
     };
+    // Touchscreen events (read-only, not grabbed): "touch t_ns" lines, so
+    // eval-taps can replay the screen-tap veto.
+    let mut ts = if touch {
+        match input_nodes(&[], TOUCH_NAME).first().map(std::fs::File::open) {
+            Some(Ok(f)) => Some(f),
+            other => {
+                eprintln!("touchscreen not readable ({other:?}); recording without touches");
+                None
+            }
+        }
+    } else {
+        None
+    };
     let out = std::io::stdout();
     let mut out = out.lock();
     let _ = writeln!(out, "# fp6-gestures record {} scale_g_per_lsb={:.9} hz={hz}", accel.path.display(), accel.scale());
+    for e in &expect {
+        let _ = writeln!(out, "# expect {e}");
+    }
     let start = Instant::now();
     let period = Duration::from_secs_f64(1.0 / hz);
     let mut next = Instant::now();
+    let mut buf = [0u8; 24 * 64];
     while start.elapsed().as_secs_f64() < seconds {
         match accel.read_raw() {
             Ok(r) => {
@@ -1196,7 +1233,27 @@ fn record(args: &[String]) -> i32 {
             Err(e) => eprintln!("read: {e}"),
         }
         next += period;
-        std::thread::sleep(next.saturating_duration_since(Instant::now()));
+        // Wait for the next sample, logging touches meanwhile (poll, no spin).
+        loop {
+            let left = next.saturating_duration_since(Instant::now());
+            let Some(f) = ts.as_mut() else {
+                std::thread::sleep(left);
+                break;
+            };
+            let mut pfd = libc::pollfd { fd: f.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+            let ms = left.as_millis().min(i32::MAX as u128) as i32;
+            if unsafe { libc::poll(&mut pfd, 1, ms) } <= 0 {
+                break;
+            }
+            match f.read(&mut buf) {
+                Ok(n) if n > 0 => {
+                    let _ = writeln!(out, "touch {}", start.elapsed().as_nanos());
+                }
+                _ => {
+                    ts = None;
+                }
+            }
+        }
     }
     0
 }
@@ -1306,6 +1363,74 @@ fn replay_motion(args: &[String]) -> i32 {
         println!("end taps {x:?}");
     }
     println!("{} samples", rows.len());
+    0
+}
+
+/// Back tap pipeline (tapsim, the daemon's sampler model) over recorded
+/// traces, scored against their "# expect" lines.
+fn eval_taps(args: &[String]) -> i32 {
+    let mut level = backtap::DEFAULT_LEVEL;
+    let mut profile: Option<backtap::Profile> = None;
+    let mut display: Option<bool> = None;
+    let mut files = Vec::new();
+    let read = |path: &str| -> Option<tapsim::Trace> {
+        match std::fs::read_to_string(path) {
+            Ok(t) => Some(tapsim::parse_trace(&t, 0.004788403 / 9.80665, &FP6_MOUNT)),
+            Err(e) => {
+                eprintln!("{path}: {e}");
+                None
+            }
+        }
+    };
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--level" => level = it.next().and_then(|v| v.parse().ok()).unwrap_or(level).min(100),
+            "--profile" => profile = it.next().and_then(|v| backtap::Profile::decode(v)),
+            "--display" => display = it.next().map(|v| v != "off"),
+            "--calibrate" => {
+                let Some(tr) = it.next().and_then(|p| read(p)) else { return 1 };
+                match tapsim::calibrate(&tr.samples, &tr.touches) {
+                    backtap::CalProgress::Done(Ok(p)) => {
+                        println!("calibrated: {}", p.encode());
+                        profile = Some(p);
+                    }
+                    other => {
+                        println!("calibration did not finish: {other:?}");
+                        return 1;
+                    }
+                }
+            }
+            _ => files.push(a.clone()),
+        }
+    }
+    if files.is_empty() {
+        eprintln!("eval-taps [--level N] [--profile P] [--calibrate FILE] [--display on|off] FILE...");
+        return 2;
+    }
+    let params = backtap::params(level, profile.as_ref());
+    println!("level {level}, threshold {:.3} g, z ratio {:.2}, gap {:.2}-{:.2} s, profile {}", params.threshold, params.z_ratio, params.min_gap, params.max_gap, profile.map_or("none".into(), |p| p.encode()));
+    let mut total = tapsim::Score::default();
+    for path in &files {
+        let Some(tr) = read(path) else { return 1 };
+        let mut setup = tapsim::Setup::taps(params, 3, profile);
+        setup.display_on = display.unwrap_or(tr.display_on);
+        let out = tapsim::run(&tr.samples, &tr.touches, &setup);
+        println!("{path}: {:.1} s, {} touches, display {}", out.seconds, tr.touches.len(), if setup.display_on { "on" } else { "off" });
+        for (t, x) in &out.gestures {
+            println!("  {t:7.3} s  {} taps (first {:.3} s, peak {:.2} g, signs {:?})", x.count, x.first, x.peak, &x.signs[..x.count as usize]);
+        }
+        for (t, x, why) in &out.rejected {
+            println!("  {t:7.3} s  rejected {} taps: {}", x.count, why.code());
+        }
+        println!("  {} reads ({:.1}/s, ~{:.2} % of a core), {} WoM events", out.reads, out.reads_per_s(), out.cpu_percent(), out.wom_events);
+        if let Some(want) = tr.want {
+            let s = tapsim::score_counts(&out, want);
+            println!("  expected {} double, {} triple: TP {} FP {} FN {}", want.double, want.triple, s.tp, s.fp, s.fn_);
+            total.add(s);
+        }
+    }
+    println!("total: precision {:.3} recall {:.3} (TP {} FP {} FN {})", total.precision(), total.recall(), total.tp, total.fp, total.fn_);
     0
 }
 
@@ -1443,3 +1568,6 @@ mod trace_tests;
 
 #[cfg(test)]
 mod motion_tests;
+
+#[cfg(test)]
+mod backtap_eval;
