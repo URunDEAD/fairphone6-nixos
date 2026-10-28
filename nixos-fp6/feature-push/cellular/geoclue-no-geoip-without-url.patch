@@ -1,0 +1,15 @@
+--- a/src/gclue-locator.c
++++ b/src/gclue-locator.c
+@@ -425,6 +425,12 @@
+         } else {
+                 if (gclue_config_get_enable_static_source (gconfig)) {
+                         g_debug ("Disabling GeoIP-only source since static source is enabled");
++                } else if (gclue_config_get_wifi_url (gconfig) == NULL ||
++                           gclue_config_get_wifi_url (gconfig)[0] == '\0') {
++                        /* No locate URL: the GeoIP-only source could never
++                         * look anything up and only warns "Could not parse
++                         * locate URL ''" on every network change. */
++                        g_debug ("Disabling GeoIP-only source since no locate URL is set");
+                 } else {
+                         /* City-level accuracy will give us GeoIP-only source */
+                         wifi = gclue_wifi_get_singleton (GCLUE_ACCURACY_LEVEL_CITY);

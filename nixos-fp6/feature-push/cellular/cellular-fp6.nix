@@ -314,6 +314,15 @@ in {
         enable3G = false;
         enableCDMA = false;
         enableWifi = lib.mkDefault false;   # no Mozilla/BeaconDB lookups by default
+        # With the WiFi source off and no static source, geoclue still made
+        # a GeoIP-only source with the (empty) locate URL: it could never
+        # look anything up and logged "Could not parse locate URL ''" on
+        # every network change. The patch skips that source when no URL is
+        # set (agps networkLocation sets one, and the WiFi source with it).
+        # mkDefault: gps-fp6's modemOnly package wins if both are enabled.
+        package = lib.mkDefault (pkgs.geoclue2.overrideAttrs (old: {
+          patches = (old.patches or [ ]) ++ [ ./geoclue-no-geoip-without-url.patch ];
+        }));
         submitData = false;
         enableDemoAgent = lib.mkDefault false;
         # fp6-location-indicator is the user's GeoClue agent (the toggle).
