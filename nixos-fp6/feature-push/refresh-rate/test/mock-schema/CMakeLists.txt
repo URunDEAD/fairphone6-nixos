@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.16)
+project(gsettings-mock LANGUAGES CXX)
+set(CMAKE_AUTOMOC ON)
+find_package(Qt5 5.15 REQUIRED COMPONENTS Core Qml)
+add_library(gsettingsmock MODULE plugin.cpp)
+target_link_libraries(gsettingsmock PRIVATE Qt5::Core Qt5::Qml)
+install(TARGETS gsettingsmock DESTINATION qml/GSettingsMock)
+install(FILES qmldir DESTINATION qml/GSettingsMock)

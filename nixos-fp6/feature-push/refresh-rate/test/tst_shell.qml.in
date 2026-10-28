@@ -1,0 +1,96 @@
+// Fp6RefreshRate.qml against a mock screen, the mock GSettings and the real
+// FP6.RefreshRate plugin with a fake panel_rate_hz (laptop test).
+import QtQuick 2.15
+import QtTest 1.15
+
+TestCase {
+    name: "RefreshRateShell"
+
+    property string panelFile: "@PANEL@"
+
+    Component { id: screenComponent; MockScreen {} }
+    Component { id: shellComponent; Fp6RefreshRate {} }
+
+    // the shell applies modes deferred (Qt.callLater), like Mir does
+    function rateIs(t, hz) {
+        tryVerify(function () { return t.screen.rate() === hz; }, 2000, "screen at " + hz + " Hz");
+    }
+
+    function make(rates, opts) {
+        var screen = createTemporaryObject(screenComponent, this, { rates: rates });
+        var props = { screen: screen, window: null, startDelay: 10, panelPath: opts && opts.panel ? panelFile : "/nonexistent" };
+        var rr = createTemporaryObject(shellComponent, this, props);
+        var s = findChild(rr, "fp6RefreshSettings");
+        var b = findChild(rr, "fp6BatterySettings");
+        if (opts && opts.settings) for (var k in opts.settings) s[k] = opts.settings[k];
+        if (opts && opts.saver) b.saverActive = true;
+        tryVerify(function () { return rr.started; }, 2000);
+        return { screen: screen, rr: rr, s: s, b: b,
+                 panel: findChild(rr, "fp6PanelRate"), act: findChild(rr, "fp6Activity") };
+    }
+
+    function test_kernel6_one_mode_does_nothing() {
+        var t = make([120], { settings: { mode: "standard" } });
+        compare(t.s.availableRates, "120");
+        compare(t.s.adaptiveAvailable, false);
+        compare(t.s.activeRate, 120);
+        wait(100);
+        compare(t.screen.applied, 0);
+    }
+    function test_fixed_modes_modeset() {
+        var t = make([120, 90, 60, 30], { settings: { mode: "standard" } });
+        compare(t.s.availableRates, "30,60,90,120");
+        rateIs(t, 60);
+        t.s.mode = "low";
+        rateIs(t, 30);
+        t.s.mode = "medium";
+        rateIs(t, 90);
+        t.s.mode = "high";
+        rateIs(t, 120);
+        tryCompare(t.s, "activeRate", 120);
+    }
+    function test_battery_saver_caps() {
+        var t = make([120, 90, 60, 30], {});
+        rateIs(t, 120);
+        t.b.saverActive = true;
+        rateIs(t, 60);
+        t.s.saverCap = false;
+        rateIs(t, 120);
+        t.s.saverCap = true;
+        t.b.saverActive = false;
+        rateIs(t, 120);
+    }
+    function test_unconfirmed_mode_goes_back() {
+        var t = make([120, 60], { settings: { mode: "standard", confirmed: false } });
+        compare(t.s.mode, "high");
+        compare(t.s.confirmed, true);
+        rateIs(t, 120);
+    }
+    function test_adaptive_panel_rate() {
+        var t = make([120, 90, 60, 30], { panel: true, settings: { mode: "adaptive", adaptiveIdleMs: 500 } });
+        verify(t.panel.available);
+        compare(t.s.adaptiveAvailable, true);
+        rateIs(t, 120);
+        // idle -> 60 Hz on the panel, no modeset
+        tryCompare(t.panel, "current", 60, 2000);
+        var applied = t.screen.applied;
+        tryCompare(t.s, "activeRate", 60);
+        // touch -> 120 Hz, then idle again
+        t.act.poke();
+        tryCompare(t.panel, "current", 120, 2000);
+        tryCompare(t.panel, "current", 60, 3000);
+        t.s.adaptiveIdleRate = 10;
+        tryCompare(t.panel, "current", 10, 2000);
+        // battery saver: touched is 60 Hz, still no modeset
+        t.b.saverActive = true;
+        t.act.poke();
+        tryCompare(t.panel, "current", 60, 2000);
+        compare(t.screen.applied, applied);
+        // screen off: no panel writes
+        t.b.saverActive = false;
+        t.screen.powerMode = 3;
+        t.act.poke();
+        wait(200);
+        compare(t.panel.current, 60);
+    }
+}
