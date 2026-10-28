@@ -54,6 +54,12 @@
 #    QT_WAYLAND_FORCE_DPI = 96 * ceil(GU/8) * text% (point
 #    fonts), GTK text-scaling-factor / gtk-xft-dpi (also Firefox's UI and
 #    page scale through GTK's font DPI).
+#    Live: the daemon writes ~/.config/lomiri-ui-toolkit/font-scale, which
+#    the font-scale UITK watches (re-emits gridUnitChanged, so running apps
+#    and the shell relayout), and the GTK scale on every change. Layouts that
+#    broke at 130-150 % are patched to grow with the text: Settings main grid
+#    (lss-text-size.patch), app drawer (lomiri-text-size.patch), Messages
+#    thread rows (messaging-text-size.patch via messagingPatches).
 #
 # Overlay order: lib.mkOrder 2700, after lomiri-polish (2000), osk-wayland
 # (2100), lomiri-multiwindow (2200), lomiri-session (2300), screen-capture
