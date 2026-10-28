@@ -65,7 +65,22 @@ in {
       partOf = [ "graphical-session.target" "lomiri-kdeconnect.service" ];
       after = [ "lomiri-kdeconnect.service" ];
       unitConfig = { ConditionUser = cfg.user; } // startLimit;
+      # The agent is a Qt GUI client (clipboard). graphical-session.target is
+      # reached before Lomiri's Wayland socket exists (and before the session
+      # imports WAYLAND_DISPLAY), so the first starts aborted in
+      # QGuiApplication (xcb fallback / "Failed to create wl_display") and
+      # left two SIGABRT cores per login (r5). Wait for the socket instead.
+      environment = { WAYLAND_DISPLAY = "wayland-0"; QT_QPA_PLATFORM = "wayland"; };
       serviceConfig = restartPolicy // {
+        ExecStartPre = "${pkgs.writeShellScript "kdeconnect-wait-wayland" ''
+          socket="''${XDG_RUNTIME_DIR:?}/''${WAYLAND_DISPLAY:-wayland-0}"
+          for _ in $(${pkgs.coreutils}/bin/seq 120); do
+            [ -S "$socket" ] && exit 0
+            ${pkgs.coreutils}/bin/sleep 0.5
+          done
+          echo "Wayland socket did not appear" >&2
+          exit 1
+        ''}";
         ExecStart = "${package}/bin/lomiri-kdeconnect --clipboard-agent";
         UMask = "0077";
         NoNewPrivileges = true;
