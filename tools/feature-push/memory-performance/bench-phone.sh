@@ -34,9 +34,11 @@ t0=$(date +%s)
 for app in $apps; do
   echo "[$(date +%T)] $app: $modes"
   bash "$here/measure.sh" "$out/$app" "$app" $modes 2>>"$out/errors.log" | tee -a "$out/results.txt"
-  # measure.sh leaves the app running; stop it so the next app starts from the same picture
-  u=$(ls -d /sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/app.slice/lomiri-app-launch--application-*--"$app"--*.service 2>/dev/null | head -1)
-  [ -n "$u" ] && timeout 8 systemctl --user stop "$(basename "$u")" 2>/dev/null
+  # measure.sh leaves the app running; stop it (every instance of a
+  # multi-instance app) so the next app starts from the same picture
+  for u in /sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/app.slice/lomiri-app-launch--application-*--"$app"--*.service; do
+    [ -d "$u" ] && timeout 8 systemctl --user stop "$(basename "$u")" 2>/dev/null
+  done
 done
 sh "$here/snapshot.sh" > "$out/ram-after.txt" 2>&1
 journalctl --user -u lomiri.service --since "@$t0" --no-pager -o short-monotonic 2>/dev/null | grep "fp6-app-ready:" > "$out/lomiri-journal.txt"
