@@ -1,0 +1,22 @@
+{
+    "icon": "audio-input-microphone-symbolic",
+    "name": "Voice Dictation",
+    "translations": "lomiri-system-settings",
+    "category": "personal",
+    "priority": 8,
+    "form-factors": [
+        "phone",
+        "tablet"
+    ],
+    "keywords": [
+        "dictation",
+        "voice",
+        "speech",
+        "microphone",
+        "keyboard",
+        "typing"
+    ],
+    "has-dynamic-keywords": false,
+    "has-dynamic-visibility": false,
+    "page-component": "PageComponent.qml"
+}

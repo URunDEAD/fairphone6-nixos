@@ -27,7 +27,7 @@ in rec {
     nativeBuildInputs = [ pkgs.python3 pkgs.libsForQt5.qtdeclarative.dev ];
   } ''
     cd ${patchedSrc}
-    qmllint plugins/ro/qml/*.qml plugins/en/qml/*.qml qml/keys/*.qml
+    qmllint plugins/ro/qml/*.qml plugins/en/qml/*.qml qml/keys/*.qml ${../settings-page}/PageComponent.qml
     python3 -I ${./check_layout.py} --self-test plugins/ro/qml/*.qml plugins/en/qml/*.qml | tee $out
   '';
 

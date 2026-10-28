@@ -34,7 +34,8 @@
 #    C++ DictationBridge in the keyboard plugin. Tap to listen, tap again to
 #    insert the text at the cursor (sendCommitString), long-press to cancel.
 #    Shown when the GSettings key dictation-key is on and the service runs;
-#    see dictationKey below.
+#    see dictationKey below. The switch is in System Settings > Voice
+#    Dictation (settings-page/, lomiri-system-settings-dictation.nix).
 #  * enabled-languages default ['en', 'ro'] as a dconf system-db value (the
 #    user's own choice in Settings > Language & Text > Keyboard layouts wins).
 #  * Generated key click WAV at the path the GSettings default names, and the
@@ -72,7 +73,7 @@ in {
       description = ''
         Default of org.maliit.keyboard.maliit dictation-key: show the
         microphone key for on-device dictation. The user can change it in
-        the dconf/GSettings database, e.g. with
+        System Settings > Voice Dictation or with
         `gsettings set org.maliit.keyboard.maliit dictation-key false`.
         Even when on, the key only appears while the dictation service
         (com.fairphone6.Dictation1) is running and the field is plain text.
@@ -81,7 +82,15 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
-    nixpkgs.overlays = [ (import ./overlay.nix { inherit (cfg) hunspellDictionaries; }) ];
+    nixpkgs.overlays = [ (import ./overlay.nix { inherit (cfg) hunspellDictionaries; }) ]
+      # System Settings > Voice Dictation (the microphone key switch).
+      ++ lib.optional dictationEnabled (_final: prev: {
+        lomiri = prev.lomiri.overrideScope (_lfinal: lprev: {
+          lomiri-system-settings = lprev.lomiri-system-settings.override (old: {
+            plugins = (old.plugins or [ ]) ++ [ (prev.callPackage ./lomiri-system-settings-dictation.nix { }) ];
+          });
+        });
+      });
 
     programs.dconf.enable = true;
     programs.dconf.profiles.user.databases = [{
