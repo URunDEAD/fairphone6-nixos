@@ -37,7 +37,7 @@ ItemPage {
                     text: page.model.name(modelData)
                     iconSource: page.model.icon(modelData)
                     iconName: "application-x-executable"
-                    layout.subtitle.text: page.model.decisionLabel(page.model.decision(modelData, page.perm))
+                    layout.subtitle.text: page.model.decisionLabel(page.model.shownDecision(modelData, page.perm))
                                           + " · " + i18n.tr("last used %1").arg(page.model.timeText(page.model.perm(modelData, page.perm).last_used).toLowerCase())
                     onClicked: pageStack.addPageToNextColumn(page, Qt.resolvedUrl("Fp6AppPermissionsPage.qml"), { model: page.model, app: modelData })
                 }

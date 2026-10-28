@@ -9,17 +9,32 @@
  
  ItemPage {
      id: root
-@@ -65,6 +67,13 @@
+@@ -65,7 +67,19 @@
              anchors.left: parent.left
              anchors.right: parent.right
  
 +            // FP6 app permissions: USB, NFC, Bluetooth, contacts, calendar,
-+            // call log & messages, files, sensors, network (fp6-permd).
++            // call log & messages, files, sensors, network, and camera /
++            // microphone / location with the media option (fp6-permd).
 +            Fp6PermissionsSection {
++                id: fp6Section
 +                objectName: "fp6PermissionsSection"
 +                page: root
 +            }
 +
              ListItems.Caption {
++                // the trust-store list: only while fp6-permd does not handle
++                // camera, microphone and location
++                visible: fp6Section.permissions.media.length === 0
                  text: i18n.tr("Apps that you have granted access to:")
              }
+ 
+@@ -92,7 +106,7 @@
+             }
+ 
+             Repeater {
+-                model: appsModel
++                model: fp6Section.permissions.media.length === 0 ? appsModel : null
+ 
+                 SettingsListItems.SingleValueProgression {
+                     text: i18n.tr(model.name)

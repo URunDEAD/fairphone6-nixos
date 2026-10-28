@@ -51,3 +51,24 @@ var prompt = {
     title: "USB devices", question: "Allow Serial Monitor to access a USB device?",
     detail: "Arduino Uno (2341:0043) · serial"
 };
+// With the media option: camera / microphone / location from fp6-permd
+// (the Camera app's presets, an "only this time" microphone grant).
+var mediaState = JSON.parse(JSON.stringify(state));
+mediaState.media = ["camera", "microphone", "location"];
+mediaState.apps["lomiri-camera-app"] = { system: false, confined: true, last_seen: now - 900, in_use: false,
+    network: { wifi: true, mobile: true, vpn: true, local: true },
+    perms: { camera: { decision: "allow", preset: true, once: false, changed: 0, last_used: now - 900, last_denied: 0, uses: 3, detail: "" },
+             microphone: { decision: "allow", preset: true, once: false, changed: 0, last_used: 0, last_denied: 0, uses: 0, detail: "" } } };
+mediaState.apps["org.example.Recorder"] = { system: false, confined: false, last_seen: now - 20, in_use: false,
+    network: { wifi: true, mobile: true, vpn: true, local: true },
+    perms: { microphone: { decision: "ask", preset: false, once: true, changed: 0, last_used: now - 20, last_denied: 0, uses: 1, detail: "" } } };
+mediaState.apps["io.github.rinigus.PureMaps"] = { system: false, confined: true, last_seen: now - 7300, in_use: false,
+    network: { wifi: true, mobile: true, vpn: true, local: true },
+    perms: { location: { decision: "while_using", preset: true, once: false, changed: 0, last_used: now - 7300, last_denied: 0, uses: 5, detail: "" } } };
+mediaState.names["lomiri-camera-app"] = { name: "Camera", icon: "image://theme/camera-app" };
+mediaState.names["org.example.Recorder"] = { name: "Voice Recorder", icon: "image://theme/audio-input-microphone-symbolic" };
+var mediaPrompt = {
+    id: 8, app: "org.example.Recorder", name: "Voice Recorder", icon: "image://theme/audio-input-microphone-symbolic", perm: "microphone",
+    title: "Microphone", question: "Allow Voice Recorder to use the microphone?", detail: "",
+    options: ["allow", "once", "deny"]
+};

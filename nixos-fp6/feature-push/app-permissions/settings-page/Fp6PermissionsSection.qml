@@ -70,5 +70,14 @@ Column {
         text: i18n.tr("Apps ask the first time they need one of these. System components (Settings, Phone, Messaging, the terminal, USB and sharing services) keep their access.")
     }
 
-    SettingsItemTitle { text: i18n.tr("Camera, location and microphone") }
+    ListItems.Caption {
+        visible: pm.media.length > 0
+        text: i18n.tr("Camera, microphone and location: apps ask the first time they use them (Allow, Only this time, Don't allow); camera and microphone through PipeWire, location while Location is on. The Camera app has camera and microphone access to start with.")
+    }
+
+    // Header of the stock (trust-store) list below, when it is still shown.
+    SettingsItemTitle {
+        visible: pm.media.length === 0
+        text: i18n.tr("Camera, location and microphone")
+    }
 }

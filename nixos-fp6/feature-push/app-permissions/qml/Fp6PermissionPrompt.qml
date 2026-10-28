@@ -1,15 +1,16 @@
 /*
  * FP6 app permissions (nixos-fp6/feature-push/app-permissions): the
  * runtime-permission prompt ("Allow Morph Browser to access a USB device?"
- * Allow / Allow only while using the app / Don't allow) and the focus hook
- * for "only while using".
+ * Allow / Allow only while using the app / Don't allow; for the camera,
+ * the microphone and location: Allow / Only this time / Don't allow) and
+ * the focus hook for "only while using".
  *
  * fp6-permission-agent (session action group com.fairphone6.Permissions)
  * publishes the open question as the "prompt" state (JSON, "{}" when there
  * is none). The shell shows it while unlocked, tells the agent it did
  * ("ack"; otherwise the agent falls back to a snap-decision notification
  * after 1.5 s) and sends the answer ("respond": "<id> allow|while_using|
- * deny|dismissed"). The focused app id goes to "focus" ("" while the lock
+ * once|deny|dismissed"). The focused app id goes to "focus" ("" while the lock
  * screen shows).
  *
  * Copyright (C) 2026 Paul Schuldesz. GPL-3.0 (as Lomiri).
@@ -47,6 +48,7 @@ Item {
     property var answeredId: -1
     // Portal access dialogs offer only Allow / Don't allow, with their labels.
     readonly property bool offerWhileUsing: !req.options || req.options.indexOf("while_using") >= 0
+    readonly property bool offerOnce: !!req.options && req.options.indexOf("once") >= 0
 
     // ---- focus hook --------------------------------------------------------
     readonly property string reportedFocus: locked ? "" : focusedAppId
@@ -122,6 +124,9 @@ Item {
                         case "messages": return "message";
                         case "files": return "document-open";
                         case "sensors": return "sensors";
+                        case "camera": return "camera-app-symbolic";
+                        case "microphone": return "audio-input-microphone-symbolic";
+                        case "location": return "location";
                         default: return "security-alert";
                         }
                     }
@@ -164,6 +169,13 @@ Item {
                 onClicked: root.respond("while_using")
             }
             Button {
+                objectName: "fp6PermissionOnce"
+                width: parent.width
+                visible: root.offerOnce
+                text: i18n.tr("Only this time")
+                onClicked: root.respond("once")
+            }
+            Button {
                 objectName: "fp6PermissionDeny"
                 width: parent.width
                 text: root.req.deny_label || i18n.tr("Don't allow")
@@ -175,7 +187,7 @@ Item {
                 wrapMode: Text.Wrap
                 textSize: Label.XSmall
                 color: theme.palette.normal.overlaySecondaryText
-                visible: root.offerWhileUsing
+                visible: root.offerWhileUsing || root.offerOnce
                 text: i18n.tr("You can change this in System Settings > Security & Privacy > App permissions.")
             }
         }

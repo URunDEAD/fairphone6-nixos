@@ -32,8 +32,21 @@ Item {
     }
     readonly property bool brokerUp: st.broker === true
 
+    // Camera / microphone / location: listed when fp6-permd enforces them
+    // (the module's media option).
+    readonly property var media: st.media || []
+    readonly property var mediaPerms: [
+        { id: "camera", title: i18n.tr("Camera"), icon: "camera-app-symbolic",
+          caption: i18n.tr("Apps that asked to use the camera") },
+        { id: "microphone", title: i18n.tr("Microphone"), icon: "audio-input-microphone-symbolic",
+          caption: i18n.tr("Apps that asked to use the microphone") },
+        { id: "location", title: i18n.tr("Location"), icon: "location",
+          caption: i18n.tr("Apps that asked for this device's location (only while Location is on)") }
+    ]
+    readonly property var perms: mediaPerms.filter(function(p) { return media.indexOf(p.id) >= 0; }).concat(basePerms)
+
     // Order and texts of the permission list.
-    readonly property var perms: [
+    readonly property var basePerms: [
         { id: "usb", title: i18n.tr("USB devices"), icon: "stock_usb",
           caption: i18n.tr("Apps that asked to use USB devices (raw USB, USB HID, USB serial)") },
         { id: "nfc", title: i18n.tr("NFC"), icon: "nfc",
@@ -60,6 +73,7 @@ Item {
 
     function permInfo(id) {
         for (var i = 0; i < perms.length; i++) if (perms[i].id === id) return perms[i];
+        for (var j = 0; j < mediaPerms.length; j++) if (mediaPerms[j].id === id) return mediaPerms[j];
         if (id === "network") return { id: "network", title: i18n.tr("Network"), icon: "network-wifi-symbolic" };
         if (id === "camera") return { id: id, title: i18n.tr("Camera"), icon: "camera-app-symbolic" };
         if (id === "microphone") return { id: id, title: i18n.tr("Microphone"), icon: "audio-input-microphone-symbolic" };
@@ -87,10 +101,14 @@ Item {
     }
     function perm(app, p) { var e = entry(app); return (e.perms && e.perms[p]) || ({}); }
     function decision(app, p) { return isSystem(app) ? "system" : (perm(app, p).decision || "ask"); }
+    // Decision shown in lists: an active "Only this time" grant first.
+    function shownDecision(app, p) { return (!isSystem(app) && perm(app, p).once) ? "once" : decision(app, p); }
+    function isPreset(app, p) { return !isSystem(app) && perm(app, p).preset === true; }
     function decisionLabel(d) {
         switch (d) {
         case "allow": return i18n.tr("Allowed");
         case "while_using": return i18n.tr("While using");
+        case "once": return i18n.tr("This time");
         case "deny": return i18n.tr("Not allowed");
         case "system": return i18n.tr("System");
         default: return i18n.tr("Ask");

@@ -9,8 +9,9 @@
 set -eu
 here=$(dirname "$(readlink -f "$0")")
 env=$1/bin/fp6-perm-env; out=$(readlink -f "$2"); lq=$(readlink -f "$3"); shift 3
-all="prompt prompt-locked settings-main settings-perm settings-app settings-app-nonet settings-app-system
-     settings-network settings-history settings-decision"
+all="prompt prompt-locked prompt-media settings-main settings-perm settings-app settings-app-nonet settings-app-system
+     settings-network settings-history settings-decision settings-main-media settings-perm-media settings-app-media
+     settings-decision-media"
 scenes=${*:-$all}
 mkdir -p "$out"
 log=$(mktemp)

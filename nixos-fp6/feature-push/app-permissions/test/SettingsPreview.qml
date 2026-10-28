@@ -35,9 +35,14 @@ MainView {
     }
 
     Component.onCompleted: {
-        FakeBus.state.state = JSON.stringify(Sample.state);
+        var media = Shot.shot.indexOf("-media") > 0;
+        FakeBus.state.state = JSON.stringify(media ? Sample.mediaState : Sample.state);
         switch (Shot.shot) {
         case "settings-main": pageStack.push(Qt.resolvedUrl("security-privacy/AppAccess.qml")); break;
+        case "settings-main-media": pageStack.push(Qt.resolvedUrl("security-privacy/AppAccess.qml")); break;
+        case "settings-perm-media": pageStack.push(Qt.resolvedUrl("fp6-app-permissions/Fp6PermissionAppsPage.qml"), { model: pm, perm: "microphone" }); break;
+        case "settings-app-media": pageStack.push(Qt.resolvedUrl("fp6-app-permissions/Fp6AppPermissionsPage.qml"), { model: pm, app: "lomiri-camera-app" }); break;
+        case "settings-decision-media": pageStack.push(Qt.resolvedUrl("fp6-app-permissions/Fp6DecisionPage.qml"), { model: pm, app: "lomiri-camera-app", perm: "camera" }); break;
         case "settings-perm": pageStack.push(Qt.resolvedUrl("fp6-app-permissions/Fp6PermissionAppsPage.qml"), { model: pm, perm: "usb" }); break;
         case "settings-app": pageStack.push(Qt.resolvedUrl("fp6-app-permissions/Fp6AppPermissionsPage.qml"), { model: pm, app: "morph-browser" }); break;
         case "settings-app-nonet": pageStack.push(Qt.resolvedUrl("fp6-app-permissions/Fp6AppPermissionsPage.qml"), { model: pm, app: "org.example.Serial" }); break;
@@ -63,6 +68,25 @@ MainView {
                 check(bt && bt.value === "0/1", "Bluetooth row: asked but not allowed (" + (bt ? bt.value : "-") + ")");
                 var net = find(p, "fp6PermNetwork");
                 check(net && net.value === "3 apps limited", "network row (" + (net ? net.value : "-") + ")");
+                check(!find(p, "fp6Perm_camera"), "no camera row without the media option");
+                break;
+            case "settings-main-media":
+                var cam = find(p, "fp6Perm_camera");
+                check(cam && cam.value === "1/1", "camera row: the Camera app's preset counts (" + (cam ? cam.value : "-") + ")");
+                var mic = find(p, "fp6Perm_microphone");
+                check(mic && mic.value === "1/2", "microphone row: Camera allowed, Recorder asks (" + (mic ? mic.value : "-") + ")");
+                check(!!find(p, "fp6Perm_location"), "location row");
+                break;
+            case "settings-perm-media":
+                check(!!find(p, "fp6PermApp_org.example.Recorder") && !!find(p, "fp6PermApp_lomiri-camera-app"), "microphone apps listed");
+                check(find(p, "fp6PermApp_org.example.Recorder").layout.subtitle.text.indexOf("This time") === 0, "only-this-time grant shown");
+                break;
+            case "settings-app-media":
+                check(find(p, "fp6AppPerm_camera").value === "Allowed", "camera preset shown as allowed");
+                check(find(p, "fp6AppPerm_location").value === "Ask", "location asks");
+                break;
+            case "settings-decision-media":
+                check(find(p, "fp6Decision_allow") !== null, "options listed");
                 break;
             case "settings-perm":
                 check(!!find(p, "fp6PermApp_morph-browser") && !!find(p, "fp6PermApp_org.example.Serial"), "both USB apps listed");

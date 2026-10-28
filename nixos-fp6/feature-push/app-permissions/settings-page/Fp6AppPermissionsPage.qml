@@ -101,7 +101,7 @@ ItemPage {
                     enabled: !page.system
                     progressionVisible: !page.system
                     readonly property var p: page.model.perm(page.app, modelData.id)
-                    value: page.model.decisionLabel(page.model.decision(page.app, modelData.id))
+                    value: page.model.decisionLabel(page.model.shownDecision(page.app, modelData.id))
                     layout.subtitle.text: p.last_used ? i18n.tr("Last used %1").arg(page.model.timeText(p.last_used).toLowerCase())
                                                         + (p.detail ? " · " + p.detail : "") : ""
                     onClicked: pageStack.addPageToNextColumn(page, Qt.resolvedUrl("Fp6DecisionPage.qml"),

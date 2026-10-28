@@ -45,9 +45,20 @@ ItemPage {
         }
 
         ListItems.Caption {
-            text: page.perm === "usb"
-                  ? i18n.tr("Taking USB access away disconnects the device for a moment, so the app loses it at once.")
-                  : i18n.tr("Changes apply to the next request; confined apps lose file and data access at once.")
+            visible: page.model.isPreset(page.app, page.perm)
+            text: i18n.tr("This is the app's default. Reset permissions on the app's page brings it back after a change.")
+        }
+
+        ListItems.Caption {
+            text: {
+                switch (page.perm) {
+                case "usb": return i18n.tr("Taking USB access away disconnects the device for a moment, so the app loses it at once.");
+                case "camera":
+                case "microphone": return i18n.tr("Applies at once: a recording in progress stops when access is taken away. \"Only this time\" is offered when the app asks.");
+                case "location": return i18n.tr("Applies to the app's next location request. \"Only this time\" is offered when the app asks.");
+                default: return i18n.tr("Changes apply to the next request; confined apps lose file and data access at once.");
+                }
+            }
         }
     }
 }

@@ -35,7 +35,8 @@ Item {
         return null;
     }
 
-    Component.onCompleted: FakeBus.prompt.state = JSON.stringify(Sample.prompt)
+    readonly property bool media: Shot.shot === "prompt-media"
+    Component.onCompleted: FakeBus.prompt.state = JSON.stringify(media ? Sample.mediaPrompt : Sample.prompt)
     Timer {
         interval: 1200; running: true
         onTriggered: {
@@ -48,6 +49,14 @@ Item {
                 return;
             }
             check(prompt.visible, "visible");
+            if (shell.media) {
+                check(FakeBus.last("ack") === "ack 8", "acknowledged to the agent");
+                check(find(prompt, "fp6PermissionOnce").visible, "\"Only this time\" offered");
+                check(!find(prompt, "fp6PermissionWhileUsing").visible, "no \"only while using\" for the microphone");
+                shot.start();
+                return;
+            }
+            check(!find(prompt, "fp6PermissionOnce").visible, "no \"Only this time\" for USB");
             check(FakeBus.last("ack") === "ack 7", "acknowledged to the agent");
             check(FakeBus.last("focus") === "focus org.example.Serial", "focused app reported");
             var q = find(prompt, "fp6PermissionQuestion");
@@ -66,6 +75,13 @@ Item {
         id: shot; interval: 400
         onTriggered: shell.grabToImage(function(r) {
             r.saveToFile(Shot.out + "/" + Shot.shot + ".png");
+            if (shell.media) {
+                find(prompt, "fp6PermissionOnce").clicked();
+                check(FakeBus.last("respond") === "respond 8 once", "\"once\" answer sent");
+                check(!prompt.visible, "closes after answering");
+                Qt.quit();
+                return;
+            }
             var b = find(prompt, "fp6PermissionWhileUsing");
             b.clicked();
             check(FakeBus.last("respond") === "respond 7 while_using", "answer sent");
