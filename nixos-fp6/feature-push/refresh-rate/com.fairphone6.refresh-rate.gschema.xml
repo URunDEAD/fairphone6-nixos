@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- FP6 refresh rate ("Smooth display"). Written by System Settings >
+     Brightness & Display and the quick-settings tile; Lomiri
+     (Fp6RefreshRate.qml) applies it and writes available-rates,
+     adaptive-available and active-rate. -->
+<schemalist gettext-domain="lomiri-system-settings">
+  <enum id="com.fairphone6.refresh-rate.Mode">
+    <value nick="low" value="0"/>
+    <value nick="standard" value="1"/>
+    <value nick="medium" value="2"/>
+    <value nick="high" value="3"/>
+    <value nick="adaptive" value="4"/>
+  </enum>
+
+  <schema id="com.fairphone6.refresh-rate" path="/com/fairphone6/refresh-rate/">
+    <key name="mode" enum="com.fairphone6.refresh-rate.Mode">
+      <default>'high'</default>
+      <summary>Refresh rate mode</summary>
+      <description>low = 30 Hz, standard = 60 Hz, medium = 90 Hz, high = 120 Hz (the panel default); adaptive = 120 Hz while touched, adaptive-idle-rate when idle (needs the panel runtime rate; else like high). A mode the kernel does not offer falls back to the next lower rate.</description>
+    </key>
+    <key name="adaptive-idle-rate" type="i">
+      <range min="10" max="60"/>
+      <default>60</default>
+      <summary>Adaptive: panel rate while idle (Hz)</summary>
+      <description>Settings offers 60, 30 and 10; other values round down to one of them. 60 keeps 60 fps video smooth; 30 and 10 save more on a still screen.</description>
+    </key>
+    <key name="adaptive-idle-ms" type="i">
+      <range min="500" max="10000"/>
+      <default>3000</default>
+      <summary>Adaptive: idle after this many ms without touch or keys</summary>
+    </key>
+    <key name="saver-cap" type="b">
+      <default>true</default>
+      <summary>Battery saver limits the refresh rate to 60 Hz</summary>
+    </key>
+    <key name="smooth-mode" enum="com.fairphone6.refresh-rate.Mode">
+      <default>'high'</default>
+      <summary>Mode the quick-settings tile switches on</summary>
+      <description>The last mode above 60 Hz chosen in Settings. The tile toggles between it and standard.</description>
+    </key>
+    <key name="confirmed" type="b">
+      <default>true</default>
+      <summary>The current mode was confirmed by the user</summary>
+      <description>Settings clears this while a new mode is on trial and sets it on "Keep" or when going back. If the shell starts with an unconfirmed mode, it goes back to high.</description>
+    </key>
+    <key name="confirmed-modes" type="s">
+      <default>'high'</default>
+      <summary>Modes kept at least once (comma-separated)</summary>
+      <description>The quick-settings tile only switches to these without asking; for others it opens Settings.</description>
+    </key>
+    <key name="available-rates" type="s">
+      <default>''</default>
+      <summary>Refresh rates of the built-in display's modes (written by the shell)</summary>
+      <description>Comma-separated, ascending, e.g. 30,60,90,120. Empty until the shell has started.</description>
+    </key>
+    <key name="adaptive-available" type="b">
+      <default>false</default>
+      <summary>The panel supports a runtime rate (written by the shell)</summary>
+    </key>
+    <key name="active-rate" type="i">
+      <default>0</default>
+      <summary>Refresh rate in use (written by the shell)</summary>
+    </key>
+  </schema>
+</schemalist>

@@ -1,0 +1,21 @@
+    // ---- FP6 refresh rate (Settings > Brightness & Display > Smooth display);
+    // opt-in: not in the default tile list, add it from the editor's tray.
+    GSettings { id: fp6RefreshSettings; schema.id: "com.fairphone6.refresh-rate" }
+    QsTileDef {
+        id: fp6RefreshRateTile
+        tileId: "smooth-display"; label: i18n.tr("Smooth display")
+        iconOn: "video-display-symbolic"
+        readonly property string target: active ? "standard" : (fp6RefreshSettings.smoothMode || "high")
+        // the shell reports more than one rate (or the panel runtime rate)
+        available: fp6RefreshSettings.availableRates !== undefined
+                   && (String(fp6RefreshSettings.availableRates).indexOf(",") >= 0
+                       || fp6RefreshSettings.adaptiveAvailable === true)
+        active: fp6RefreshSettings.mode !== undefined
+                && fp6RefreshSettings.mode !== "standard" && fp6RefreshSettings.mode !== "low"
+        subtitle: fp6RefreshSettings.activeRate > 0 ? i18n.tr("%1 Hz").arg(fp6RefreshSettings.activeRate) : ""
+        // a mode never kept in Settings runs on trial there, not from here
+        pageOnly: String(fp6RefreshSettings.confirmedModes || "").split(",").indexOf(target) < 0
+        settingsUrl: "settings:///system/brightness"
+        toggle: function() { fp6RefreshSettings.mode = target; }
+    }
+

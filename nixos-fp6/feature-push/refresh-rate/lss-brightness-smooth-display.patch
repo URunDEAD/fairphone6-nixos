@@ -1,0 +1,26 @@
+--- a/PageComponent.qml
++++ b/PageComponent.qml
+@@ -32,7 +32,8 @@
+     id: root
+     objectName: "brightnessPage"
+ 
+-    title: brightnessPanel.widiSupported ? i18n.tr("Brightness & Display") : i18n.tr("Brightness")
++    // FP6: the page also has the refresh rate (Smooth display)
++    title: i18n.tr("Brightness & Display")
+     flickable: scrollWidget
+ 
+     GSettings {
+@@ -131,6 +132,13 @@
+                 visible: adjust.visible
+             }
+ 
++            // FP6: Smooth display (refresh rate), Fp6SmoothDisplay.qml
++            Loader {
++                anchors.left: parent.left
++                anchors.right: parent.right
++                source: Qt.resolvedUrl("Fp6SmoothDisplay.qml")
++            }
++
+             ListItem.Divider {}
+ 
+             SettingsItemTitle {
