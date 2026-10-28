@@ -24,8 +24,21 @@ export DISPLAY=:77
 mkdir -p $tmp/empty
 XDG_DATA_DIRS=$tmp/empty dbus-run-session -- "$lss/bin/lomiri-system-settings" "$page" >$tmp/log 2>&1 & ap=$!
 sleep ${GRAB_DELAY:-8}
-# TAPS="x,y x,y": physical-pixel taps (xdotool) before the grab, 2 s apart.
-for t in ${TAPS:-}; do xdotool mousemove ${t%,*} ${t#*,} click 1; sleep 2; done
+# LIVE_FONT_SCALE=150: change the live text size file (as fp6-display-comfort
+# does, atomic rename) while the app runs, then wait for the relayout.
+if [ -n "${LIVE_FONT_SCALE:-}" ]; then
+  echo "$LIVE_FONT_SCALE" > $XDG_CONFIG_HOME/lomiri-ui-toolkit/font-scale.fp6-tmp
+  mv $XDG_CONFIG_HOME/lomiri-ui-toolkit/font-scale.fp6-tmp $XDG_CONFIG_HOME/lomiri-ui-toolkit/font-scale
+  sleep 2
+fi
+# TAPS="x,y x,y x,y,B": physical-pixel taps (xdotool) before the grab, 2 s
+# apart; an optional third field is the button (5 = wheel down, 4 = up).
+for t in ${TAPS:-}; do
+  IFS=, read -r tx ty tb <<<"$t"
+  xdotool mousemove $tx $ty click ${tb:-1}
+  if [ -n "$tb" ]; then sleep 0.3; else sleep 2; fi
+done
+[ -z "${TAPS:-}" ] || sleep 1
 import -window root "$out"
 kill $ap 2>/dev/null || true
 grep -i "display-comfort\|qml\|error" $tmp/log | grep -v -i fontconfig | head -20 || true
