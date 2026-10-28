@@ -107,8 +107,14 @@ permits `/dev/uinput`, not reading physical keyboard devices.
 
 Notification forwarding depends on the session bus allowing `BecomeMonitor`.
 Failure is reported in the app; the daemon never replaces the shell notification
-service. Existing notification history, notification icons/payloads, actions and
-inline replies are not exported. Notification dismissals are synchronized when
+service. Existing notification history, notification icons/payloads and actions
+are not exported. Inline replies work in one direction: a peer notification that
+carries `requestReplyId` (Android messaging apps) is shown with the freedesktop
+`inline-reply` action; the reply typed in the Lomiri bubble or panel
+(`NotificationReplied`, accepted only from the owner of
+`org.freedesktop.Notifications`) is sent back as `kdeconnect.notification.reply`
+while the peer allows notifications. Phone notifications forwarded to the peer
+do not offer a reply (see ../notifications/inline-reply/README.md). Notification dismissals are synchronized when
 the shell emits the standard close signal. The first version handles one item
 per Content Hub share request; select another item for another transfer. Files
 are stored with a UUID prefix. Shared links remain in the current in-memory
@@ -198,6 +204,9 @@ non-sensitive data on a trusted Wi-Fi network.
   newly paired peer. Toggle each device separately and verify immediate revocation.
 - [ ] Enable notifications and create/update/dismiss synthetic notifications on
   both sides. Verify there is no echo loop or notification history replay.
+- [ ] With an Android peer, reply to a synthetic message notification from the
+  Lomiri bubble and from the pulled-down panel; the reply arrives once on the
+  Android side. Turn the peer's notifications toggle off: no reply is sent.
 - [ ] Enable clipboard, copy/paste text each direction, test reconnection and
   disabling, and confirm no clipboard reads/updates while no opted-in peer is
   online. Confirm Qt clipboard access in the headless graphical-session agent.

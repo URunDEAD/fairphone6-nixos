@@ -40,6 +40,8 @@ pub struct App {
     pub input: Mutex<crate::input::InputManager>,
     pub notifications: Mutex<BTreeMap<(String, String), u32>>,
     pub local_notifications: Mutex<BTreeMap<String, u32>>,
+    /// Shown peer notifications that accept a reply: local id -> (device, requestReplyId).
+    pub notification_replies: Mutex<BTreeMap<u32, (String, String)>>,
     pub ring: Mutex<Option<tokio::process::Child>>,
     pub downloads: std::path::PathBuf,
     pub interfaces: Vec<String>,
@@ -68,6 +70,7 @@ impl App {
             input: Mutex::new(crate::input::InputManager::default()),
             notifications: Mutex::new(BTreeMap::new()),
             local_notifications: Mutex::new(BTreeMap::new()),
+            notification_replies: Mutex::new(BTreeMap::new()),
             ring: Mutex::new(None),
             interfaces,
             downloads,

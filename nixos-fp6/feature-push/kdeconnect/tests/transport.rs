@@ -681,3 +681,137 @@ async fn reconnect_clipboard_ignores_stale_content() -> Result<()> {
     assert_eq!(app.inner.lock().await.clipboard, "Synthetic fresh");
     Ok(())
 }
+
+/// Records the actions/hints of each Notify (inline-reply test).
+struct ReplyNotifications(std::sync::Arc<std::sync::Mutex<Vec<(Vec<String>, Vec<String>)>>>);
+#[zbus::interface(name = "org.freedesktop.Notifications")]
+impl ReplyNotifications {
+    #[allow(clippy::too_many_arguments)]
+    fn notify(
+        &self,
+        _app_name: &str,
+        _replaces: u32,
+        _icon: &str,
+        _title: &str,
+        _body: &str,
+        actions: Vec<String>,
+        hints: std::collections::HashMap<String, zbus::zvariant::OwnedValue>,
+        _timeout: i32,
+    ) -> u32 {
+        let mut keys: Vec<String> = hints.keys().cloned().collect();
+        keys.sort();
+        self.0.lock().unwrap().push((actions, keys));
+        77
+    }
+    fn close_notification(&self, _id: u32) {}
+}
+
+#[tokio::test]
+async fn peer_notification_inline_reply() -> Result<()> {
+    let bus = Bus::new();
+    let dir = tempfile::tempdir()?;
+    let app = app(&bus, dir.path()).await;
+    let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let server = bus.connection().await;
+    server
+        .object_server()
+        .at(
+            "/org/freedesktop/Notifications",
+            ReplyNotifications(calls.clone()),
+        )
+        .await?;
+    server.request_name("org.freedesktop.Notifications").await?;
+    let creds = Credentials::generate("synthetic-phone")?;
+    let (mut peer, _task) = raw_peer(app.clone(), &creds, "synthetic-phone", 8).await?;
+    peer.get_mut()
+        .write_all(
+            &Packet::new(
+                "kdeconnect.pair",
+                json!({"pair":true,"timestamp":lomiri_kdeconnect::protocol::now_millis()/1000}),
+            )
+            .encode()?,
+        )
+        .await?;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    accept_pair(&app, "synthetic-phone").await?;
+    read_packet(&mut peer, MAX_PACKET).await?;
+    app.set_plugin("synthetic-phone", "notifications", true)
+        .await?;
+    tokio::spawn(lomiri_kdeconnect::plugins::reply_listener(app.clone()));
+    // A message notification from the (synthetic) Android phone, with a reply handle.
+    peer.get_mut()
+        .write_all(&Packet::new("kdeconnect.notification", json!({"id":"sms-1","appName":"Messages","title":"Test Contact","text":"Hello from +999 555 0100","requestReplyId":"reply-uuid-1"})).encode()?)
+        .await?;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while calls.lock().unwrap().is_empty() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await?;
+    let (actions, hints) = calls.lock().unwrap()[0].clone();
+    assert_eq!(
+        actions,
+        vec!["inline-reply".to_string(), "Reply".to_string()]
+    );
+    assert!(hints.contains(&"x-kde-reply-placeholder-text".to_string()));
+    tokio::time::sleep(Duration::from_millis(200)).await; // match rule in place
+                                                          // A NotificationReplied from a client that is not the notification server is ignored.
+    let other = bus.connection().await;
+    other
+        .emit_signal(
+            None::<()>,
+            "/org/freedesktop/Notifications",
+            "org.freedesktop.Notifications",
+            "NotificationReplied",
+            &(77u32, "spoofed"),
+        )
+        .await?;
+    server
+        .emit_signal(
+            None::<()>,
+            "/org/freedesktop/Notifications",
+            "org.freedesktop.Notifications",
+            "NotificationReplied",
+            &(77u32, "On my way"),
+        )
+        .await?;
+    let reply =
+        tokio::time::timeout(Duration::from_secs(2), read_packet(&mut peer, MAX_PACKET)).await??;
+    assert_eq!(reply.kind, "kdeconnect.notification.reply");
+    assert_eq!(reply.body["requestReplyId"], "reply-uuid-1");
+    assert_eq!(reply.body["message"], "On my way");
+    // One reply per notification.
+    server
+        .emit_signal(
+            None::<()>,
+            "/org/freedesktop/Notifications",
+            "org.freedesktop.Notifications",
+            "NotificationReplied",
+            &(77u32, "again"),
+        )
+        .await?;
+    assert!(tokio::time::timeout(
+        Duration::from_millis(300),
+        read_packet(&mut peer, MAX_PACKET)
+    )
+    .await
+    .is_err());
+    // Without requestReplyId: no reply action.
+    peer.get_mut()
+        .write_all(
+            &Packet::new(
+                "kdeconnect.notification",
+                json!({"id":"n-2","title":"Test Contact","text":"no reply"}),
+            )
+            .encode()?,
+        )
+        .await?;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while calls.lock().unwrap().len() < 2 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await?;
+    assert!(calls.lock().unwrap()[1].0.is_empty());
+    Ok(())
+}

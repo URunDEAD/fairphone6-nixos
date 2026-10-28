@@ -25,6 +25,7 @@ pub const OUTGOING: &[&str] = &[
     "kdeconnect.battery",
     "kdeconnect.notification",
     "kdeconnect.notification.request",
+    "kdeconnect.notification.reply",
     "kdeconnect.clipboard",
     "kdeconnect.clipboard.connect",
     "kdeconnect.share.request",
@@ -152,7 +153,9 @@ pub fn plugin_for(kind: &str) -> Option<&'static str> {
     Some(match kind {
         "kdeconnect.ping" => "ping",
         "kdeconnect.battery" | "kdeconnect.battery.request" => "battery",
-        "kdeconnect.notification" | "kdeconnect.notification.request" => "notifications",
+        "kdeconnect.notification"
+        | "kdeconnect.notification.request"
+        | "kdeconnect.notification.reply" => "notifications",
         "kdeconnect.clipboard" | "kdeconnect.clipboard.connect" => "clipboard",
         "kdeconnect.share.request" => "share",
         "kdeconnect.findmyphone.request" => "findmyphone",

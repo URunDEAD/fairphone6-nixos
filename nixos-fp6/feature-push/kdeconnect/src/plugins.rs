@@ -141,6 +141,7 @@ async fn receive_notification(app: &App, id: &str, body: &Value) -> Result<()> {
     let key = (id.into(), remote_id.into());
     if body["isCancel"].as_bool() == Some(true) {
         if let Some(local) = app.notifications.lock().await.remove(&key) {
+            app.notification_replies.lock().await.remove(&local);
             let _: () = notification_proxy(app)
                 .await?
                 .call("CloseNotification", &(local,))
@@ -163,12 +164,27 @@ async fn receive_notification(app: &App, id: &str, body: &Value) -> Result<()> {
         .get(&key)
         .copied()
         .unwrap_or(0);
-    let hints: HashMap<&str, OwnedValue> = [
+    let reply_id = reply_request_id(body);
+    let app_name = body["appName"].as_str().unwrap_or("the device");
+    let mut hints: HashMap<&str, OwnedValue> = [
         ("x-kdeconnect-origin", OwnedValue::from(true)),
         ("transient", OwnedValue::from(true)),
     ]
     .into_iter()
     .collect();
+    // Inline reply (Android's requestReplyId): the shell's reply field answers
+    // with NotificationReplied, reply_listener sends kdeconnect.notification.reply.
+    let actions: Vec<String> = if reply_id.is_some() {
+        if let Ok(v) = OwnedValue::try_from(zbus::zvariant::Value::from(format!(
+            "Reply to {}",
+            app_name.chars().take(64).collect::<String>()
+        ))) {
+            hints.insert("x-kde-reply-placeholder-text", v);
+        }
+        vec!["inline-reply".into(), "Reply".into()]
+    } else {
+        Vec::new()
+    };
     let local: u32 = notification_proxy(app)
         .await?
         .call(
@@ -179,17 +195,81 @@ async fn receive_notification(app: &App, id: &str, body: &Value) -> Result<()> {
                 "smartphone",
                 title.chars().take(128).collect::<String>(),
                 escape_markup(text),
-                Vec::<String>::new(),
+                actions,
                 hints,
                 8000i32,
             ),
         )
         .await?;
+    {
+        let mut replies = app.notification_replies.lock().await;
+        replies.remove(&existing);
+        if let Some(rid) = reply_id {
+            if replies.len() >= 256 {
+                replies.clear();
+            }
+            replies.insert(local, (id.to_string(), rid));
+        }
+    }
     let mut map = app.notifications.lock().await;
     if map.len() >= 256 {
         map.clear();
     }
     map.insert(key, local);
+    Ok(())
+}
+/// The peer's reply handle for a notification (Android: requestReplyId), if usable.
+fn reply_request_id(body: &Value) -> Option<String> {
+    body["requestReplyId"]
+        .as_str()
+        .filter(|s| !s.is_empty() && s.len() <= 256 && !s.chars().any(char::is_control))
+        .map(str::to_string)
+}
+fn reply_packet(request_reply_id: &str, text: &str) -> Packet {
+    Packet::new(
+        "kdeconnect.notification.reply",
+        json!({"requestReplyId": request_reply_id, "message": text.chars().take(4096).collect::<String>()}),
+    )
+}
+/// Sends the shell's inline replies (org.freedesktop.Notifications
+/// NotificationReplied, from the notification server only) for peer
+/// notifications back to the peer, if it still allows notifications.
+pub async fn reply_listener(app: Arc<App>) -> Result<()> {
+    let rule = zbus::MatchRule::builder()
+        .msg_type(zbus::message::Type::Signal)
+        .sender("org.freedesktop.Notifications")?
+        .interface("org.freedesktop.Notifications")?
+        .path("/org/freedesktop/Notifications")?
+        .build();
+    let mut stream = zbus::MessageStream::for_match_rule(rule, &app.bus, Some(64)).await?;
+    while let Some(message) = stream.next().await {
+        let message = message?;
+        let header = message.header();
+        match header.member().map(|m| m.as_str()) {
+            Some("NotificationReplied") => {
+                let Ok((local, text)) = message.body().deserialize::<(u32, String)>() else {
+                    continue;
+                };
+                let Some((device, rid)) = app.notification_replies.lock().await.remove(&local)
+                else {
+                    continue;
+                };
+                if text.trim().is_empty() || !app.allowed(&device, "notifications").await {
+                    continue;
+                }
+                match app.send(&device, reply_packet(&rid, &text)).await {
+                    Ok(()) => app.event("Reply sent.").await,
+                    Err(e) => app.event(format!("Reply not sent: {e}")).await,
+                }
+            }
+            Some("NotificationClosed") => {
+                if let Ok((local, _)) = message.body().deserialize::<(u32, u32)>() {
+                    app.notification_replies.lock().await.remove(&local);
+                }
+            }
+            _ => {}
+        }
+    }
     Ok(())
 }
 /// Monitor only the notification method calls. The actual shell notification
@@ -612,6 +692,26 @@ mod tests {
         assert_eq!(p.body["isCharging"], true);
         std::fs::write(b.join("capacity"), "200").unwrap();
         assert!(battery_packet_from(root.path()).is_none());
+    }
+    #[test]
+    fn reply_ids_and_packets() {
+        assert_eq!(
+            reply_request_id(&json!({"requestReplyId":"abc-1"})).as_deref(),
+            Some("abc-1")
+        );
+        assert_eq!(reply_request_id(&json!({"requestReplyId":""})), None);
+        assert_eq!(reply_request_id(&json!({"requestReplyId":"a\nb"})), None);
+        assert_eq!(
+            reply_request_id(&json!({"requestReplyId":"x".repeat(300)})),
+            None
+        );
+        assert_eq!(reply_request_id(&json!({"id":"1"})), None);
+        let p = reply_packet("abc-1", &"y".repeat(5000));
+        assert_eq!(p.kind, "kdeconnect.notification.reply");
+        assert_eq!(p.body["requestReplyId"], "abc-1");
+        assert_eq!(p.body["message"].as_str().unwrap().len(), 4096);
+        assert!(crate::protocol::OUTGOING.contains(&p.kind.as_str()));
+        assert_eq!(crate::protocol::plugin_for(&p.kind), Some("notifications"));
     }
     #[test]
     fn notification_markup_is_inert() {

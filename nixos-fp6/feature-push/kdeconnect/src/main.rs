@@ -62,6 +62,17 @@ async fn main() -> Result<()> {
             tokio::time::sleep(std::time::Duration::from_secs(10)).await;
         }
     });
+    let reply_app = app.clone();
+    tokio::spawn(async move {
+        loop {
+            if let Err(e) = plugins::reply_listener(reply_app.clone()).await {
+                reply_app
+                    .event(format!("Notification replies unavailable: {e}"))
+                    .await;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        }
+    });
     tokio::spawn(plugins::periodic(app.clone()));
     tokio::select! {
         result = network::run(app.clone()) => result?,
