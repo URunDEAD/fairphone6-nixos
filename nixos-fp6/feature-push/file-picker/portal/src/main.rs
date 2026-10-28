@@ -6,6 +6,10 @@
 //! request as JSON on stdin and reads the answer as JSON from stdout. The
 //! org.freedesktop.impl.portal.Request object at the request handle closes
 //! the picker (SIGTERM) when the frontend cancels the call.
+//!
+//! Also org.freedesktop.impl.portal.Access (camera, location and other
+//! permission-store portals), forwarded to fp6-permission-agent's prompt
+//! (app-permissions); routed here only when portals.conf says so.
 
 mod mime;
 mod places;
@@ -217,6 +221,77 @@ impl FileChooser {
     }
 }
 
+/// org.freedesktop.impl.portal.Access: the access dialog xdg-desktop-portal
+/// shows for the camera, location and other permission-store portals. The
+/// question goes to fp6-permission-agent (app-permissions), which shows it as
+/// the Lomiri permission prompt; xdg-desktop-portal remembers the answer in
+/// its permission store. Without the agent the request is refused.
+struct Access;
+
+const AGENT_NAME: &str = "com.fairphone6.Permissions";
+const AGENT_PATH: &str = "/com/fairphone6/Permissions";
+
+fn opt_str(options: &HashMap<String, OwnedValue>, key: &str) -> String {
+    options
+        .get(key)
+        .and_then(|v| String::try_from(v.try_clone().ok()?).ok())
+        .unwrap_or_default()
+}
+
+/// The JSON fp6-permission-agent's Dialog.Ask takes.
+fn access_request(app_id: &str, title: &str, subtitle: &str, body: &str, options: &HashMap<String, OwnedValue>) -> String {
+    let detail = [subtitle, body].iter().filter(|s| !s.is_empty()).cloned().collect::<Vec<_>>().join("\n");
+    serde_json::json!({
+        "app": app_id.trim_end_matches(".desktop"),
+        "perm": "portal",
+        "title": title,
+        "question": title,
+        "detail": detail,
+        "grant_label": opt_str(options, "grant_label"),
+        "deny_label": opt_str(options, "deny_label"),
+    })
+    .to_string()
+}
+
+/// Portal response: 0 granted, 1 refused by the user, 2 other (no agent).
+fn access_response(answer: Option<&str>) -> u32 {
+    match answer {
+        Some("allow") | Some("while_using") => 0,
+        Some(_) => 1,
+        None => 2,
+    }
+}
+
+#[zbus::interface(name = "org.freedesktop.impl.portal.Access")]
+impl Access {
+    #[allow(clippy::too_many_arguments)]
+    async fn access_dialog(
+        &self,
+        #[zbus(connection)] conn: &zbus::Connection,
+        _handle: OwnedObjectPath,
+        app_id: String,
+        _parent_window: String,
+        title: String,
+        subtitle: String,
+        body: String,
+        options: HashMap<String, OwnedValue>,
+    ) -> (u32, HashMap<String, OwnedValue>) {
+        let req = access_request(&app_id, &title, &subtitle, &body, &options);
+        let reply = conn
+            .call_method(Some(AGENT_NAME), AGENT_PATH, Some("com.fairphone6.Permissions.Dialog"), "Ask", &(req,))
+            .await;
+        let answer = match reply {
+            Ok(m) => m.body().deserialize::<String>().ok(),
+            Err(e) => {
+                eprintln!("xdg-desktop-portal-lomiri: access dialog for {app_id:?}: {e}");
+                None
+            }
+        };
+        eprintln!("xdg-desktop-portal-lomiri: access dialog for {app_id:?}: {answer:?}");
+        (access_response(answer.as_deref()), HashMap::new())
+    }
+}
+
 fn main() -> zbus::Result<()> {
     if std::env::args().any(|a| a == "--version") {
         println!("xdg-desktop-portal-lomiri {}", env!("CARGO_PKG_VERSION"));
@@ -232,6 +307,7 @@ fn main() -> zbus::Result<()> {
     };
     let conn = zbus::blocking::connection::Builder::session()?
         .serve_at(OBJECT_PATH, chooser)?
+        .serve_at(OBJECT_PATH, Access)?
         .name(BUS_NAME)?
         .build()?;
     eprintln!("xdg-desktop-portal-lomiri: serving {BUS_NAME}");
@@ -244,4 +320,30 @@ fn main() -> zbus::Result<()> {
     }
     eprintln!("xdg-desktop-portal-lomiri: session bus closed, exiting");
     Ok(())
+}
+
+#[cfg(test)]
+mod access_tests {
+    use super::*;
+
+    #[test]
+    fn access_answers_map_to_portal_responses() {
+        assert_eq!(access_response(Some("allow")), 0);
+        assert_eq!(access_response(Some("while_using")), 0);
+        assert_eq!(access_response(Some("deny")), 1);
+        assert_eq!(access_response(Some("dismissed")), 1);
+        assert_eq!(access_response(None), 2);
+    }
+
+    #[test]
+    fn access_request_json() {
+        let mut o = HashMap::new();
+        o.insert("deny_label".to_string(), OwnedValue::try_from(zbus::zvariant::Value::from("Deny Access")).unwrap());
+        let j: serde_json::Value = serde_json::from_str(&access_request("org.gnome.Snapshot.desktop", "Allow Snapshot to use the camera?", "", "Access can be changed later.", &o)).unwrap();
+        assert_eq!(j["app"], "org.gnome.Snapshot");
+        assert_eq!(j["question"], "Allow Snapshot to use the camera?");
+        assert_eq!(j["detail"], "Access can be changed later.");
+        assert_eq!(j["deny_label"], "Deny Access");
+        assert_eq!(j["grant_label"], "");
+    }
 }
