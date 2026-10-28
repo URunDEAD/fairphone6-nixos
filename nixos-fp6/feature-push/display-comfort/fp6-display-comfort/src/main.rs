@@ -11,7 +11,9 @@
 //!    light-mode) when the schedule state changes.
 //!  * Scale: mirrors interface-scale / font-scale into
 //!    ~/.config/fp6-display-comfort/session.env (read by lomiri-session at
-//!    login) and applies the GTK text scale at session start.
+//!    login). The text size is also live: font-scale goes to
+//!    ~/.config/lomiri-ui-toolkit/font-scale (the font-scale UITK watches it)
+//!    and to the GTK text scale, at session start and on every change.
 //!  * Location: optional GeoClue lookup (city accuracy, only answers while
 //!    Location is on) every few hours for sunset/sunrise.
 //!
@@ -219,7 +221,16 @@ fn write_scale_file(s: &gio::Settings) {
     }
 }
 
-/// GTK text scale, applied once at session start (= what this login uses).
+/// Live text size for UITK (font-scale libLomiriToolkit watches this file).
+fn write_uitk_font_scale(pct: i32) {
+    let path = config_dir().join("lomiri-ui-toolkit/font-scale");
+    if let Err(e) = files::write_if_changed(&path, &files::uitk_font_scale(pct)) {
+        eprintln!("fp6-display-comfort: uitk font-scale: {e}");
+    }
+}
+
+/// GTK text scale (dconf text-scaling-factor is live in running GTK apps;
+/// gtk-xft-dpi in settings.ini is read when an app starts).
 fn apply_gtk_font_scale(pct: i32) {
     let pct = pct.clamp(80, 150);
     if pct == 100 {
@@ -408,7 +419,8 @@ fn run() {
     let _ = settings.set_int("session-interface-scale", gu);
     let _ = settings.set_int("session-font-scale", pct);
     write_scale_file(&settings);
-    apply_gtk_font_scale(pct);
+    write_uitk_font_scale(settings.int("font-scale"));
+    apply_gtk_font_scale(settings.int("font-scale"));
 
     let weak = Rc::downgrade(&st);
     settings.connect_changed(None, move |s, key| {
@@ -421,6 +433,10 @@ fn run() {
         }
         if matches!(key, "interface-scale" | "font-scale") {
             write_scale_file(s);
+            if key == "font-scale" {
+                write_uitk_font_scale(s.int("font-scale"));
+                apply_gtk_font_scale(s.int("font-scale"));
+            }
             return;
         }
         if let Some(st) = weak.upgrade() {

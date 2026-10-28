@@ -93,6 +93,12 @@ pub fn session_env(grid_unit_px: i32, font_percent: i32) -> String {
     )
 }
 
+/// Content of ~/.config/lomiri-ui-toolkit/font-scale: the live UITK text size
+/// in percent (uitk-font-scale.patch accepts 50..200; Settings offers 80..150).
+pub fn uitk_font_scale(font_percent: i32) -> String {
+    format!("{}\n", font_percent.clamp(80, 150))
+}
+
 /// (grid unit, font percent) from a session.env text, as lomiri-session reads it.
 pub fn parse_session_env(text: &str) -> (i32, i32) {
     let (mut gu, mut pct) = (24, 100);
@@ -163,6 +169,8 @@ mod tests {
         assert!(s.contains("\nFP6_GRID_UNIT_PX=21\n") && s.ends_with("FP6_FONT_SCALE_PERCENT=115\n"));
         assert_eq!(parse_session_env(&s), (21, 115));
         assert_eq!(parse_session_env("FP6_GRID_UNIT_PX=40\nFP6_FONT_SCALE_PERCENT=1;x\n"), (24, 100));
+        assert_eq!(uitk_font_scale(115), "115\n");
+        assert_eq!(uitk_font_scale(400), "150\n");
         assert!(session_env(99, 10).contains("FP6_GRID_UNIT_PX=32\nFP6_FONT_SCALE_PERCENT=80\n"));
     }
 }
