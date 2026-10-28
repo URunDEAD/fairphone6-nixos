@@ -2,7 +2,8 @@
 # Runs the stock UITK QML modules under qmlscene (QT_QPA_PLATFORM=offscreen,
 # software Qt Quick) with and without the font-scale libLomiriToolkit.so.5
 # first on LD_LIBRARY_PATH, exactly as lomiri-session sets it, and compares
-# the label pixel sizes and grabs. Also starts a real wrapped UITK app with
+# the label pixel sizes and grabs. Live runs change the font-scale file while
+# the scene runs (the size follows without a restart). Also starts a real wrapped UITK app with
 # the same environment and checks which libLomiriToolkit it maps.
 # Build: system.build.fp6-display-comfort.uitkFontScaleTest.
 { lib, runCommand, makeFontsConf, dejavu_fonts, python3, libsForQt5
@@ -42,6 +43,40 @@ in runCommand "fp6-uitk-font-scale-test" { nativeBuildInputs = [ python3 python3
   run shim-130 LD_LIBRARY_PATH=${uitkFontScaleLib}/lib UITK_FONT_SCALE=1.30
   run shim-085 LD_LIBRARY_PATH=${uitkFontScaleLib}/lib UITK_FONT_SCALE=0.85
   run shim-bad LD_LIBRARY_PATH=${uitkFontScaleLib}/lib UITK_FONT_SCALE=7
+
+  # Live changes: the font-scale file is written (or removed) while the
+  # scene runs, after it has printed its first sizes.
+  # live NAME START CHANGE [ENV...]: START = file content at start (- none),
+  # CHANGE = - (none) / rm / inplace:VALUE / VALUE (atomic rename, like the daemon).
+  live() {
+    name=$1 start=$2 change=$3; shift 3
+    d=$TMPDIR/$name; cfg=$d/cfg/lomiri-ui-toolkit
+    mkdir -p $cfg
+    [ "$start" = - ] || echo "$start" > $cfg/font-scale
+    ( cd $d && env -u UITK_FONT_SCALE XDG_CONFIG_HOME=$d/cfg "$@" \
+      timeout 60 ${lib.getDev qt.qtdeclarative}/bin/qmlscene ${./live.qml} ) > $out/$name.log 2>&1 &
+    pid=$!
+    for i in $(seq 300); do grep -q UITK-LIVE-READY $out/$name.log && break; sleep 0.1; done
+    case $change in
+      -) ;;
+      rm) rm -f $cfg/font-scale ;;
+      inplace:*) echo "''${change#inplace:}" > $cfg/font-scale ;;
+      *) echo "$change" > $cfg/font-scale.fp6-tmp && mv $cfg/font-scale.fp6-tmp $cfg/font-scale ;;
+    esac
+    wait $pid || { cat $out/$name.log; exit 1; }
+    cp $d/before.png $out/$name-before.png; cp $d/after.png $out/$name-after.png
+    grep -o 'UITK-LIVE-BEFORE .*' $out/$name.log | sed 's/^UITK-LIVE-BEFORE //' > $out/$name.before.json
+    grep -o 'UITK-LIVE-AFTER .*' $out/$name.log | sed 's/^UITK-LIVE-AFTER //' > $out/$name.after.json
+    echo "$name: $(cat $out/$name.before.json) -> $(cat $out/$name.after.json)"
+  }
+  shim="LD_LIBRARY_PATH=${uitkFontScaleLib}/lib"
+  live live-up - 130 $shim UITK_FONT_SCALE=1.00
+  live live-down 130 inplace:100 $shim UITK_FONT_SCALE=1.30
+  live live-start 150 - $shim UITK_FONT_SCALE=1.00
+  live live-rm 150 rm $shim UITK_FONT_SCALE=1.15
+  live live-bad - abc $shim UITK_FONT_SCALE=1.00
+  live live-noenv 150 130 $shim
+  live live-stock - 130 UITK_FONT_SCALE=1.00
 
   # A real wrapped UITK app for 6 s, stock and with the session environment.
   # Both runs must end the same way (timeout's SIGTERM; with no D-Bus and no

@@ -1,24 +1,135 @@
+diff -ru a/src/LomiriToolkit/lomiritoolkitmodule.cpp b/src/LomiriToolkit/lomiritoolkitmodule.cpp
+--- a/src/LomiriToolkit/lomiritoolkitmodule.cpp	2026-10-28 07:17:39.978963779 +0200
++++ b/src/LomiriToolkit/lomiritoolkitmodule.cpp	2026-10-28 07:18:00.108379935 +0200
+@@ -170,6 +170,7 @@
+     UCApplication::instance(engine);
+     UCFontUtils::instance(engine);
+     UCTheme::defaultTheme(engine);
++    UCFontUtils::watchUserScale();
+ 
+     QQmlContext* context = engine->rootContext();
+ 
 diff -ru a/src/LomiriToolkit/ucfontutils.cpp b/src/LomiriToolkit/ucfontutils.cpp
---- a/src/LomiriToolkit/ucfontutils.cpp
-+++ b/src/LomiriToolkit/ucfontutils.cpp
-@@ -22,6 +22,16 @@
+--- a/src/LomiriToolkit/ucfontutils.cpp	2026-10-28 07:17:39.978279236 +0200
++++ b/src/LomiriToolkit/ucfontutils.cpp	2026-10-28 07:18:00.107678617 +0200
+@@ -18,10 +18,116 @@
+ 
+ #include "ucunits_p.h"
+ 
++#include <QtCore/QCoreApplication>
++#include <QtCore/QDir>
++#include <QtCore/QFile>
++#include <QtCore/QFileSystemWatcher>
++#include <QtCore/QStandardPaths>
++#include <QtCore/QTimer>
++
+ UT_NAMESPACE_BEGIN
  
  UCFontUtils *UCFontUtils::m_instance = nullptr;
  
++// FP6 text size (System Settings > Display Comfort).
++// UITK_FONT_SCALE (0.5..2.0, set by lomiri-session at login) is the start
++// value. When it is set, $XDG_CONFIG_HOME/lomiri-ui-toolkit/font-scale (one
++// integer, percent, 50..200; written by fp6-display-comfort) overrides it and
++// is watched, so the size also changes in running processes. Unset (greeter,
++// tests, other sessions): stock sizes, no file access, no watch.
++namespace {
++float g_userScale = -1.0f;
++
++bool validScale(float value)
++{
++    return value >= 0.5f && value <= 2.0f;
++}
++
++float envScale(bool *isSet)
++{
++    *isSet = qEnvironmentVariableIsSet("UITK_FONT_SCALE");
++    bool ok = false;
++    const float value = qEnvironmentVariable("UITK_FONT_SCALE").toFloat(&ok);
++    return (ok && validScale(value)) ? value : 1.0f;
++}
++
++QString liveScaleDir()
++{
++    return QStandardPaths::writableLocation(QStandardPaths::ConfigLocation)
++        + QStringLiteral("/lomiri-ui-toolkit");
++}
++
++QString liveScaleFile()
++{
++    return liveScaleDir() + QStringLiteral("/font-scale");
++}
++
++float fileScale(float fallback)
++{
++    QFile file(liveScaleFile());
++    if (!file.open(QIODevice::ReadOnly)) {
++        return fallback;
++    }
++    bool ok = false;
++    const int percent = file.read(16).trimmed().toInt(&ok);
++    return (ok && percent >= 50 && percent <= 200) ? percent / 100.0f : fallback;
++}
++
++void reloadLiveScale(QFileSystemWatcher *watcher)
++{
++    // Atomic writes (rename) drop the file watch; the directory watch stays.
++    const QString file = liveScaleFile();
++    if (!watcher->files().contains(file) && QFile::exists(file)) {
++        watcher->addPath(file);
++    }
++    bool isSet = false;
++    const float value = fileScale(envScale(&isSet));
++    if (qFuzzyCompare(value, g_userScale)) {
++        return;
++    }
++    g_userScale = value;
++    // The toolkit's own "units changed" path: Labels recompute their pixel
++    // size, and the units/FontUtils context properties are re-set, so every
++    // binding using units.gu() or FontUtils.sizeToPixels() is re-evaluated.
++    Q_EMIT UCUnits::instance()->gridUnitChanged();
++}
++} // namespace
++
 +float UCFontUtils::userScale()
 +{
-+    static const float scale = [] {
-+        bool ok = false;
-+        const float value = qEnvironmentVariable("UITK_FONT_SCALE").toFloat(&ok);
-+        return (ok && value >= 0.5f && value <= 2.0f) ? value : 1.0f;
-+    }();
-+    return scale;
++    if (g_userScale < 0.0f) {
++        bool isSet = false;
++        const float value = envScale(&isSet);
++        g_userScale = isSet ? fileScale(value) : value;
++    }
++    return g_userScale;
++}
++
++void UCFontUtils::watchUserScale()
++{
++    static bool started = false;
++    bool isSet = false;
++    envScale(&isSet);
++    if (started || !isSet || !QCoreApplication::instance()) {
++        return;
++    }
++    started = true;
++    userScale();
++    auto *watcher = new QFileSystemWatcher(QCoreApplication::instance());
++    QDir().mkpath(liveScaleDir());
++    watcher->addPath(liveScaleDir());
++    if (QFile::exists(liveScaleFile())) {
++        watcher->addPath(liveScaleFile());
++    }
++    // Coalesce the events of one write (create, modify, rename).
++    auto *debounce = new QTimer(watcher);
++    debounce->setSingleShot(true);
++    debounce->setInterval(150);
++    QObject::connect(debounce, &QTimer::timeout, watcher, [watcher] { reloadLiveScale(watcher); });
++    QObject::connect(watcher, &QFileSystemWatcher::directoryChanged, debounce, [debounce] { debounce->start(); });
++    QObject::connect(watcher, &QFileSystemWatcher::fileChanged, debounce, [debounce] { debounce->start(); });
 +}
 +
  /*!
   * \qmltype FontUtils
   * \instantiates UCFontUtils
-@@ -68,7 +78,7 @@
+@@ -68,7 +174,7 @@
   */
  qreal UCFontUtils::sizeToPixels(const QString &size)
  {
@@ -28,21 +139,23 @@ diff -ru a/src/LomiriToolkit/ucfontutils.cpp b/src/LomiriToolkit/ucfontutils.cpp
  
  /*!
 diff -ru a/src/LomiriToolkit/ucfontutils_p.h b/src/LomiriToolkit/ucfontutils_p.h
---- a/src/LomiriToolkit/ucfontutils_p.h
-+++ b/src/LomiriToolkit/ucfontutils_p.h
-@@ -55,6 +55,9 @@
+--- a/src/LomiriToolkit/ucfontutils_p.h	2026-10-28 07:17:39.978856504 +0200
++++ b/src/LomiriToolkit/ucfontutils_p.h	2026-10-28 07:18:00.108068105 +0200
+@@ -55,6 +55,11 @@
      explicit UCFontUtils(QObject *parent = 0) : QObject(parent) {}
      ~UCFontUtils() { m_instance = Q_NULLPTR; }
  
-+    // FP6: user font scale (UITK_FONT_SCALE, 0.5..2.0, default 1), read once.
++    // FP6: user font scale (UITK_FONT_SCALE / font-scale file, 0.5..2.0,
++    // default 1) and its live watch (started once per process).
 +    static float userScale();
++    static void watchUserScale();
 +
      Q_INVOKABLE qreal sizeToPixels(const QString &size);
      Q_INVOKABLE qreal modularScale(const QString &size);
  
 diff -ru a/src/LomiriToolkit/uclabel.cpp b/src/LomiriToolkit/uclabel.cpp
---- a/src/LomiriToolkit/uclabel.cpp
-+++ b/src/LomiriToolkit/uclabel.cpp
+--- a/src/LomiriToolkit/uclabel.cpp	2026-10-28 07:17:39.978906780 +0200
++++ b/src/LomiriToolkit/uclabel.cpp	2026-10-28 07:17:39.990794237 +0200
 @@ -52,7 +52,7 @@
      };
      QFont textFont = q->font();

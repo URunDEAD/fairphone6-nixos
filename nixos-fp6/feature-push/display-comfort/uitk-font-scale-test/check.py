@@ -40,5 +40,29 @@ for n, f in [("shim-130", 1.30), ("shim-085", 0.85)]:
     check(abs(ratio - f) < 0.08, "%s text block height ratio %.3f" % (n, ratio))
 check(r["shim-130"]["gu"] == base["gu"], "grid unit unchanged by the font scale")
 
+# Live font-scale file (uitk-font-scale.patch watchUserScale).
+def live(n):
+    return (json.load(open(os.path.join(out, n + ".before.json"))),
+            json.load(open(os.path.join(out, n + ".after.json"))))
+lb, la = live("live-stock")
+lkeys = ["medium", "large", "fontUtilsLarge"]
+check(lb == la, "stock libLomiriToolkit ignores the font-scale file")
+stock_live = lb
+def scaled(sz, f):
+    return all(abs(sz[k] - stock_live[k] * f) <= 1.0 for k in lkeys)
+def unchanged(sz):
+    return sz["fixed"] == stock_live["fixed"] and sz["gu"] == stock_live["gu"] and sz["box"] == stock_live["box"]
+for n, fb, fa in [("live-up", 1.0, 1.3), ("live-down", 1.3, 1.0), ("live-start", 1.5, 1.5),
+                  ("live-rm", 1.5, 1.15), ("live-bad", 1.0, 1.0), ("live-noenv", 1.0, 1.0)]:
+    b_, a_ = live(n)
+    check(scaled(b_, fb) and scaled(a_, fa),
+          "%s: x%.2f -> x%.2f (%s -> %s)" % (n, fb, fa, [b_[k] for k in lkeys], [a_[k] for k in lkeys]))
+    check(unchanged(b_) and unchanged(a_), n + ": explicit pixel size and grid unit unchanged")
+for n in ["live-up", "live-down", "live-rm"]:
+    check(ImageChops.difference(img(n + "-before"), img(n + "-after")).getbbox() is not None
+          if img(n + "-before").size == img(n + "-after").size else True, n + ": the grab changed")
+a, b = img("live-down-after"), img("live-stock-after")
+check(a.size == b.size and ImageChops.difference(a, b).getbbox() is None, "live-down back to 100: grab pixel-identical to stock")
+
 print("ALL PASS" if not fails else "FAILED: %d" % len(fails))
 sys.exit(1 if fails else 0)
