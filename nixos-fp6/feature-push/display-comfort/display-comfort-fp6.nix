@@ -115,7 +115,10 @@ in {
       nixpkgs.overlays = lib.mkOrder 2700 [ (_final: prev: {
         lomiri = prev.lomiri.overrideScope (_lfinal: lprev: {
           lomiri = lprev.lomiri.overrideAttrs (old: {
-            patches = (old.patches or [ ]) ++ [ ./lomiri-display-comfort.patch ];
+            # lomiri-text-size.patch (app drawer cells grow with large
+            # text) is written against the drawer-folders Drawer.qml.
+            patches = (old.patches or [ ]) ++ [ ./lomiri-display-comfort.patch ]
+              ++ lib.optional (config.hardware.fairphone6.lomiriDrawerFolders.enable or false) ./lomiri-text-size.patch;
             # The colour filter QML module (wrapQtAppsHook adds its QML dir)
             # and the schema (wrapGAppsHook adds its XDG_DATA_DIRS entry).
             buildInputs = (old.buildInputs or [ ]) ++ [ qmlPlugin schema ];

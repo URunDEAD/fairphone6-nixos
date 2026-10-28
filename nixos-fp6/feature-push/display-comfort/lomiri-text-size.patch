@@ -1,0 +1,81 @@
+diff -ru a/qml/Launcher/DrawerFolder.qml b/qml/Launcher/DrawerFolder.qml
+--- a/qml/Launcher/DrawerFolder.qml
++++ b/qml/Launcher/DrawerFolder.qml
+@@ -28,6 +28,7 @@
+     property var appModel
+     property bool lightMode: false
+     property real delegateWidth: units.gu(10)
++    property real delegateHeight: units.gu(11)
+     property alias delegate: grid.delegate
+ 
+     readonly property bool opened: state === "open"
+@@ -91,7 +92,7 @@
+ 
+         width: columns * root.delegateWidth + units.gu(2)
+         height: Math.min(root.height - units.gu(6),
+-                         titleLabel.height + units.gu(4) + rows * units.gu(11))
++                         titleLabel.height + units.gu(4) + rows * root.delegateHeight)
+         x: (root.width - width) / 2 + (originX - root.width / 2) * (1 - progress)
+         y: (root.height - height) / 2 + (originY - root.height / 2) * (1 - progress)
+         scale: 0.3 + 0.7 * progress
+@@ -126,7 +127,7 @@
+             clip: true
+             interactive: contentHeight > height
+             cellWidth: root.delegateWidth
+-            cellHeight: units.gu(11)
++            cellHeight: root.delegateHeight
+             currentIndex: -1
+             model: root.folder !== "" ? folderApps : null
+         }
+diff -ru a/qml/Launcher/Drawer.qml b/qml/Launcher/Drawer.qml
+--- a/qml/Launcher/Drawer.qml
++++ b/qml/Launcher/Drawer.qml
+@@ -31,7 +31,12 @@
+     property int panelWidth: 0
+     readonly property bool moving: (appList && appList.moving) ? true : false
+     readonly property Item searchTextField: searchField
+-    readonly property real delegateWidth: units.gu(10)
++    // FP6 text size (Display Comfort): wider and taller cells for larger
++    // text, so app names keep two readable lines and do not run into the
++    // next row (1 with the stock toolkit or at 100 %).
++    readonly property real fp6TextScale: Math.max(1, FontUtils.sizeToPixels("medium") / units.dp(14))
++    readonly property real delegateWidth: units.gu(10) * fp6TextScale
++    readonly property real fp6DelegateHeight: units.gu(11) + (fp6TextScale - 1) * units.gu(4)
+     property url background
+     visible: x > -width
+     property var fullyOpen: x === 0
+@@ -272,7 +277,7 @@
+ 
+                 model: sortProxyModel
+                 delegateWidth: root.delegateWidth
+-                delegateHeight: units.gu(11)
++                delegateHeight: root.fp6DelegateHeight
+                 delegate: drawerDelegateComponent
+                 onDraggingVerticallyChanged: {
+                     if (draggingVertically) {
+@@ -293,6 +298,7 @@
+                 appModel: appDrawerModel
+                 lightMode: root.lightMode
+                 delegateWidth: root.delegateWidth
++                delegateHeight: root.fp6DelegateHeight
+                 delegate: drawerDelegateComponent
+             }
+         }
+@@ -302,7 +308,7 @@
+             AbstractButton {
+                 id: drawerDelegate
+                 width: GridView.view.cellWidth
+-                height: units.gu(11)
++                height: root.fp6DelegateHeight
+                 objectName: "drawerItem_" + model.appId
+ 
+                 readonly property bool focused: index === GridView.view.currentIndex && GridView.view.activeFocus
+@@ -319,7 +325,7 @@
+                 z: loader.active ? 1 : 0
+ 
+                 Column {
+-                    width: units.gu(9)
++                    width: root.delegateWidth - units.gu(1)
+                     anchors.horizontalCenter: parent.horizontalCenter
+                     height: childrenRect.height
+                     spacing: units.gu(1)
