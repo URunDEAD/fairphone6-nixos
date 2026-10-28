@@ -1,0 +1,31 @@
+diff -ru a/src/qml/AdaptiveContainer.qml b/src/qml/AdaptiveContainer.qml
+--- a/src/qml/AdaptiveContainer.qml
++++ b/src/qml/AdaptiveContainer.qml
+@@ -25,6 +25,13 @@
+     property int gridRowSpacing: 0
+ 
+     onWidthChanged: doLayout()
++    // FP6: relayout when the cell width or the live text size changes (the
++    // item heights follow the labels, after this signal).
++    onGridItemWidthChanged: doLayout()
++    Connections {
++        target: units
++        function onGridUnitChanged() { Qt.callLater(doLayout) }
++    }
+     onLayoutChanged: doLayout()
+     onVisibleChildrenChanged: doLayout()
+ 
+diff -ru a/src/qml/CategorySection.qml b/src/qml/CategorySection.qml
+--- a/src/qml/CategorySection.qml
++++ b/src/qml/CategorySection.qml
+@@ -48,7 +48,9 @@
+             right: parent.right
+         }
+         layout: apl.columns > 1 ? "column" : "grid"
+-        gridItemWidth: units.gu(12)
++        // FP6 text size: wider cells for larger text, so the labels wrap
++        // between words instead of inside them (1 with the stock UITK).
++        gridItemWidth: units.gu(12) * Math.max(1, FontUtils.sizeToPixels("medium") / units.dp(14))
+         gridColumnSpacing: units.gu(1)
+         gridRowSpacing: units.gu(3)
+ 

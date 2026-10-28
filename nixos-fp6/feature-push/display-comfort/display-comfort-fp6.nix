@@ -135,6 +135,11 @@ in {
                 dbus-update-activation-environment --systemd LD_LIBRARY_PATH="$LD_LIBRARY_PATH"'
             '';
           });
+          # Main page grid: cells widen with the text size (no mid-word
+          # breaks at 150 %) and relayout on a live text size change.
+          lomiri-system-settings-unwrapped = lprev.lomiri-system-settings-unwrapped.overrideAttrs (old: {
+            patches = (old.patches or [ ]) ++ [ ./lss-text-size.patch ];
+          });
           lomiri-system-settings = lprev.lomiri-system-settings.override (old: {
             plugins = (old.plugins or [ ]) ++ [ lssPlugin ];
           });
