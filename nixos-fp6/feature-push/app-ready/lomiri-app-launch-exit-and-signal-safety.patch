@@ -1,0 +1,164 @@
+diff --git a/liblomiri-app-launch/jobs-systemd.cpp b/liblomiri-app-launch/jobs-systemd.cpp
+index 5fba85b..8c5bd10 100644
+--- a/liblomiri-app-launch/jobs-systemd.cpp
++++ b/liblomiri-app-launch/jobs-systemd.cpp
+@@ -1004,12 +1004,14 @@ std::string SystemD::unitName(const SystemD::UnitInfo& info) const
+ std::string SystemD::unitPath(const SystemD::UnitInfo& info)
+ {
+     auto reg = getReg();
+-    auto data = unitPaths[info];
+-
+-    if (!data)
++    /* find(), not operator[]: that inserted a null UnitData for unknown
++       units, which the jobFailed signal callback then dereferenced. */
++    auto found = unitPaths.find(info);
++    if (found == unitPaths.end() || !found->second)
+     {
+         return {};
+     }
++    auto data = found->second;
+ 
+     /* Execute on the thread so that we're sure that we're not in
+        a dbus call to get the value. No racey for you! */
+@@ -1356,22 +1358,34 @@ core::Signal<const std::string&, const std::string&, const std::string&, Registr
+                     G_DBUS_SIGNAL_FLAGS_NONE,
+                     [](GDBusConnection*, const gchar*, const gchar* path, const gchar*, const gchar*, GVariant* params,
+                        gpointer user_data) -> void {
++                        /* A GDBus signal callback: an exception escaping it
++                           is std::terminate. The registry also goes away
++                           while late signals are still being dispatched
++                           (process exit), so log and drop them instead. */
++                        try
++                        {
+                         auto data = static_cast<FailedData*>(user_data);
+                         auto reg = data->registry.lock();
+ 
+                         if (!reg)
+                         {
+-                            throw std::runtime_error{"Lost our connection with the registry"};
++                            g_debug("jobFailed: registry gone, ignoring PropertiesChanged on %s", path);
++                            return;
+                         }
+ 
+                         auto manager = std::dynamic_pointer_cast<SystemD>(reg->jobs());
++                        if (!manager)
++                        {
++                            g_debug("jobFailed: job manager gone, ignoring PropertiesChanged on %s", path);
++                            return;
++                        }
+ 
+                         /* Check to see if this is a path we care about */
+                         bool pathfound{false};
+                         UnitInfo unitinfo;
+                         for (const auto& unit : manager->unitPaths)
+                         {
+-                            if (unit.second->unitpath == path)
++                            if (unit.second && unit.second->unitpath == path)
+                             {
+                                 pathfound = true;
+                                 unitinfo = unit.first;
+@@ -1417,6 +1431,15 @@ core::Signal<const std::string&, const std::string&, const std::string&, Registr
+                         }
+ 
+                         manager->sig_jobFailed(unitinfo.job, unitinfo.appid, unitinfo.inst, reason);
++                        }
++                        catch (const std::exception& e)
++                        {
++                            g_warning("Error in jobFailed signal for %s: %s", path, e.what());
++                        }
++                        catch (...)
++                        {
++                            g_warning("Unknown error in jobFailed signal for %s", path);
++                        }
+                     },    /* callback */
+                     data, /* user data */
+                     [](gpointer user_data) {
+diff --git a/liblomiri-app-launch/registry.cpp b/liblomiri-app-launch/registry.cpp
+index bff9da8..430e17a 100644
+--- a/liblomiri-app-launch/registry.cpp
++++ b/liblomiri-app-launch/registry.cpp
+@@ -26,6 +26,9 @@
+ #include "registry-impl.h"
+ #include "registry.h"
+ 
++#include <cstdlib>
++#include <mutex>
++
+ namespace lomiri
+ {
+ namespace app_launch
+@@ -87,6 +90,14 @@ std::shared_ptr<Registry> Registry::getDefault()
+     if (!defaultRegistry)
+     {
+         defaultRegistry = std::make_shared<Registry>();
++        /* Drop the default registry (and so quit and join its GLib context
++           thread) from an exit handler registered now, which runs before the
++           static destructors of everything constructed earlier, the
++           application's own globals among them. Left to the library's own
++           static destructor, the thread kept dispatching D-Bus signals into
++           already destroyed objects during __run_exit_handlers. */
++        static std::once_flag atexitFlag;
++        std::call_once(atexitFlag, []() { std::atexit([]() { Registry::clearDefault(); }); });
+     }
+ 
+     return defaultRegistry;
+diff --git a/tools/lomiri-app-launch.cpp b/tools/lomiri-app-launch.cpp
+index 7559809..934908f 100644
+--- a/tools/lomiri-app-launch.cpp
++++ b/tools/lomiri-app-launch.cpp
+@@ -19,12 +19,24 @@
+ 
+ #include "liblomiri-app-launch/application.h"
+ #include "liblomiri-app-launch/registry.h"
++#include <atomic>
+ #include <csignal>
+ #include <future>
+ #include <iostream>
+ 
+ lomiri::app_launch::AppID global_appid;
+ std::promise<int> retval;
++/* Started, Failed and SIGTERM may each fire; a second set_value() on the
++   promise throws std::future_error inside a D-Bus signal callback. */
++std::atomic_flag retvalSet = ATOMIC_FLAG_INIT;
++
++static void setRetval(int value)
++{
++    if (!retvalSet.test_and_set())
++    {
++        retval.set_value(value);
++    }
++}
+ 
+ int main(int argc, char* argv[])
+ {
+@@ -51,7 +63,7 @@ int main(int argc, char* argv[])
+             }
+ 
+             std::cout << "Started: " << (std::string)app->appId() << std::endl;
+-            retval.set_value(EXIT_SUCCESS);
++            setRetval(EXIT_SUCCESS);
+         });
+ 
+     lomiri::app_launch::Registry::appFailed().connect(
+@@ -64,12 +76,18 @@ int main(int argc, char* argv[])
+             }
+ 
+             std::cout << "Failed:  " << (std::string)app->appId() << std::endl;
+-            retval.set_value(EXIT_FAILURE);
++            setRetval(EXIT_FAILURE);
+         });
+ 
+     auto app = lomiri::app_launch::Application::create(global_appid, lomiri::app_launch::Registry::getDefault());
+     app->launch(urls);
+ 
+-    std::signal(SIGTERM, [](int signal) -> void { retval.set_value(EXIT_SUCCESS); });
+-    return retval.get_future().get();
++    std::signal(SIGTERM, [](int signal) -> void { setRetval(EXIT_SUCCESS); });
++    auto result = retval.get_future().get();
++
++    /* Quit and join the registry's GLib thread while our globals and the
++       signal handlers' captures still exist. */
++    app.reset();
++    lomiri::app_launch::Registry::clearDefault();
++    return result;
+ }

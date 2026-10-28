@@ -181,6 +181,21 @@ in {
           passthru = (old.passthru or { }) // { fp6MemoryPredicted = true; };
         });
       });
+    }) ])
+    # lomiri-app-launch aborted on exit (CLI, fp6-app-ready's prelaunch):
+    # its jobFailed D-Bus signal callback threw once the registry was gone
+    # (std::terminate), dereferenced null UnitData that unitPath() had
+    # inserted, and the registry's GLib thread kept dispatching during the
+    # static destructors. The patch catches and logs in the callback, uses
+    # find() in unitPath(), drops the default registry from an atexit
+    # handler (joins the thread first) and sets the CLI's result only once.
+    (lib.mkOrder 4400 [ (_final: prev: {
+      lomiri = prev.lomiri.overrideScope (_lfinal: lprev: {
+        lomiri-app-launch = lprev.lomiri-app-launch.overrideAttrs (old: {
+          patches = (old.patches or [ ]) ++ [ ./lomiri-app-launch-exit-and-signal-safety.patch ];
+          passthru = (old.passthru or { }) // { fp6ExitSafety = true; };
+        });
+      });
     }) ]) ];
 
     systemd.user.services.fp6-app-ready = {
