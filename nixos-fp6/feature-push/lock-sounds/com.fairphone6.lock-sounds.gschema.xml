@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- FP6 lock and unlock sounds (nixos-fp6/feature-push/lock-sounds).
+     Written by Settings > Sound (Lock sounds), read live by Lomiri
+     (qml/Components/Fp6LockSounds.qml). prepared-files is written by
+     fp6-lock-sounds sync (user service). b/s/as keys only. -->
+<schemalist gettext-domain="lomiri-system-settings">
+  <schema id="com.fairphone6.lock-sounds" path="/com/fairphone6/lock-sounds/">
+    <key name="enabled" type="b">
+      <default>true</default>
+      <summary>Lock sounds</summary>
+      <description>Play a short sound when the screen locks (power key, screen timeout, Lock) and when the lock screen is dismissed. Never in Silent Mode, with Do Not Disturb on, during calls or when the proximity sensor turns the screen off.</description>
+    </key>
+    <key name="lock-sound" type="s">
+      <default>'pop-down'</default>
+      <summary>Lock sound</summary>
+      <description>A bundled sound id (pop-down, pop-up, click, soft-click, tick, tap, chime, chime-low, slick), an absolute path of an audio file, or empty for no sound.</description>
+    </key>
+    <key name="unlock-sound" type="s">
+      <default>'pop-up'</default>
+      <summary>Unlock sound</summary>
+      <description>As lock-sound, played when the lock screen goes away after the passcode, fingerprint or swipe.</description>
+    </key>
+    <key name="prepared-files" type="as">
+      <default>[]</default>
+      <summary>Prepared custom sounds</summary>
+      <description>Written by fp6-lock-sounds: pairs of [source path, prepared 16-bit WAV in ~/.cache/fp6-lock-sounds] for the custom sounds in lock-sound and unlock-sound, so Lomiri can preload them.</description>
+    </key>
+  </schema>
+</schemalist>
