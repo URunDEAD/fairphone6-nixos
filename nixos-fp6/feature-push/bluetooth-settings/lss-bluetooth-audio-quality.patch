@@ -1,0 +1,258 @@
+--- a/plugins/bluetooth/CMakeLists.txt
++++ b/plugins/bluetooth/CMakeLists.txt
+@@ -12,6 +12,7 @@
+ Fp6RenameDialog.qml
+ Fp6DeviceTypePage.qml
+ Fp6Kinds.js
++Fp6AudioQuality.qml
+ )
+ 
+ add_library(LomiriBluetoothPanel MODULE
+@@ -25,6 +26,8 @@
+   bluetooth.cpp
+   device.cpp
+   devicemodel.cpp
++  fp6audio.cpp
++  fp6audio.h
+   fp6store.cpp
+   fp6store.h
+   bluez_adapter1.h
+--- a/plugins/bluetooth/DevicePage.qml
++++ b/plugins/bluetooth/DevicePage.qml
+@@ -30,6 +30,14 @@
+ 
+ Page {
+     id: connectedDevicePage
++    Fp6Audio { id: audioBackend }
++    Timer {
++        interval: 2000
++        running: connectedDevicePage.visible && Qt.application.state === Qt.ApplicationActive
++        repeat: true
++        triggeredOnStart: true
++        onTriggered: audioBackend.refresh()
++    }
+     objectName: "bluetoothDevicePage"
+ 
+     property Item root: null
+@@ -203,7 +211,7 @@
+ 
+             SettingsListItems.Standard {
+                 id: trustedCheck
+-                text: i18n.tr("Connect automatically when detected")
++                text: i18n.tr("Allow connections from this paired device")
+                 visible: dev ? dev.paired : false
+                 CheckBox {
+                     property bool serverChecked: dev ? dev.trusted : false
+@@ -217,6 +225,13 @@
+                 }
+             }
+ 
++            Fp6AudioQuality {
++                width: parent.width
++                audio: audioBackend
++                address: dev ? dev.address : ""
++                connected: dev ? dev.connection === Device.Connected : false
++            }
++
+             /* ---- Profiles -------------------------------------------- */
+             SettingsItemTitle {
+                 text: i18n.tr("Use for")
+--- a/plugins/bluetooth/fp6audio.cpp
++++ b/plugins/bluetooth/fp6audio.cpp
+@@ -0,0 +1,58 @@
++// SPDX-License-Identifier: GPL-3.0-only
++#include "fp6audio.h"
++#include <QDBusConnection>
++#include <QDBusPendingCallWatcher>
++#include <QDBusPendingReply>
++#include <QJsonDocument>
++#include <QJsonObject>
++#include <QJsonArray>
++void Fp6Audio::refresh() { call(QStringLiteral("ListDevices"), {}, false); }
++void Fp6Audio::selectProfile(const QString &d, const QString &p) { call(QStringLiteral("SetProfile"), {d,p}, true); }
++void Fp6Audio::prefer(const QString &d, bool quality) { call(QStringLiteral("SetPreference"), {d, quality ? QStringLiteral("quality") : QStringLiteral("stable")}, true); }
++void Fp6Audio::call(const QString &method, const QVariantList &args, bool write) {
++    if (m_pending) return;
++    m_pending = true;
++    // Only writes show progress: the 2 s status poll must not flicker the UI.
++    if (write) {
++        m_busy = true;
++        m_error.clear();
++        emit changed();
++    }
++    auto msg = QDBusMessage::createMethodCall(QStringLiteral("com.fairphone6.BluetoothAudio1"),
++        QStringLiteral("/com/fairphone6/BluetoothAudio1"), QStringLiteral("com.fairphone6.BluetoothAudio1"), method);
++    msg.setArguments(args);
++    auto watcher = new QDBusPendingCallWatcher(QDBusConnection::sessionBus().asyncCall(msg, 15000), this);
++    connect(watcher, &QDBusPendingCallWatcher::finished, this, [this, write](QDBusPendingCallWatcher *w) {
++        m_pending = false;
++        m_busy = false;
++        const QDBusMessage reply = w->reply();
++        if (reply.type() == QDBusMessage::ErrorMessage) {
++            const QString name = reply.errorName();
++            if (!write && (name == QLatin1String("org.freedesktop.DBus.Error.ServiceUnknown")
++                           || name == QLatin1String("org.freedesktop.DBus.Error.NameHasNoOwner"))) {
++                // Helper not installed or not running: hide the section, no error.
++                m_available = false;
++                m_error.clear();
++            } else {
++                m_error = write ? tr("Audio change failed. Refresh status and try again.") : tr("Bluetooth audio service unavailable.");
++            }
++            if (!write) m_devices.clear();
++        } else if (!write) {
++            QJsonParseError parseError;
++            const auto doc = QJsonDocument::fromJson(reply.arguments().value(0).toString().toUtf8(), &parseError);
++            const auto obj = doc.object();
++            if (parseError.error != QJsonParseError::NoError || obj.value("schema").toInt() != 1 || !obj.value("devices").isArray()) {
++                m_error = tr("Unsupported audio service response.");
++                m_devices.clear();
++            } else {
++                m_available = true;
++                m_devices = obj.value("devices").toArray().toVariantList();
++                // Keep a failed write visible until the next explicit action.
++                if (m_error == tr("Bluetooth audio service unavailable.")) m_error.clear();
++            }
++        }
++        w->deleteLater();
++        emit changed();
++        if (write) refresh();
++    });
++}
+--- a/plugins/bluetooth/fp6audio.h
++++ b/plugins/bluetooth/fp6audio.h
+@@ -0,0 +1,31 @@
++// SPDX-License-Identifier: GPL-3.0-only
++#pragma once
++#include <QObject>
++#include <QVariantList>
++#include <QDBusMessage>
++class Fp6Audio : public QObject {
++    Q_OBJECT
++    Q_PROPERTY(QVariantList devices READ devices NOTIFY changed)
++    Q_PROPERTY(QString error READ error NOTIFY changed)
++    Q_PROPERTY(bool busy READ busy NOTIFY changed)
++    // False until the helper answers; the section stays hidden without it.
++    Q_PROPERTY(bool available READ available NOTIFY changed)
++public:
++    explicit Fp6Audio(QObject *parent = nullptr) : QObject(parent) {}
++    QVariantList devices() const { return m_devices; }
++    QString error() const { return m_error; }
++    bool busy() const { return m_busy; }
++    bool available() const { return m_available; }
++    Q_INVOKABLE void refresh();
++    Q_INVOKABLE void selectProfile(const QString &device, const QString &profile);
++    Q_INVOKABLE void prefer(const QString &device, bool quality);
++signals:
++    void changed();
++private:
++    void call(const QString &method, const QVariantList &args, bool write);
++    QVariantList m_devices;
++    QString m_error;
++    bool m_busy = false;
++    bool m_pending = false;
++    bool m_available = false;
++};
+--- a/plugins/bluetooth/Fp6AudioQuality.qml
++++ b/plugins/bluetooth/Fp6AudioQuality.qml
+@@ -0,0 +1,83 @@
++import QtQuick 2.12
++import Lomiri.Components 1.3
++import Lomiri.Components.ListItems 1.3 as ListItems
++
++Column {
++    id: root
++    property var audio
++    property string address: ""
++    property bool connected: false
++    property var device: {
++        var list = audio ? audio.devices : []
++        for (var i = 0; i < list.length; ++i)
++            if (list[i].address.toUpperCase() === address.toUpperCase()) return list[i]
++        return null
++    }
++    property var profiles: device ? device.profiles.filter(function(p) { return p.available }) : []
++    property bool callProfile: device ? device.profile.indexOf("headset-head-unit") === 0 : false
++    spacing: units.gu(1)
++    visible: !!audio && audio.available
++
++    Label {
++        text: i18n.tr("Audio quality")
++        font.bold: true
++        anchors.left: parent.left
++        anchors.leftMargin: units.gu(2)
++    }
++    ListItems.Caption {
++        visible: !root.device
++        text: root.connected ? i18n.tr("Waiting for an audio connection…") : i18n.tr("Connect this device to choose audio quality.")
++    }
++    ListItems.SingleValue {
++        visible: !!root.device
++        text: i18n.tr("Current codec")
++        value: root.device ? root.device.codec.toUpperCase().replace(/_/g, "-") : ""
++    }
++    ListItems.ItemSelector {
++        objectName: "audioCodecPicker"
++        visible: !!root.device
++        enabled: !!root.device && !root.audio.busy
++        text: i18n.tr("Codec and profile")
++        expanded: false
++        model: root.profiles.map(function(p) { return p.kind + " · " + p.codec.toUpperCase().replace(/_/g, "-") })
++        selectedIndex: {
++            for (var i = 0; i < root.profiles.length; ++i)
++                if (root.device && root.profiles[i].id === root.device.profile) return i
++            return -1
++        }
++        onDelegateClicked: root.audio.selectProfile(root.device.id, root.profiles[index].id)
++    }
++    ListItems.Standard {
++        visible: !!root.device
++        text: i18n.tr("Prefer quality")
++        control: Switch {
++            objectName: "preferAudioQuality"
++            checked: root.device ? root.device.codec !== "sbc" : false
++            enabled: !!root.device && !root.audio.busy && !root.callProfile
++            onTriggered: root.audio.prefer(root.device.id, checked)
++        }
++    }
++    ListItems.Caption {
++        visible: !!root.device
++        text: root.callProfile ? i18n.tr("Call profile active. Music quality is reduced while the microphone is used.")
++              : i18n.tr("Turn off to prefer a stable connection using SBC. Your selection is remembered for this device.")
++    }
++    ListItems.SingleValue {
++        visible: !!root.device
++        text: i18n.tr("Bitrate")
++        value: root.device && root.device.bitrate ? Math.round(root.device.bitrate / 1000) + " kbit/s" : i18n.tr("Not reported")
++    }
++    ListItems.Caption {
++        visible: !!root.device && !!root.device.bitrate
++        text: root.device ? (root.device.bitrate_source || "") : ""
++    }
++    ListItems.Caption {
++        objectName: "audioError"
++        visible: root.audio && root.audio.error.length > 0
++        text: root.audio ? root.audio.error : ""
++    }
++    ListItems.Caption {
++        visible: root.audio && root.audio.busy
++        text: i18n.tr("Updating audio…")
++    }
++}
+--- a/plugins/bluetooth/plugin.cpp
++++ b/plugins/bluetooth/plugin.cpp
+@@ -23,6 +23,7 @@
+ #include <QtQml>
+ #include <QtQml/QQmlContext>
+ #include "bluetooth.h"
++#include "fp6audio.h"
+ #include "device.h"
+ #include "bluez_helper.h"
+ 
+@@ -35,6 +36,7 @@
+     qDBusRegisterMetaType<ManagedObjectList>();
+ 
+     // .. now register our real QML types
++    qmlRegisterType<Fp6Audio>(uri, 1, 0, "Fp6Audio");
+     qmlRegisterType<Bluetooth>(uri, 1, 0, "LomiriBluetoothPanel");
+     qmlRegisterType<Device>(uri, 1, 0, "Device");
+     qmlRegisterType<Device>(uri, 1, 0, "Agent");

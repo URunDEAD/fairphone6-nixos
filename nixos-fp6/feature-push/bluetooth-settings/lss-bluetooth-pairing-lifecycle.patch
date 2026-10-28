@@ -1,0 +1,231 @@
+diff --git a/plugins/bluetooth/PageComponent.qml b/plugins/bluetooth/PageComponent.qml
+--- a/plugins/bluetooth/PageComponent.qml
++++ b/plugins/bluetooth/PageComponent.qml
+@@ -56,18 +56,46 @@
+     property var dialogPopupId
+     property var currentDevice
+ 
+-    function finishDevicePairing() {
+-        if (root.dialogPopupId)
+-            PopupUtils.close(root.dialogPopupId)
+-
++    property string pairingMessage: ""
++    property var pendingCancel: null
++    Timer {
++        id: pairingPromptTimeout
++        interval: 60000
++        onTriggered: {
++            root.pairingMessage = i18n.tr("Pairing request timed out. Try again when the device is ready.")
++            if (root.pendingCancel) root.pendingCancel()
++            else if (root.currentDevice) root.currentDevice.cancelPairing()
++            finishDevicePairing()
++        }
++    }
++    function clearPairingRequest() {
++        pairingPromptTimeout.stop()
+         root.dialogPopupId = null
+         root.currentDevice = null
++        root.pendingCancel = null
++    }
++    function finishDevicePairing() {
++        var popup = root.dialogPopupId
++        clearPairingRequest()
++        if (popup) PopupUtils.close(popup)
++    }
++    function trackPairingRequest(popup, device, cancel) {
++        root.pairingMessage = ""
++        root.dialogPopupId = popup
++        root.currentDevice = device
++        root.pendingCancel = cancel
++        pairingPromptTimeout.restart()
++    }
++    Component.onDestruction: {
++        if (root.pendingCancel) root.pendingCancel()
++        else if (root.currentDevice) root.currentDevice.cancelPairing()
+     }
+ 
+     LomiriBluetoothPanel {
+         id: backend
+ 
+         onDevicePairingDone: {
++            root.pairingMessage = success ? "" : i18n.tr("Pairing did not finish. Keep the device nearby and try again.")
+             // FP6: no address in the journal.
+             if (device != root.currentDevice)
+                 return
+@@ -149,28 +177,39 @@
+         function onCancelNeeded() { finishDevicePairing() }
+         function onPasskeyConfirmationNeeded(tag, device, passkey) {
+             var request_tag = tag
++            if (root.dialogPopupId) { target.confirmPasskey(request_tag, false); return }
++            var reject = function() { target.confirmPasskey(request_tag, false) }
+             var popup = PopupUtils.open(confirmPasskeyDialog, root, {passkey: passkey, name: device.name})
+-            popup.canceled.connect(function() {target.confirmPasskey(request_tag, false)})
+-            popup.confirmed.connect(function() {target.confirmPasskey(request_tag, true)})
++            trackPairingRequest(popup, device, reject)
++            popup.canceled.connect(function() { reject(); clearPairingRequest() })
++            popup.confirmed.connect(function() { target.confirmPasskey(request_tag, true); clearPairingRequest() })
+         }
+         function onPasskeyNeeded(tag, device) {
+             var request_tag = tag
++            if (root.dialogPopupId) { target.providePasskey(request_tag, false, 0); return }
++            var reject = function() { target.providePasskey(request_tag, false, 0) }
+             var popup = PopupUtils.open(providePasskeyDialog, root, {name: device.name})
+-            popup.canceled.connect(function() {target.providePasskey(request_tag, false, 0)})
+-            popup.provided.connect(function(passkey) {target.providePasskey(request_tag, true, passkey)})
++            trackPairingRequest(popup, device, reject)
++            popup.canceled.connect(function() { reject(); clearPairingRequest() })
++            popup.provided.connect(function(passkey) { target.providePasskey(request_tag, true, passkey); clearPairingRequest() })
+         }
+         function onPinCodeNeeded(tag, device) {
+             var request_tag = tag
++            if (root.dialogPopupId) { target.providePinCode(request_tag, false, ""); return }
++            var reject = function() { target.providePinCode(request_tag, false, "") }
+             var popup = PopupUtils.open(providePinCodeDialog, root, {name: device.name})
+-            popup.canceled.connect(function() {target.providePinCode(request_tag, false, "")})
+-            popup.provided.connect(function(pinCode) {target.providePinCode(request_tag, true, pinCode)})
++            trackPairingRequest(popup, device, reject)
++            popup.canceled.connect(function() { reject(); clearPairingRequest() })
++            popup.provided.connect(function(pinCode) { target.providePinCode(request_tag, true, pinCode); clearPairingRequest() })
+         }
+         function onDisplayPinCodeNeeded(device, pincode) {
+             if (!root.dialogPopupId)
+             {
+                 root.currentDevice = device
+                 root.dialogPopupId  = PopupUtils.open(displayPinCodeDialog, root, {pincode: pincode, name: device.name})
++                pairingPromptTimeout.restart()
+                 root.dialogPopupId.canceled.connect(function() {
++                    pairingPromptTimeout.stop()
+                     root.dialogPopupId = null
+                     if (root.currentDevice) {
+                         root.currentDevice.cancelPairing()
+@@ -189,7 +228,9 @@
+                 root.currentDevice = device
+                 root.dialogPopupId  = PopupUtils.open(displayPasskeyDialog, root, {passkey: passkey, name: device.name,
+                                                  entered: entered})
++                pairingPromptTimeout.restart()
+                 root.dialogPopupId.canceled.connect(function() {
++                    pairingPromptTimeout.stop()
+                     root.dialogPopupId = null
+                     if (root.currentDevice) {
+                         root.currentDevice.cancelPairing()
+@@ -199,7 +240,8 @@
+             }
+             else
+             {
+-                root.dialogPopupId.entered = entered
++                if (root.currentDevice === device && root.dialogPopupId.entered !== undefined)
++                    root.dialogPopupId.entered = entered
+             }
+         }
+         function onReleaseNeeded() {
+@@ -210,12 +252,13 @@
+             {
+                 var request_tag = tag
+                 root.dialogPopupId  = PopupUtils.open(authorizationRequestDialog, root, {name: device.name})
++                trackPairingRequest(root.dialogPopupId, device, function() { target.authorizationRequestCallback(request_tag, false) })
+                 root.dialogPopupId.accepted.connect(function() {
+-                    root.dialogPopupId = null
++                    clearPairingRequest()
+                     target.authorizationRequestCallback(request_tag, true)
+                 })
+                 root.dialogPopupId.declined.connect(function() {
+-                    root.dialogPopupId = null
++                    clearPairingRequest()
+                     target.authorizationRequestCallback(request_tag, false)
+                 })
+             }
+@@ -380,6 +423,12 @@
+                     checked: backend.allowPairing
+                     onTriggered: backend.allowPairing = checked
+                 }
++            }
++
++            ListItems.Caption {
++                objectName: "pairingResult"
++                visible: root.pairingMessage.length > 0
++                text: root.pairingMessage
+             }
+ 
+             /* ---- Paired devices ---------------------------------------- */
+diff --git a/plugins/bluetooth/ProvidePasskeyDialog.qml b/plugins/bluetooth/ProvidePasskeyDialog.qml
+--- a/plugins/bluetooth/ProvidePasskeyDialog.qml
++++ b/plugins/bluetooth/ProvidePasskeyDialog.qml
+@@ -33,16 +33,19 @@
+     signal canceled
+     signal provided (int passkey)
+ 
+-    text: i18n.tr("PIN for '%1'").arg(root.name)
++    text: i18n.tr("Passkey for '%1'").arg(root.name)
+ 
+     TextField {
+         id: passkeyField
++        objectName: "pairingInput"
+         anchors {
+             left: parent.left
+             right: parent.right
+             margins: units.gu(8)
+         }
+-        text: "000000"
++        text: ""
++        maximumLength: 6
++        validator: RegExpValidator { regExp: /[0-9]{1,6}/ }
+         focus: true
+         Component.onCompleted: { selectAll(); forceActiveFocus() }
+         inputMethodHints: Qt.ImhDigitsOnly | Qt.ImhNoPredictiveText
+@@ -59,7 +62,9 @@
+             width: (parent.width - parent.spacing) / 2
+         }
+         Button {
++            objectName: "pairingSubmit"
+             text: i18n.tr("Pair")
++            enabled: passkeyField.acceptableInput
+             onClicked: {
+                 root.provided (parseInt(passkeyField.text,10))
+                 PopupUtils.close(root)
+diff --git a/plugins/bluetooth/ProvidePinCodeDialog.qml b/plugins/bluetooth/ProvidePinCodeDialog.qml
+--- a/plugins/bluetooth/ProvidePinCodeDialog.qml
++++ b/plugins/bluetooth/ProvidePinCodeDialog.qml
+@@ -37,12 +37,13 @@
+ 
+     TextField {
+         id: pinCodeField
++        objectName: "pairingInput"
+         anchors {
+             left: parent.left
+             right: parent.right
+             margins: units.gu(4)
+         }
+-        text: "0000"
++        text: ""
+         focus: true
+         Component.onCompleted: { selectAll(); forceActiveFocus() }
+         maximumLength: 16
+@@ -60,7 +61,9 @@
+             width: (parent.width - parent.spacing) / 2
+         }
+         Button {
++            objectName: "pairingSubmit"
+             text: i18n.tr("Pair")
++            enabled: pinCodeField.text.length > 0
+             onClicked: {
+                 root.provided (pinCodeField.text)
+                 PopupUtils.close(root)
+diff --git a/plugins/bluetooth/agent.cpp b/plugins/bluetooth/agent.cpp
+--- a/plugins/bluetooth/agent.cpp
++++ b/plugins/bluetooth/agent.cpp
+@@ -82,6 +82,7 @@
+  */
+ void Agent::Release()
+ {
++    m_delayedReplies.clear();
+     Q_EMIT(releaseNeeded());
+ }
+ 
+@@ -270,6 +271,7 @@
+ {
+     qWarning() << "Cancel callback called";
+ 
++    m_delayedReplies.clear();
+     Q_EMIT(cancelNeeded());
+ }
+ 

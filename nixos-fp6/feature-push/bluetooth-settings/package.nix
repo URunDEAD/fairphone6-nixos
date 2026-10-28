@@ -15,7 +15,21 @@ let
     pname = "lomiri-system-settings-bluetooth-fp6";
     inherit (lssUnwrapped) version src;
 
-    patches = [ ./lss-bluetooth-fp6.patch ];
+    # Then (bt-codecs feature, reviewed from a Codex worker):
+    #  * audio-quality: "Audio quality" section on the device page (codec /
+    #    profile picker, prefer quality/stable, bitrate) talking to the
+    #    com.fairphone6.BluetoothAudio1 session helper; hidden while the
+    #    helper is not on the bus (hardware.fairphone6.bluetoothAudio off);
+    #    trust checkbox relabelled to what it does (BlueZ Trusted).
+    #  * pairing-lifecycle: every prompt tracked and closed on Cancel/Release,
+    #    one prompt at a time, 60 s prompt deadline, passkey 1-6 digits and
+    #    non-empty PIN (no pre-filled 000000/0000), failure message.
+    #    nixos-fp6/feature-push/bt-codecs/REVIEW.md
+    patches = [
+      ./lss-bluetooth-fp6.patch
+      ./lss-bluetooth-audio-quality.patch
+      ./lss-bluetooth-pairing-lifecycle.patch
+    ];
 
     # Only the Bluetooth plugin, with the install layout of the full build
     # (PLUGIN_*_DIR as in lomiri-system-settings' CMakeLists.txt).
@@ -44,7 +58,7 @@ let
       q=$out/share/lomiri-system-settings/qml-plugins/bluetooth
       test -e $m/libLomiriBluetoothPanel.so
       test -e $m/qmldir
-      for f in PageComponent.qml DevicePage.qml Fp6RenameDialog.qml Fp6DeviceTypePage.qml Fp6Kinds.js; do
+      for f in PageComponent.qml DevicePage.qml Fp6RenameDialog.qml Fp6DeviceTypePage.qml Fp6Kinds.js Fp6AudioQuality.qml; do
         test -e $q/$f
       done
       grep -q fp6PhoneName $q/PageComponent.qml
