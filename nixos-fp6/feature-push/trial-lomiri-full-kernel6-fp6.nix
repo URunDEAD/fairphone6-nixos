@@ -117,6 +117,11 @@ let
       # kernel7 candidate panel patches 0009/0010 for more than 120 Hz.
       # results/feature-push-20261024/refresh-rate/README.md
       ({ ... }: { imports = [ ./refresh-rate/refresh-rate-fp6.nix ]; hardware.fairphone6.refreshRate.enable = false; })
+      # Charging feedback: plug-in animation (lock screen / display off / banner),
+      # sound + haptic tick, lock-screen charging line; Settings > Battery >
+      # Charging feedback (all on by default). Overlay lib.mkOrder 3900.
+      # results/feature-push-20261024/charging-feedback/README.md
+      ({ ... }: { imports = [ ./charging-feedback/charging-feedback-fp6.nix ]; hardware.fairphone6.chargingFeedback.enable = true; })
       ({ config, lib, ... }: let
       kernel = config.mobile.boot.stage-1.kernel.package;
     in {
