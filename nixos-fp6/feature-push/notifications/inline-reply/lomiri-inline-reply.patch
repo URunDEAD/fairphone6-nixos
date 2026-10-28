@@ -1,0 +1,381 @@
+--- a/qml/Notifications/Notification.qml
++++ b/qml/Notifications/Notification.qml
+@@ -68,6 +68,61 @@
+     property bool fp6Silenced: false
+     property bool fp6WokeScreen: false
+ 
++    // FP6 inline reply (nixos-fp6/feature-push/notifications/inline-reply):
++    // lomiri-notifications turns the sender's "inline-reply" action into the
++    // hint x-fp6-inline-reply (the button label) and notification.canReply.
++    // The field is never shown while the lock screen is up: "Reply" asks for
++    // the passcode first and opens the field after the unlock.
++    property bool fp6Locked: false
++    readonly property bool fp6CanReply: type !== Notification.PlaceHolder && type !== Notification.Confirmation &&
++                                        !fullscreen && hints["x-fp6-inline-reply"] !== undefined &&
++                                        !!notification.notification && notification.notification.canReply === true
++    property bool fp6Replying: false
++    property bool fp6ReplyAfterUnlock: false
++    function fp6StartReply() {
++        if (!fp6CanReply) return;
++        notification.notification.holdForReply(true); // no expiry while typing
++        if (fp6Locked) {
++            fp6ReplyAfterUnlock = true;
++            fp6UnlockTimeout.restart();
++            var view = notification.ListView.view;
++            if (view && view.fp6UnlockRequested) view.fp6UnlockRequested();
++            return;
++        }
++        fp6Replying = true;
++        fp6ReplyField.forceActiveFocus();
++    }
++    function fp6CancelReply() {
++        fp6Replying = false;
++        fp6ReplyAfterUnlock = false;
++        fp6UnlockTimeout.stop();
++        fp6ReplyField.text = "";
++        if (notification.notification) notification.notification.holdForReply(false);
++    }
++    function fp6SendReply() {
++        var text = fp6ReplyField.text;
++        if (!fp6CanReply || fp6Locked || text.trim() === "") return;
++        fp6Replying = false;
++        fp6ReplyField.text = "";
++        notification.notification.reply(text); // NotificationReplied, then closed
++    }
++    onFp6LockedChanged: {
++        if (fp6Locked) {
++            if (fp6Replying) fp6CancelReply(); // locked while typing: the draft goes
++        } else if (fp6ReplyAfterUnlock) {
++            fp6ReplyAfterUnlock = false;
++            fp6UnlockTimeout.stop();
++            fp6Replying = true;
++            fp6ReplyField.forceActiveFocus();
++        }
++    }
++    onFp6CanReplyChanged: if (!fp6CanReply) { fp6Replying = false; fp6ReplyAfterUnlock = false; }
++    Timer {
++        id: fp6UnlockTimeout
++        interval: 30000 // passcode prompt abandoned: let the bubble expire again
++        onTriggered: if (notification.fp6ReplyAfterUnlock) notification.fp6CancelReply()
++    }
++
+     NotificationAudio {
+         id: sound
+         objectName: "sound"
+@@ -84,7 +139,14 @@
+             ? fp6View.fp6Silenced(hints, type, notification.notification ? notification.notification.urgency : -1) : false;
+         if (fp6Silenced && fp6View.fp6Dnd.dndHidePopups && type !== Notification.SnapDecision) {
+             // No bubble (the history still has it); the sender gets NotificationClosed.
+-            Qt.callLater(function() { if (notification.notification) notification.notification.close(); });
++            Qt.callLater(function() {
++                var n = notification.notification;
++                if (!n) return;
++                // FP6 inline reply: keep it open for the panel's Reply.
++                if (n.canReply && fp6View.model && fp6View.model.fp6ParkNow &&
++                        fp6View.model.fp6ParkNow(notification.notificationId)) return;
++                n.close();
++            });
+             return;
+         }
+         fp6WokeScreen = !(fp6Silenced && fp6View.fp6Dnd.dndNoWake);
+@@ -660,6 +722,63 @@
+                     notification.notification.invokeAction(id)
+                 }
+             }
++
++            // FP6 inline reply: a Reply button, then the field (unlocked only).
++            Row {
++                objectName: "fp6ReplyButtonRow"
++                anchors {
++                    left: parent.left
++                    right: parent.right
++                }
++                layoutDirection: Qt.RightToLeft
++                visible: notification.fp6CanReply && !notification.fp6Replying
++
++                NotificationButton {
++                    objectName: "fp6ReplyButton"
++                    width: parent.width / 2 - notification.margins / 2
++                    text: notification.fp6Locked ? i18n.tr("Unlock to reply")
++                                                 : (notification.hints["x-fp6-inline-reply"] || i18n.tr("Reply"))
++                    color: theme.name == "Lomiri.Components.Themes.SuruDark" ? "#888" : "#666"
++                    onClicked: notification.fp6StartReply()
++                }
++            }
++
++            Row {
++                objectName: "fp6ReplyRow"
++                anchors {
++                    left: parent.left
++                    right: parent.right
++                }
++                spacing: notification.margins
++                visible: notification.fp6Replying && !notification.fp6Locked
++
++                TextField {
++                    id: fp6ReplyField
++                    objectName: "fp6ReplyField"
++                    width: parent.width - fp6SendButton.width - fp6CancelButton.width - 2 * parent.spacing
++                    height: units.gu(4)
++                    placeholderText: notification.hints["x-kde-reply-placeholder-text"] || i18n.tr("Reply…")
++                    maximumLength: 4096
++                    onAccepted: notification.fp6SendReply()
++                }
++                NotificationButton {
++                    id: fp6SendButton
++                    objectName: "fp6SendButton"
++                    width: units.gu(8)
++                    text: notification.hints["x-kde-reply-submit-button-text"] || i18n.tr("Send")
++                    color: theme.palette.normal.positive
++                    opacity: fp6ReplyField.text.trim() !== "" ? 1 : 0.5
++                    onClicked: notification.fp6SendReply()
++                }
++                NotificationButton {
++                    id: fp6CancelButton
++                    objectName: "fp6CancelButton"
++                    width: units.gu(4)
++                    iconName: "close"
++                    color: theme.name == "Lomiri.Components.Themes.SuruDark" ? "#888" : "#666"
++                    onClicked: notification.fp6CancelReply()
++                }
++            }
+         }
+     }
+ }
+--- a/qml/Notifications/Notifications.qml
++++ b/qml/Notifications/Notifications.qml
+@@ -38,7 +38,43 @@
+     // FP6 quick settings: a copy of each notification for the pulled-down
+     // panel, grouped by app (newest group first), kept until dismissed there.
+     property var fp6Shade: null
+-    function fp6Record(type, hints, icon, summary, body) {
++
++    // FP6 inline reply (notifications/inline-reply): the lock state for the
++    // bubbles, and the panel's access to replies (by notification id) for
++    // the notifications the server still keeps open.
++    property bool fp6Locked: false
++    signal fp6UnlockRequested()
++    readonly property QtObject fp6Reply: QtObject {
++        property int rev: 0 // bumped whenever a notification starts/stops accepting replies
++        function canReply(nid) {
++            var m = notificationList.model;
++            return !!m && !!m.fp6CanReply && nid > 0 && m.fp6CanReply(nid);
++        }
++        function reply(nid, text) {
++            return canReply(nid) && notificationList.model.fp6Reply(nid, text);
++        }
++        function release(nid) {
++            var m = notificationList.model;
++            if (m && m.fp6Release && nid > 0) m.fp6Release(nid);
++        }
++    }
++    Connections {
++        target: notificationList.model
++        ignoreUnknownSignals: true
++        function onFp6ReplyableChanged() { notificationList.fp6Reply.rev++; }
++    }
++    // A card dismissed in the panel (swipe, group, Clear all) closes the
++    // notification it kept open for replies.
++    Connections {
++        target: notificationList.fp6Shade
++        function onRowsAboutToBeRemoved(parent, first, last) {
++            for (var i = first; i <= last; i++) {
++                var e = notificationList.fp6Shade.get(i);
++                if (e && e.nid) notificationList.fp6Reply.release(e.nid);
++            }
++        }
++    }
++    function fp6Record(type, hints, icon, summary, body, nid) {
+         if (!fp6Shade || !summary) return;
+         if (type === LomiriNotifications.Notification.SnapDecision ||
+             type === LomiriNotifications.Notification.Confirmation ||
+@@ -48,7 +84,10 @@
+         var app = h["x-fp6-app-name"] || h["desktop-entry"] || i18n.tr("Notifications");
+         var appId = String(h["desktop-entry"] || "").replace(/\.desktop$/, "");
+         var entry = { app: String(app), appId: appId, icon: String(icon || ""),
+-                      summary: String(summary), body: String(body || ""), time: Date.now() };
++                      summary: String(summary), body: String(body || ""), time: Date.now(),
++                      nid: Number(nid || 0), // FP6 inline reply
++                      replyLabel: String(h["x-fp6-inline-reply"] || ""),
++                      replyHint: String(h["x-kde-reply-placeholder-text"] || "") };
+         var first = -1, last = -1;
+         for (var i = 0; i < fp6Shade.count; i++) {
+             if (fp6Shade.get(i).app === entry.app) { if (first < 0) first = i; last = i; }
+@@ -123,10 +162,11 @@
+         margins: notificationList.margin
+         hasMouse: notificationList.hasMouse
+         background: notificationList.background
++        fp6Locked: notificationList.fp6Locked // FP6 inline reply
+ 
+         Component.onCompleted: {
+             topmostIsFullscreen = false; // async, the factory loader will set fullscreen to true later
+-            notificationList.fp6Record(model.type, model.hints, model.icon, model.summary, model.body); // FP6
++            notificationList.fp6Record(model.type, model.hints, model.icon, model.summary, model.body, model.id); // FP6
+         }
+ 
+         property int theIndex: index
+--- a/qml/Shell.qml
++++ b/qml/Shell.qml
+@@ -703,6 +703,7 @@
+             fp6Locked: !!greeter && greeter.shown && greeter.locked
+             fp6Notifications: fp6NotificationShade
+             fp6HideNotificationContent: notifications.privacyMode
++            fp6NotificationReply: notifications.fp6Reply // FP6 inline reply
+             onFp6UnlockRequested: {
+                 panel.indicators.hide();
+                 if (greeter) greeter.notifyUserRequestedApp();
+@@ -917,6 +918,9 @@
+         Notifications {
+             id: notifications
+             fp6Shade: fp6NotificationShade
++            // FP6 inline reply: no typing on the lock screen; Reply unlocks first.
++            fp6Locked: !!greeter && greeter.shown && greeter.locked
++            onFp6UnlockRequested: if (greeter) greeter.notifyUserRequestedApp()
+             fp6EdgeFlash: fp6EdgeFlash
+ 
+             model: NotificationBackend.Model
+--- a/qml/Panel/Panel.qml
++++ b/qml/Panel/Panel.qml
+@@ -100,6 +100,7 @@
+     property bool fp6Locked: false
+     property var fp6Notifications: null
+     property bool fp6HideNotificationContent: false
++    property QtObject fp6NotificationReply: null // FP6 inline reply (Notifications.qml fp6Reply)
+     signal fp6UnlockRequested()
+     signal fp6ScreenshotRequested()
+     signal fp6AppRequested(string appId)
+@@ -133,6 +134,7 @@
+             locked: root.fp6Locked
+             notificationsModel: root.fp6Notifications
+             hideNotificationContent: root.fp6HideNotificationContent
++            notificationReply: root.fp6NotificationReply
+             lockedRestricted: root.fp6LockedRestricted
+             bottomInset: root.fp6CornerInset(units.gu(2)) > 0 ? units.gu(2) : 0
+             indicatorExists: function(identifier) { return __indicators.fp6FindIndicator(identifier) !== null; }
+--- a/qml/Panel/QuickSettings/ControlCentre.qml
++++ b/qml/Panel/QuickSettings/ControlCentre.qml
+@@ -17,6 +17,7 @@
+     property bool locked: false
+     property var notificationsModel: null
+     property bool hideNotificationContent: false
++    property QtObject notificationReply: null // FP6 inline reply
+     property var lockedRestricted: []
+     property real sideInset: 0      // rounded corners: extra side padding (bottom rows)
+     property real bottomInset: 0
+@@ -179,6 +180,9 @@
+                 visible: cc.backend.showNotifications && !!cc.notificationsModel
+                 model: cc.notificationsModel
+                 hideContent: cc.hideNotificationContent
++                replyBackend: cc.notificationReply
++                locked: cc.locked
++                onReplyUnlockRequested: cc.unlockRequested()
+                 lightMode: cc.lightMode
+                 historyAvailable: !!notifSettings.historyEnabled
+                 onOpenApp: cc.openApp(appId)
+--- a/qml/Panel/QuickSettings/QsNotifications.qml
++++ b/qml/Panel/QuickSettings/QsNotifications.qml
+@@ -15,6 +15,10 @@
+     property bool hideContent: false     // lock screen with "hide notification content"
+     property bool lightMode: false
+     property bool historyAvailable: false
++    // FP6 inline reply (notifications/inline-reply): Notifications.qml fp6Reply.
++    property QtObject replyBackend: null
++    property bool locked: false
++    signal replyUnlockRequested()
+     signal openApp(string appId)
+     signal historyRequested()
+ 
+@@ -94,7 +98,8 @@
+                 Rectangle {
+                     id: card
+                     width: parent.width
+-                    height: Math.max(units.gu(6.5), textCol.height + units.gu(2))
++                    height: Math.max(units.gu(6.5), textCol.height + units.gu(2)
++                                     + (replyBox.visible ? replyBox.height + units.gu(0.75) : 0))
+                     radius: units.gu(1.5)
+                     color: list.cardColor
+                     opacity: 1 - Math.min(0.8, Math.abs(x) / width)
+@@ -177,6 +182,83 @@
+                             }
+                         }
+                     }
++
++                    // FP6 inline reply: while the sender still accepts one;
++                    // typing only when unlocked (the button asks for the passcode).
++                    Item {
++                        id: replyBox
++                        objectName: "qsReplyBox"
++                        readonly property bool replyable: !!list.replyBackend && model.nid > 0 &&
++                                                          list.replyBackend.rev >= 0 && list.replyBackend.canReply(model.nid)
++                        property bool editing: false
++                        visible: replyable
++                        anchors { left: textCol.left; right: textCol.right; top: textCol.bottom; topMargin: units.gu(0.75) }
++                        height: visible ? units.gu(4) : 0
++                        onReplyableChanged: if (!replyable) editing = false
++                        Connections {
++                            target: list
++                            function onLockedChanged() { if (list.locked) { replyBox.editing = false; replyField.text = ""; } }
++                        }
++                        function send() {
++                            var text = replyField.text;
++                            if (text.trim() === "" || list.locked) return;
++                            if (list.replyBackend.reply(model.nid, text)) {
++                                replyField.text = "";
++                                editing = false;
++                                dismissTimer.start(); // replied: the card goes
++                            }
++                        }
++                        AbstractButton {
++                            objectName: "qsReplyButton"
++                            visible: !replyBox.editing || list.locked
++                            anchors.right: parent.right
++                            width: replyLabel.width + units.gu(2)
++                            height: parent.height
++                            onClicked: {
++                                if (list.locked) { list.replyUnlockRequested(); return; }
++                                replyBox.editing = true;
++                                replyField.forceActiveFocus();
++                            }
++                            Label {
++                                id: replyLabel
++                                objectName: "qsReplyLabel"
++                                anchors.centerIn: parent
++                                text: list.locked ? i18n.tr("Unlock to reply") : (model.replyLabel || i18n.tr("Reply"))
++                                textSize: Label.Small
++                                color: theme.palette.normal.focus
++                            }
++                        }
++                        Row {
++                            visible: replyBox.editing && !list.locked
++                            anchors.fill: parent
++                            spacing: units.gu(1)
++                            TextField {
++                                id: replyField
++                                objectName: "qsReplyField"
++                                width: parent.width - sendButton.width - parent.spacing
++                                height: parent.height
++                                placeholderText: model.replyHint || i18n.tr("Reply…")
++                                maximumLength: 4096
++                                onAccepted: replyBox.send()
++                            }
++                            AbstractButton {
++                                id: sendButton
++                                objectName: "qsReplySend"
++                                width: sendLabel.width + units.gu(2)
++                                height: parent.height
++                                enabled: replyField.text.trim() !== ""
++                                onClicked: replyBox.send()
++                                Label {
++                                    id: sendLabel
++                                    anchors.centerIn: parent
++                                    text: i18n.tr("Send")
++                                    textSize: Label.Small
++                                    color: theme.palette.normal.focus
++                                    opacity: sendButton.enabled ? 1 : 0.5
++                                }
++                            }
++                        }
++                    }
+                 }
+             }
+         }
