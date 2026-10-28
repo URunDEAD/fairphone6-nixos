@@ -1,0 +1,589 @@
+diff --git a/include/Notification.h b/include/Notification.h
+index 7fe8631..97e308b 100644
+--- a/include/Notification.h
++++ b/include/Notification.h
+@@ -45,6 +45,8 @@ class Notification : public QObject {
+     Q_PROPERTY(Type type READ getType WRITE setType NOTIFY typeChanged)
+     Q_PROPERTY(ActionModel* actions READ getActions NOTIFY actionsChanged)
+     Q_PROPERTY(QVariantMap hints READ getHints WRITE setHints NOTIFY hintsChanged)
++    // FP6: the sender offered an inline reply (action "inline-reply").
++    Q_PROPERTY(bool canReply READ canReply NOTIFY canReplyChanged)
+ 
+ private:
+     QScopedPointer<NotificationPrivate> p;
+@@ -63,6 +65,7 @@ Q_SIGNALS:
+     void typeChanged(Type type);
+     void actionsChanged(const QStringList &actions);
+     void hintsChanged(const QVariantMap& hints);
++    void canReplyChanged(bool canReply);
+ 
+     void dataChanged(unsigned int id);
+ 
+@@ -111,7 +114,16 @@ public:
+     QVariantMap getHints() const;
+     void setHints(const QVariantMap& hints);
+ 
++    bool canReply() const;
++    void setCanReply(bool canReply);
++    bool isHeld() const;
++
+     Q_INVOKABLE void invokeAction(const QString &action);
++    // FP6: send NotificationReplied(id, text) and close; false if not replyable.
++    Q_INVOKABLE bool reply(const QString &text);
++    // FP6: keep the bubble on screen while the user types (no expiry);
++    // releasing restarts its display time.
++    Q_INVOKABLE void holdForReply(bool hold);
+     Q_INVOKABLE void close();
+ 
+     bool operator<(const Notification &n) const; // Order by "interestingness".
+diff --git a/include/NotificationModel.h b/include/NotificationModel.h
+index 852b580..773f979 100644
+--- a/include/NotificationModel.h
++++ b/include/NotificationModel.h
+@@ -65,12 +65,27 @@ public:
+ 
+     void notificationUpdated(const NotificationID id);
+ 
++    // FP6 inline replies. A replyable notification whose bubble times out is
++    // "parked": still open for its sender, listed nowhere, until replied,
++    // released (dismissed in the panel), closed by its sender, its sender
++    // leaves the bus, or more than MAX_PARKED_REPLIES are parked.
++    Q_INVOKABLE bool fp6CanReply(const unsigned int id) const;
++    Q_INVOKABLE bool fp6Reply(const unsigned int id, const QString &text);
++    Q_INVOKABLE void fp6Release(const unsigned int id);
++    // Hide a replyable bubble now but keep it repliable (Do Not Disturb
++    // "hide popups"); other bubbles are left alone.
++    Q_INVOKABLE bool fp6ParkNow(const unsigned int id);
++    bool isParked(NotificationID id) const;
++    // Forget a parked notification without closing it (the server reuses its id).
++    bool takeParked(NotificationID id);
++
+ private Q_SLOTS:
+     void timeout();
+     void onDataChanged(unsigned int id);
+ 
+ Q_SIGNALS:
+     void queueSizeChanged(int newSize);
++    void fp6ReplyableChanged();
+ 
+ private:
+     QScopedPointer<NotificationModelPrivate> p;
+@@ -79,6 +94,7 @@ private:
+     int nextTimeout() const;
+     void incrementDisplayTimes(const int displayedTime) const;
+     void pruneExpired();
++    void park(const QSharedPointer<Notification> &n);
+ 
+     int insertionPoint(const QSharedPointer<Notification> &n) const;
+     void insertEphemeral(const QSharedPointer<Notification> &n);
+diff --git a/include/NotificationServer.h b/include/NotificationServer.h
+index a97061e..c5137a3 100644
+--- a/include/NotificationServer.h
++++ b/include/NotificationServer.h
+@@ -62,6 +62,8 @@ public:
+     ~NotificationServer();
+     void invokeAction(unsigned int id, const QString &action);
+     void forceCloseNotification (unsigned int id);
++    void invokeReply(unsigned int id, const QString &text);
++    void refreshTimeout(unsigned int id);
+ 
+ public Q_SLOTS:
+     void CloseNotification (unsigned int id);
+@@ -78,6 +80,7 @@ private Q_SLOTS:
+ Q_SIGNALS:
+     void NotificationClosed(unsigned int id, unsigned int reason);
+     void ActionInvoked(unsigned int id, const QString &action_key);
++    void NotificationReplied(unsigned int id, const QString &text);
+     void dataChanged(unsigned int id);
+ 
+ private:
+diff --git a/include/notify-backend.h.in b/include/notify-backend.h.in
+index 4d6773e..b4d26f1 100644
+--- a/include/notify-backend.h.in
++++ b/include/notify-backend.h.in
+@@ -56,4 +56,17 @@ const unsigned int MAX_NOTIFICATIONS = 50;
+ #define SWIPE_HINT "x-lomiri-snap-decisions-swipe"
+ #define SWIPE_COMPAT_HINT "x-canonical-snap-decisions-swipe"
+ 
++/* FP6: freedesktop/KDE inline replies. A client that sees the capability
++ * sends the action "inline-reply" (its label is the button text) and gets
++ * NotificationReplied(id, text). The server moves the label to the hint
++ * x-fp6-inline-reply for the shell (the action itself is not a button). */
++#define INLINE_REPLY_CAPABILITY "inline-reply"
++#define INLINE_REPLY_ACTION "inline-reply"
++#define INLINE_REPLY_HINT "x-fp6-inline-reply"
++#define REPLY_PLACEHOLDER_HINT "x-kde-reply-placeholder-text"
++#define REPLY_SUBMIT_TEXT_HINT "x-kde-reply-submit-button-text"
++/* Replyable notifications whose bubble timed out stay open (no
++ * NotificationClosed) so the panel can still reply; at most this many. */
++#define MAX_PARKED_REPLIES 32
++
+ #endif
+diff --git a/src/Notification.cpp b/src/Notification.cpp
+index 8b32a6d..a442bc9 100644
+--- a/src/Notification.cpp
++++ b/src/Notification.cpp
+@@ -40,6 +40,8 @@ struct NotificationPrivate {
+     QVariantMap hints;
+     int displayTime;
+     QString clientId;
++    bool canReply;
++    bool held;
+ };
+ 
+ /*
+@@ -101,7 +103,42 @@ Notification::Type Notification::getType() const {
+ }
+ 
+ int Notification::getDisplayTime() const {
+-    return p->displayTime;
++    // FP6: a held bubble (reply being typed) never expires.
++    return p->held ? -1 : p->displayTime;
++}
++
++bool Notification::canReply() const {
++    return p->canReply;
++}
++
++void Notification::setCanReply(bool canReply) {
++    if (p->canReply != canReply) {
++        p->canReply = canReply;
++        Q_EMIT canReplyChanged(canReply);
++    }
++}
++
++bool Notification::isHeld() const {
++    return p->held;
++}
++
++void Notification::holdForReply(bool hold) {
++    if (p->held == hold) return;
++    p->held = hold;
++    if (p->server) {
++        p->server->refreshTimeout(p->id);
++    }
++}
++
++bool Notification::reply(const QString &text) {
++    if (!p->canReply || !p->server || text.trimmed().isEmpty()) {
++        return false;
++    }
++    p->held = false;
++    setCanReply(false);
++    p->server->invokeReply(p->id, text);
++    Q_EMIT completed(p->id);
++    return true;
+ }
+ 
+ bool Notification::operator<(const Notification &n) const {
+diff --git a/src/NotificationModel.cpp b/src/NotificationModel.cpp
+index eeacb6c..396ec2a 100644
+--- a/src/NotificationModel.cpp
++++ b/src/NotificationModel.cpp
+@@ -39,6 +39,7 @@ struct NotificationModelPrivate {
+     QVector<QSharedPointer<Notification> > interactiveQueue;
+     QVector<QSharedPointer<Notification> > snapQueue;
+     QMap<NotificationID, int> displayTimes;
++    QList<QSharedPointer<Notification> > parked; // FP6, oldest first
+ };
+ 
+ bool notificationCompare(const QSharedPointer<Notification> &first, const QSharedPointer<Notification> &second) {
+@@ -63,6 +64,9 @@ NotificationModel::~NotificationModel() {
+     for(int i=0; i<p->displayedNotifications.size(); i++) {
+         p->displayedNotifications[i]->detachFromServer();
+     }
++    for(int i=0; i<p->parked.size(); i++) {
++        p->parked[i]->detachFromServer();
++    }
+ }
+ 
+ int NotificationModel::rowCount(const QModelIndex & /* parent */) const {
+@@ -150,6 +154,9 @@ QList<QSharedPointer<Notification>> NotificationModel::getAllNotifications() con
+     for (const auto& notification : p->displayedNotifications) {
+         notifications[notification->getID()] = notification;
+     }
++    for (const auto& notification : p->parked) {
++        notifications[notification->getID()] = notification;
++    }
+     notifications.remove(0);
+     return notifications.values();
+ }
+@@ -175,6 +182,11 @@ QSharedPointer<Notification> NotificationModel::getNotification(NotificationID i
+             return p->displayedNotifications[i];
+         }
+     }
++    for(int i=0; i<p->parked.size(); i++) {
++        if(p->parked[i]->getID() == id) {
++            return p->parked[i];
++        }
++    }
+ 
+     return QSharedPointer<Notification>();
+ }
+@@ -247,6 +259,19 @@ QList<QSharedPointer<Notification>> NotificationModel::removeAllNotificationsFor
+         }
+     }
+ 
++    bool parkedChanged = false;
++    for(int i=0; i<p->parked.size();) {
++        if(p->parked[i]->getClientId() == clientId) {
++            notifications << p->parked.takeAt(i);
++            parkedChanged = true;
++        } else {
++            ++i;
++        }
++    }
++    if (parkedChanged) {
++        Q_EMIT fp6ReplyableChanged();
++    }
++
+     bool needToTimeout = false;
+     for(int i=0; i<p->displayedNotifications.size();) {
+         if(p->displayedNotifications[i]->getClientId() == clientId) {
+@@ -265,6 +290,14 @@ QList<QSharedPointer<Notification>> NotificationModel::removeAllNotificationsFor
+ }
+ 
+ void NotificationModel::removeNotification(const NotificationID id) {
++    for (int i = 0; i < p->parked.size(); i++) {
++        if (p->parked[i]->getID() == id) {
++            p->parked.removeAt(i);
++            Q_EMIT fp6ReplyableChanged();
++            return;
++        }
++    }
++
+     for (int i = 0; i < p->displayedNotifications.size(); i++) {
+         if(p->displayedNotifications[i]->getID() == id) {
+             deleteFromVisible(i);
+@@ -318,6 +351,9 @@ QSharedPointer<Notification> NotificationModel::deleteFromVisible(int loc) {
+     p->displayTimes.erase(p->displayTimes.find(n->getID()));
+     auto notification = p->displayedNotifications.takeAt(loc);
+     endRemoveRows();
++    if (n->canReply() || n->getHints().contains(INLINE_REPLY_HINT)) {
++        Q_EMIT fp6ReplyableChanged(); // FP6: replied, closed or about to be parked
++    }
+     return notification;
+ }
+ 
+@@ -379,10 +415,82 @@ void NotificationModel::pruneExpired() {
+         int totalTime = n->getDisplayTime();
+         if(totalTime >= 0 && shownTime >= totalTime) {
+             deleteFromVisible(i);
++            if (n->canReply()) {
++                park(n); // FP6: still repliable from the panel
++            }
+         }
+     }
+ }
+ 
++void NotificationModel::park(const QSharedPointer<Notification> &n) {
++    p->parked.append(n);
++    while (p->parked.size() > MAX_PARKED_REPLIES) {
++        p->parked.removeFirst(); // closed (NotificationClosed) when released
++    }
++    Q_EMIT fp6ReplyableChanged();
++}
++
++bool NotificationModel::isParked(NotificationID id) const {
++    for (const auto &n : p->parked) {
++        if (n->getID() == id) return true;
++    }
++    return false;
++}
++
++bool NotificationModel::takeParked(NotificationID id) {
++    for (int i = 0; i < p->parked.size(); i++) {
++        if (p->parked[i]->getID() == id) {
++            p->parked[i]->detachFromServer();
++            p->parked.removeAt(i);
++            Q_EMIT fp6ReplyableChanged();
++            return true;
++        }
++    }
++    return false;
++}
++
++bool NotificationModel::fp6CanReply(const unsigned int id) const {
++    QSharedPointer<Notification> n = getNotification(id);
++    return n && n->canReply();
++}
++
++bool NotificationModel::fp6Reply(const unsigned int id, const QString &text) {
++    QSharedPointer<Notification> n = getNotification(id);
++    if (!n || !n->canReply()) {
++        return false;
++    }
++    bool ok = n->reply(text);
++    Q_EMIT fp6ReplyableChanged();
++    return ok;
++}
++
++void NotificationModel::fp6Release(const unsigned int id) {
++    for (int i = 0; i < p->parked.size(); i++) {
++        if (p->parked[i]->getID() == id) {
++            // Dropping the last reference closes it (NotificationClosed).
++            p->parked.removeAt(i);
++            Q_EMIT fp6ReplyableChanged();
++            return;
++        }
++    }
++}
++
++bool NotificationModel::fp6ParkNow(const unsigned int id) {
++    for (int i = 0; i < p->displayedNotifications.size(); i++) {
++        QSharedPointer<Notification> n = p->displayedNotifications[i];
++        if (n->getID() == id) {
++            if (!n->canReply()) {
++                return false;
++            }
++            deleteFromVisible(i);
++            park(n);
++            timeout(); // Simulate a timeout so visual state is updated.
++            return true;
++        }
++    }
++    return false;
++}
++
+ int NotificationModel::nextTimeout() const {
+     int mintime = INT_MAX;
+     if(p->displayedNotifications.empty()) {
+diff --git a/src/NotificationServer.cpp b/src/NotificationServer.cpp
+index 3eeb6b4..105385a 100644
+--- a/src/NotificationServer.cpp
++++ b/src/NotificationServer.cpp
+@@ -81,6 +81,16 @@ void NotificationServer::invokeAction(unsigned int id, const QString &action) {
+     Q_EMIT ActionInvoked(id, action);
+ }
+ 
++void NotificationServer::invokeReply(unsigned int id, const QString &text) {
++    // KDE Plasma sends ActionInvoked only for real buttons; a reply is
++    // NotificationReplied alone.
++    Q_EMIT NotificationReplied(id, text);
++}
++
++void NotificationServer::refreshTimeout(unsigned int id) {
++    model.notificationUpdated(id);
++}
++
+ QStringList NotificationServer::GetCapabilities() const {
+     QStringList capabilities;
+     capabilities.push_back("actions");
+@@ -105,6 +115,7 @@ QStringList NotificationServer::GetCapabilities() const {
+     capabilities.push_back(INTERACTIVE_HINT);
+     capabilities.push_back(TIMEOUT_HINT);
+     capabilities.push_back(SWIPE_HINT);
++    capabilities.push_back(INLINE_REPLY_CAPABILITY);
+ #ifdef UBUNTU_HINT_COMPAT
+     for (int i = 0; compat_hints[i][0] != 0; i++) {
+         capabilities.push_back(compat_hints[i][0]);
+@@ -174,6 +185,10 @@ QSharedPointer<Notification> NotificationServer::buildNotification(NotificationI
+         ntype = Notification::Type::Interactive;
+         expireTimeout = 5000;
+     }
++    // FP6: a little longer to reach the Reply button.
++    if (hints.contains(INLINE_REPLY_HINT) && ntype != Notification::Type::SnapDecision) {
++        expireTimeout = 8000;
++    }
+ 
+     // critical notifications should have infinite timeout
+     if (urg == Notification::Urgency::Critical) {
+@@ -213,7 +228,7 @@ void NotificationServer::serviceUnregistered(const QString &clientId) {
+ 
+ unsigned int NotificationServer::Notify(const QString &app_name, uint replaces_id,
+                            const QString &app_icon, const QString &summary,
+-                           const QString &body, const QStringList &actions,
++                           const QString &body, const QStringList &rawActions,
+                            const QVariantMap &rawHints, int /* expire_timeout */) {
+     const unsigned int FAILURE = 0;
+     const int minActions = 4;
+@@ -240,6 +255,22 @@ unsigned int NotificationServer::Notify(const QString &app_name, uint replaces_i
+     QVariantMap hints = rawHints;
+ #endif // UBUNTU_HINT_COMPAT
+ 
++    // FP6: "inline-reply" is not a button; it becomes the reply field
++    // (label in INLINE_REPLY_HINT, which only the server may set).
++    hints.remove(INLINE_REPLY_HINT);
++    QStringList actions = rawActions;
++    bool canReply = false;
++    for (int i = 0; i + 1 < actions.size(); i += 2) {
++        if (actions[i] == QLatin1String(INLINE_REPLY_ACTION)) {
++            QString label = actions[i + 1].trimmed();
++            hints.insert(INLINE_REPLY_HINT, label.isEmpty() ? QStringLiteral("Reply") : label);
++            actions.removeAt(i);
++            actions.removeAt(i);
++            canReply = true;
++            break;
++        }
++    }
++
+     QSharedPointer<Notification> notification;
+     if (replaces_id != 0) {
+         if (model.hasNotification(replaces_id)) {
+@@ -254,6 +285,12 @@ unsigned int NotificationServer::Notify(const QString &app_name, uint replaces_i
+                 sendErrorReply(QDBusError::InvalidArgs, message);
+                 return FAILURE;
+             }
++            // FP6: an update of a reply kept after its bubble timed out shows
++            // again as a new bubble (same id).
++            if (model.takeParked(replaces_id)) {
++                notification = buildNotification(replaces_id, hints);
++                newNotification = true;
++            }
+         } else {
+             notification = buildNotification(replaces_id, hints);
+         }
+@@ -322,6 +359,7 @@ unsigned int NotificationServer::Notify(const QString &app_name, uint replaces_i
+     // Disturb filter needs the sender's app name, which the model lacks.
+     hints.insert(QStringLiteral("x-fp6-app-name"), app_name);
+     notification->setHints(hints);
++    notification->setCanReply(canReply);
+ 
+     QVariant secondaryIcon =
+ #ifdef UBUNTU_HINT_COMPAT
+diff --git a/src/org.freedesktop.Notifications.xml b/src/org.freedesktop.Notifications.xml
+index b694a55..6439e8b 100644
+--- a/src/org.freedesktop.Notifications.xml
++++ b/src/org.freedesktop.Notifications.xml
+@@ -34,6 +34,11 @@
+       <arg name="id" type="u"/>
+       <arg name="action_key" type="s"/>
+     </signal>
++    <!-- FP6: inline replies (capability "inline-reply", as KDE Plasma) -->
++    <signal name="NotificationReplied">
++      <arg name="id" type="u"/>
++      <arg name="text" type="s"/>
++    </signal>
+ 
+     <!-- Extra method to enable testing -->
+     <method name="GetNotifications">
+diff --git a/test/notificationservertest.cpp b/test/notificationservertest.cpp
+index a0113e6..f46a219 100644
+--- a/test/notificationservertest.cpp
++++ b/test/notificationservertest.cpp
+@@ -320,6 +320,7 @@ void testGetCapabilities() {
+         INTERACTIVE_HINT,
+         TIMEOUT_HINT,
+         SWIPE_HINT,
++        INLINE_REPLY_CAPABILITY,
+ #ifdef UBUNTU_HINT_COMPAT
+         VALUE_TINT_COMPAT_HINT,
+         TRUNCATION_COMPAT_HINT,
+diff --git a/test/notificationtest.cpp b/test/notificationtest.cpp
+index bfd237f..88daef0 100644
+--- a/test/notificationtest.cpp
++++ b/test/notificationtest.cpp
+@@ -21,6 +21,9 @@ class TestNotifications: public QObject
+         void testTextFilter();
+         void testTextFilter_data();
+         void testReverseClose();
++        void testInlineReply();
++        void testInlineReplyParked();
++        void testInlineReplyHold();
+ };
+ 
+ void TestNotifications::testSimpleInsertion() {
+@@ -310,5 +313,103 @@ void TestNotifications::testReverseClose() {
+     QCOMPARE(m->numNotifications(), before);
+ }
+ 
++// FP6 inline replies
++void TestNotifications::testInlineReply() {
++    NotificationModel *m = new NotificationModel(this);
++    NotificationServer *s = new NotificationServer(QDBusConnection::sessionBus(), *m, this);
++    QVERIFY(s->GetCapabilities().contains(INLINE_REPLY_CAPABILITY));
++    QSignalSpy replied(s, SIGNAL(NotificationReplied(unsigned int, const QString &)));
++    QSignalSpy invoked(s, SIGNAL(ActionInvoked(unsigned int, const QString &)));
++    QVariantMap hints;
++    hints[INLINE_REPLY_HINT] = QStringLiteral("forged"); // only the server sets it
++    int plain = s->Notify("test-app", 0, "", "Test Contact", "no reply", {}, hints, -1);
++    QVERIFY(!m->getNotification(plain)->canReply());
++    QVERIFY(!m->getNotification(plain)->getHints().contains(INLINE_REPLY_HINT));
++    QVERIFY(!m->fp6Reply(plain, "x"));
++
++    int id = s->Notify("test-app", 0, "", "Test Contact", "Hello from +999 555 0100",
++                       {"default", "Open", "inline-reply", "Reply"}, QVariantMap(), -1);
++    QSharedPointer<Notification> n = m->getNotification(id);
++    QVERIFY(n->canReply());
++    QCOMPARE(n->getHints()[INLINE_REPLY_HINT].toString(), QStringLiteral("Reply"));
++    QCOMPARE(n->getDisplayTime(), 8000);
++    QVERIFY(m->fp6CanReply(id));
++    QVERIFY(!m->fp6Reply(id, "   "));            // empty replies are not sent
++    QCOMPARE(replied.count(), 0);
++    QSignalSpy replyable(m, SIGNAL(fp6ReplyableChanged()));
++    QVERIFY(m->fp6Reply(id, "On my way"));
++    QVERIFY(replyable.count() >= 1);
++    QCOMPARE(replied.count(), 1);
++    QCOMPARE(replied.at(0).at(0).toUInt(), (unsigned int) id);
++    QCOMPARE(replied.at(0).at(1).toString(), QStringLiteral("On my way"));
++    QCOMPARE(invoked.count(), 0);
++    QVERIFY(!m->hasNotification(id));             // closed after the reply
++    QVERIFY(!m->fp6Reply(id, "again"));
++
++    // Interactive notifications still need exactly two real actions.
++    QVariantMap ihints;
++    ihints[INTERACTIVE_HINT] = QStringLiteral("true");
++    int iid = s->Notify("test-app", 0, "", "s", "b", {"a", "A", "inline-reply", "Reply"}, ihints, -1);
++    QVERIFY(iid != 0);
++    QCOMPARE(m->getNotification(iid)->getActions()->getRawActions(), QStringList({"a", "A"}));
++}
++
++void TestNotifications::testInlineReplyParked() {
++    NotificationModel *m = new NotificationModel(this);
++    NotificationServer *s = new NotificationServer(QDBusConnection::sessionBus(), *m, this);
++    QSignalSpy replied(s, SIGNAL(NotificationReplied(unsigned int, const QString &)));
++    QSharedPointer<Notification> n(new Notification(77, 50, Notification::Low, "b", Notification::Ephemeral, s));
++    n->setCanReply(true);
++    QSharedPointer<Notification> plain(new Notification(78, 50, Notification::Low, "b", Notification::Ephemeral));
++    m->insertNotification(n);
++    m->insertNotification(plain);
++    QTRY_VERIFY(!m->showingNotification(77));
++    QVERIFY(m->isParked(77));                     // bubble gone, still open
++    QVERIFY(m->hasNotification(77));
++    QVERIFY(m->fp6CanReply(77));
++    QTRY_VERIFY(!m->showingNotification(78));
++    QVERIFY(!m->hasNotification(78));             // not replyable: gone
++    QVERIFY(m->fp6Reply(77, "Test reply"));
++    QCOMPARE(replied.count(), 1);
++
++    QSharedPointer<Notification> k(new Notification(79, 50, Notification::Low, "b", Notification::Ephemeral));
++    k->setCanReply(true);
++    m->insertNotification(k);
++    QTRY_VERIFY(m->isParked(79));
++    m->fp6Release(79);
++    QSharedPointer<Notification> d(new Notification(80, 60000, Notification::Low, "b", Notification::Ephemeral));
++    QSharedPointer<Notification> e(new Notification(81, 60000, Notification::Low, "b", Notification::Interactive));
++    d->setCanReply(true);
++    m->insertNotification(d);
++    m->insertNotification(e);
++    QVERIFY(!m->fp6ParkNow(81));                  // not replyable: untouched
++    QVERIFY(m->showingNotification(81));
++    QVERIFY(m->fp6ParkNow(80));                   // DND "hide popups"
++    QVERIFY(!m->showingNotification(80));
++    QVERIFY(m->isParked(80));
++    m->fp6Release(80);
++    m->removeNotification(81);
++    QVERIFY(!m->hasNotification(79));
++    QVERIFY(!m->fp6CanReply(79));
++    QVERIFY(m->takeParked(79) == false);
++}
++
++void TestNotifications::testInlineReplyHold() {
++    NotificationModel *m = new NotificationModel(this);
++    NotificationServer *s = new NotificationServer(QDBusConnection::sessionBus(), *m, this);
++    QSharedPointer<Notification> n(new Notification(88, 100, Notification::Low, "b", Notification::Ephemeral, s));
++    n->setCanReply(true);
++    m->insertNotification(n);
++    n->holdForReply(true);
++    QCOMPARE(n->getDisplayTime(), -1);
++    QTest::qWait(400);
++    QVERIFY(m->showingNotification(88));          // held while typing
++    n->holdForReply(false);
++    QVERIFY(m->showingNotification(88));          // display time restarts
++    QTRY_VERIFY(!m->showingNotification(88));
++    QVERIFY(m->isParked(88));
++    m->fp6Release(88);
++}
++
+ QTEST_MAIN(TestNotifications)
+ #include "notificationtest.moc"
