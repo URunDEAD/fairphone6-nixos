@@ -18,7 +18,7 @@ Every user-facing feature gets a setting/toggle in System Settings. Status:
 ### Display
 - ✅ Night light / blue-light filter — scheduled (sunset/sunrise or times), strength
 - ✅ Dark theme on a schedule
-- 🔧 Font size and display scaling settings (display size done; text size for Lomiri apps in progress)
+- 🔧 Font size, bold text and display scaling — in r5, awaiting test
 
 ### Battery and charging
 - ✅ Charge limit (e.g. 80 %) to protect the battery
@@ -52,7 +52,6 @@ Every user-facing feature gets a setting/toggle in System Settings. Status:
 - 🔧 Refresh rate / Smooth display: panel already runs 120 Hz; 30/60/90/120 Hz +
   adaptive (120 touched, 60/30/10 idle) + battery-saver cap + tile built, kernel
   patches 0009/0010 are candidates; off until a supervised RAM-boot test
-- ⏳ Notification quick replies beyond SMS
 - 🔧 Screen-edge notification flash (the FP6 has no LED) — in r4, awaiting test
 
 ## Priority 3 — connectivity and integration
@@ -74,8 +73,9 @@ Every user-facing feature gets a setting/toggle in System Settings. Status:
   apps (Android share intents ↔ content-hub), with share targets/extensions,
   recent contacts ("direct share") and actions like copy, save to files,
   print, Nearby share, KDE Connect
-- 🔧 Smart Wi-Fi ↔ mobile switching, data saver (per-app network policy) — in r4
-- ⏳ Bluetooth codecs and quick pairing review
+- 🔧 Smart Wi-Fi ↔ mobile switching, data saver (per-app network policy) — services in r6;
+  blocking needs a kernel with nft socket matching (built, waiting for a supervised RAM-boot test)
+- 🔧 Bluetooth codecs and quick pairing review — in r5, awaiting test
 - ⏳ NFC tag reader/writer app (no payments)
 - ⏳ Research: system authentication API (like iOS LocalAuthentication / Android
   BiometricPrompt) — apps ask the system to confirm the user (fingerprint via
@@ -84,7 +84,8 @@ Every user-facing feature gets a setting/toggle in System Settings. Status:
   hardware-backed keystore if the Qualcomm TEE allows it, else a sealed
   software keystore. Scope: the device owner's own security for native apps;
   not proving device integrity to other apps, and not bypassing their checks
-- ⏳ Per-app permissions (camera, microphone, location, files) on top of AppArmor
+- 🔧 Per-app permissions: USB/NFC and network prompts in r5; camera, microphone and
+  location prompts in progress
 - ⏳ Encrypted user data
 - ⏳ Work profile / app separation
 
@@ -92,7 +93,7 @@ Every user-facing feature gets a setting/toggle in System Settings. Status:
 
 - 🔧 Magnification gesture, colour correction/inversion, mono audio and balance — in r4
 - ⏳ Screen reader improvements
-- 🔧 On-device voice dictation (service in r4; keyboard mic key wiring next)
+- 🔧 On-device voice dictation with a keyboard mic key — in r5, awaiting test
 - 🔧 Keyboard prediction quality, Romanian support — in r4
 - 🔧 Text recognition (OCR) in photos and screenshots — in r4
 - 🔧 Live captions (offline, English/Romanian) — in r4
@@ -116,6 +117,18 @@ Every user-facing feature gets a setting/toggle in System Settings. Status:
 - 🔧 Faster modem start (saved modem storage copy)
 - 🔧 Bug report tool and a post-update self-test
 
+## Added in r5 and r6 (awaiting the hardware test)
+
+- 🔧 Lock and unlock sounds, with a setting and a choice of sound (r5)
+- 🔧 Charging feedback on plug-in, also on the lock screen (r5)
+- 🔧 App crash isolation: a crashing app no longer takes the shell or the session
+  with it; the shell restarts without logging out; crash notice with a bug report (r5)
+- 🔧 Notification quick replies (r5)
+- 🔧 Assistant app: chat with an on-phone or remote AI model that can use system apps
+  after asking for each resource (r6)
+- 🔧 On-phone AI models: download, verify, choose, delete (r6)
+- 🔧 Alarms ring reliably through the shared alarm store (r6)
+
 ## In progress elsewhere
 
 - ✅ Camera: fast launch and lock-screen secure mode
@@ -125,7 +138,8 @@ Every user-facing feature gets a setting/toggle in System Settings. Status:
   slow motion (ultrawide 120 fps mode) and electronic stabilisation (gyro)
 - ✅ Camera Phase 2: RAW/DNG, HDR, night mode, timelapse, bracketing,
   intervalometer, panorama (Rust), front/ultrawide colour calibration, mirror selfie
-- ✅ Keep apps ready (prelaunch, preload, zram, OOM policy)
+- ✅ Keep apps ready (prelaunch, preload, zram, OOM policy); memory profiles
+  (Conservative/Balanced/Aggressive) with usage prediction; kept-ready apps stay resident (r6)
 - 🔧 Sensor utility apps (Tools folder): batch 1 done, batch 2 in progress
 - ✅ Screenshots and screen recording
 - ✅ USB Drive app (DriveDroid-like: share ISO/disk images over USB)
