@@ -1,0 +1,26 @@
+diff -ru a/src/qml/ThreadDelegate.qml b/src/qml/ThreadDelegate.qml
+--- a/src/qml/ThreadDelegate.qml
++++ b/src/qml/ThreadDelegate.qml
+@@ -33,7 +33,12 @@
+     property bool collapsed: false
+ 
+     visible: !collapsed
+-    height: collapsed ? 0 : units.gu(8)
++    // FP6 text size (Display Comfort): above 100 % the row grows with the
++    // name and the two-line preview, which otherwise run into the next row.
++    readonly property real fp6TextScale: FontUtils.sizeToPixels("medium") / units.dp(14)
++    height: collapsed ? 0 : (fp6TextScale > 1.01
++        ? Math.max(units.gu(8), units.gu(3) + contactName.height + latestMessage.height)
++        : units.gu(8))
+ 
+     property QtObject chatEntry: null
+     property bool compactView: false
+@@ -220,7 +225,7 @@
+         anchors {
+             left: parent.left
+             top: parent.top
+-            bottom: parent.bottom
++            // FP6: no bottom anchor, so a taller row keeps a square avatar.
+         }
+         height: units.gu(6)
+         width: units.gu(6)

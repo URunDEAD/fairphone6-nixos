@@ -89,6 +89,16 @@ let
   uitkFontScaleTest = pkgs.callPackage ./uitk-font-scale-test { inherit uitkFontScaleLib; };
 in {
   options.hardware.fairphone6.displayComfort = {
+    messagingPatches = lib.mkOption {
+      type = lib.types.listOf lib.types.path;
+      default = [ ];
+      internal = true;
+      description = ''
+        Patches for lomiri-messaging-app (the thread list rows grow with the
+        text size). Applied by contacts/contacts-fp6.nix, which builds the
+        app.
+      '';
+    };
     enable = lib.mkEnableOption ''
       night light, greyscale, dark theme schedule and text/display size for
       Lomiri (System Settings > Display Comfort)'';
@@ -109,6 +119,7 @@ in {
 
   config = lib.mkIf cfg.enable (lib.mkMerge [
     {
+      hardware.fairphone6.displayComfort.messagingPatches = [ ./messaging-text-size.patch ];
       environment.systemPackages = [ package ];
       system.build.fp6-display-comfort = { inherit package schema qmlPlugin lssPlugin uitkFontScale uitkFontScaleLib uitkFontScaleTest; lomiri = pkgs.lomiri.lomiri; };
 

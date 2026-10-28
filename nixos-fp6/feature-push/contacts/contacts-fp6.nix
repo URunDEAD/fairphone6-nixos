@@ -39,7 +39,12 @@ let
     inherit addressbook;
   });
   dialer = frontend frontends.dialer;
-  messaging = frontend frontends.messaging;
+  # Display Comfort text size: thread rows that grow with large text.
+  messagingPatches = config.hardware.fairphone6.displayComfort.messagingPatches or [ ];
+  messaging = let drv = frontend frontends.messaging; in
+    if messagingPatches == [ ] then drv else drv.overrideAttrs (old: {
+      patches = (old.patches or [ ]) ++ messagingPatches;
+    });
 in {
   config = lib.mkIf config.programs.fp6TelephonyFrontends.enable {
     programs.fp6TelephonyFrontends.packages = lib.mkForce [ addressbook dialer messaging ];
