@@ -88,6 +88,14 @@ in {
 
       environment.systemPackages = [ cfg.package ];
 
+      # xdg-document-portal (/run/user/$UID/doc, the paths handed to apps)
+      # mounts its FUSE file system through fusermount3. This nixpkgs'
+      # xdg.portal module no longer enables programs.fuse, so without the
+      # setuid wrapper /run/wrappers/bin/fusermount3 the unit failed with
+      # "Failed to call 'fusermount3'". The user manager's PATH already
+      # contains /run/wrappers/bin.
+      programs.fuse.enable = true;
+
       # The user manager gets NIX_XDG_DESKTOP_PORTAL_DIR from the PAM session
       # variables; restate it for the D-Bus activated units.
       systemd.user.services.xdg-desktop-portal.environment.NIX_XDG_DESKTOP_PORTAL_DIR =
