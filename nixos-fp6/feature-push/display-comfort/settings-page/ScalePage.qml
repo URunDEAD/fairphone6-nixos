@@ -1,7 +1,8 @@
 /*
  * Display Comfort > Text and display size: interface scale (the shell's grid
- * unit; Mir output scale = GU / 8) and text size, applied at the next login,
- * with presets and a preview.
+ * unit; Mir output scale = GU / 8, next login) and text size (live in the
+ * shell and Lomiri apps through the font-scale UITK, GTK live, other Qt apps
+ * at the next login), with presets and a preview that follows the slider.
  * SPDX-License-Identifier: GPL-3.0-only
  */
 import QtQuick 2.12
@@ -28,10 +29,19 @@ ItemPage {
     readonly property var fontPresets: [90, 100, 115, 130]
     readonly property var fontPresetLabels: [i18n.tr("Small"), i18n.tr("Default"), i18n.tr("Large"), i18n.tr("Largest")]
 
-    // Pending values relative to what this session runs with.
+    // The text size this process draws with right now (1 with the stock UITK;
+    // the font-scale UITK re-evaluates this when the live size changes).
+    readonly property real appliedFont: FontUtils.sizeToPixels("medium") / units.dp(14)
+    // The UITK text size follows font-scale live only with the font-scale
+    // library loaded (Display Comfort fontScaleUitk).
+    readonly property bool liveText: Math.abs(appliedFont - gs.fontScale / 100) < 0.01
+    // Preview: the slider value (also while dragging) and the chosen display
+    // size, relative to what this page is drawn with.
     readonly property real sizeRatio: gs.interfaceScale / Math.max(1, gs.sessionInterfaceScale)
-    readonly property real fontRatio: gs.fontScale / Math.max(1, gs.sessionFontScale)
-    readonly property bool pending: gs.interfaceScale !== gs.sessionInterfaceScale || gs.fontScale !== gs.sessionFontScale
+    readonly property real fontRatio: (fontSlider.value / 100) / Math.max(0.5, appliedFont)
+    readonly property bool sizePending: gs.interfaceScale !== gs.sessionInterfaceScale
+    // Point-sized Qt fonts (QT_WAYLAND_FORCE_DPI) are fixed at login.
+    readonly property bool fontPending: gs.fontScale !== gs.sessionFontScale
 
     Flickable {
         id: flick
@@ -52,7 +62,8 @@ ItemPage {
                 id: preview
                 objectName: "scalePreview"
                 anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
-                height: units.gu(19)
+                // Grows with the previewed text, so the largest size is not clipped.
+                height: (previewContent.height + units.gu(3)) * page.sizeRatio
                 radius: units.gu(1)
                 clip: true
                 color: theme.palette.normal.background
@@ -64,6 +75,7 @@ ItemPage {
                     height: preview.height / page.sizeRatio
                     transform: Scale { xScale: page.sizeRatio; yScale: page.sizeRatio }
                     Column {
+                        id: previewContent
                         anchors { left: parent.left; right: parent.right; top: parent.top; margins: units.gu(1.5) }
                         spacing: units.gu(1)
                         Row {
@@ -84,9 +96,11 @@ ItemPage {
                             font.pixelSize: FontUtils.sizeToPixels("medium") * page.fontRatio
                         }
                         Rectangle {
-                            width: units.gu(14); height: units.gu(4); radius: units.gu(0.7)
+                            width: Math.max(units.gu(14), previewButtonLabel.width + units.gu(4))
+                            height: Math.max(units.gu(4), previewButtonLabel.height + units.gu(1.5))
+                            radius: units.gu(0.7)
                             color: theme.palette.normal.positive
-                            Label { anchors.centerIn: parent; text: i18n.tr("Button"); color: "white"; font.pixelSize: FontUtils.sizeToPixels("medium") * page.fontRatio }
+                            Label { id: previewButtonLabel; anchors.centerIn: parent; text: i18n.tr("Button"); color: "white"; font.pixelSize: FontUtils.sizeToPixels("medium") * page.fontRatio }
                         }
                     }
                 }
@@ -96,6 +110,10 @@ ItemPage {
             SettingsItemTitle { text: i18n.tr("Display size") }
             OptionSelector {
                 objectName: "displaySizeSelector"
+                // Always expanded: the collapsed selector could show the wrong
+                // row at start (seen with Default), and a list of five stays
+                // readable at the largest text size.
+                expanded: true
                 anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
                 model: page.scaleLabels
                 selectedIndex: page.scales.indexOf(gs.interfaceScale) >= 0 ? page.scales.indexOf(gs.interfaceScale) : 2
@@ -107,14 +125,24 @@ ItemPage {
 
             ListItem.ThinDivider {}
             SettingsItemTitle { text: i18n.tr("Text size") }
-            Row {
+            // Four presets in a row, or 2 x 2 when the longest label would not
+            // fit (large text sizes, long translations).
+            TextMetrics {
+                id: presetMetrics
+                font.pixelSize: FontUtils.sizeToPixels("medium")
+                text: page.fontPresetLabels.reduce(function (a, b) { return a.length >= b.length ? a : b })
+            }
+            Grid {
+                id: presetGrid
+                objectName: "fontPresetGrid"
                 anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
                 spacing: units.gu(1)
+                columns: presetMetrics.advanceWidth + units.gu(3) <= (width - 3 * spacing) / 4 ? 4 : 2
                 Repeater {
                     model: page.fontPresets.length
                     Button {
                         objectName: "fontPreset" + index
-                        width: (parent.width - 3 * units.gu(1)) / 4
+                        width: (presetGrid.width - (presetGrid.columns - 1) * presetGrid.spacing) / presetGrid.columns
                         text: page.fontPresetLabels[index]
                         color: gs.fontScale === page.fontPresets[index] ? theme.palette.normal.focus : theme.palette.normal.base
                         onClicked: gs.fontScale = page.fontPresets[index]
@@ -122,6 +150,7 @@ ItemPage {
                 }
             }
             Slider {
+                id: fontSlider
                 objectName: "fontSlider"
                 anchors { left: parent.left; right: parent.right; leftMargin: units.gu(2); rightMargin: units.gu(2) }
                 minimumValue: 80
@@ -135,16 +164,20 @@ ItemPage {
                 onPressedChanged: if (!pressed) gs.fontScale = Math.round(value / 5) * 5
             }
             Note {
-                text: i18n.tr("Lomiri apps and the shell, Qt apps, GTK apps and Firefox.")
+                text: page.liveText
+                    ? i18n.tr("Changes right away in the shell, Lomiri apps and GTK apps. Other Qt apps and Firefox follow when they are restarted or at the next login.")
+                    : i18n.tr("Lomiri apps and the shell, Qt apps, GTK apps and Firefox, at the next login.")
             }
 
             ListItem.ThinDivider {}
             Note {
                 objectName: "pendingNote"
-                font.weight: page.pending ? Font.Medium : Font.Normal
-                text: page.pending
-                    ? i18n.tr("Takes effect the next time you log in (Log Out in the power menu, or restart the phone).")
-                    : i18n.tr("Changes take effect at the next login.")
+                font.weight: (page.sizePending || page.fontPending) ? Font.Medium : Font.Normal
+                text: page.sizePending
+                    ? i18n.tr("The display size takes effect the next time you log in (Log Out in the power menu, or restart the phone).")
+                    : page.fontPending
+                    ? i18n.tr("Some apps (Qt apps outside Lomiri) show the new text size after the next login.")
+                    : i18n.tr("Display size changes take effect at the next login.")
             }
             Button {
                 objectName: "resetScale"
