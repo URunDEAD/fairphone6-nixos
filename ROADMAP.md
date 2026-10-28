@@ -49,7 +49,9 @@ Every user-facing feature gets a setting/toggle in System Settings. Status:
 - 🔧 Storage manager
 - 🔧 Adaptive screen timeout (stay on while held) — in r4, awaiting test
 - ⏳ Always-on display (measure battery cost first)
-- ⏳ Higher refresh rate if the panel supports it
+- 🔧 Refresh rate / Smooth display: panel already runs 120 Hz; 30/60/90/120 Hz +
+  adaptive (120 touched, 60/30/10 idle) + battery-saver cap + tile built, kernel
+  patches 0009/0010 are candidates; off until a supervised RAM-boot test
 - ⏳ Notification quick replies beyond SMS
 - 🔧 Screen-edge notification flash (the FP6 has no LED) — in r4, awaiting test
 
