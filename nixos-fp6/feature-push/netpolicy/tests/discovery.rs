@@ -17,6 +17,7 @@ fn configurable_scope_matching_and_ambiguous_mapping_rejection() {
         }],
         system_allow: vec![],
         mobile_adapter: None,
+        permissions_file: None,
     };
     config.validate().unwrap();
     let scopes = discover(&config, &root).unwrap();

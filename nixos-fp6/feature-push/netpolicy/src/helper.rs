@@ -1,6 +1,6 @@
 use crate::{
     config::{Settings, SystemConfig},
-    nft::{read_counters, Rules, Scope},
+    nft::{read_counters, AppNet, PermScope, Rules, Scope},
     nm,
     policy::app_allowed,
     runtime::{read_json, run, save_json},
@@ -45,6 +45,8 @@ pub struct Engine {
     pub snapshot: Snapshot,
     last_rules: Option<Rules>,
     last_system_inodes: Vec<u64>,
+    /// App network permission (last successfully read permissions file).
+    perm_apps: BTreeMap<String, AppNet>,
     state_path: PathBuf,
     bus: zbus::blocking::Connection,
 }
@@ -69,6 +71,7 @@ impl Engine {
             },
             last_rules: None,
             last_system_inodes: vec![],
+            perm_apps: BTreeMap::new(),
             state_path,
             bus: crate::runtime::system()?,
         })
@@ -212,12 +215,34 @@ impl Engine {
         if Path::new("/sys/fs/cgroup").join(own_scope).is_dir() {
             system_allow.push(own_scope.into());
         }
+        // App network permission (fp6-permd's file). A broken file keeps the
+        // previous rules: a denial must not silently lapse.
+        if let Some(path) = &self.config.permissions_file {
+            match read_permissions(Path::new(path), self.config.uid) {
+                Ok(map) => self.perm_apps = map,
+                Err(e) => observation_error = Some(e.context("app network permissions")),
+            }
+        }
+        let perm = discover_perm(
+            self.config.uid,
+            &self.perm_apps,
+            Path::new("/sys/fs/cgroup"),
+        )?;
+        let mut mobile_interfaces = network.mobile_interfaces.clone();
+        if self.snapshot.mobile.available || self.snapshot.mobile.active {
+            mobile_interfaces.push(self.snapshot.mobile.interface.clone());
+        }
+        mobile_interfaces.sort();
+        mobile_interfaces.dedup();
         let rules = Rules {
             uid: self.config.uid,
             interfaces: network.costly_interfaces.clone(),
             scopes,
             system_allow,
             restrict_unknown: self.settings.data_saver,
+            perm,
+            mobile_interfaces,
+            vpn_interfaces: network.tunnel_interfaces.clone(),
         };
         let system_inodes: Vec<u64> = rules
             .system_allow
@@ -232,7 +257,12 @@ impl Engine {
             || self.last_rules.as_ref() != Some(&rules)
             || self.last_system_inodes != system_inodes
         {
-            let script = rules.render(&names, exists)?;
+            let previous = if exists {
+                self.last_rules.as_ref().map_or(0, |r| r.perm_apps().len())
+            } else {
+                0
+            };
+            let script = rules.render_with(&names, exists, previous)?;
             run("nft", &["-f", "-"], Some(&script))?;
             self.last_rules = Some(rules);
             self.last_system_inodes = system_inodes;
@@ -311,6 +341,92 @@ pub fn discover(config: &SystemConfig, root: &Path) -> Result<Vec<Scope>> {
         Ok(())
     }
     walk(config, root, &base, 0, &mut result)?;
+    result.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(result)
+}
+/// /run/fp6-permissions/network.json: `{"version":1,"uid":N,"apps":{"<app
+/// id>":{"wifi":b,"mobile":b,"vpn":b,"local":b}}}`, written by fp6-permd.
+/// A missing file means no restrictions.
+pub fn read_permissions(path: &Path, uid: u32) -> Result<BTreeMap<String, AppNet>> {
+    #[derive(Deserialize)]
+    struct File {
+        version: u32,
+        uid: u32,
+        apps: BTreeMap<String, AppNet>,
+    }
+    let text = match fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+        Err(e) => return Err(e).with_context(|| path.display().to_string()),
+    };
+    ensure!(text.len() <= 1 << 20, "permissions file too large");
+    let file: File = serde_json::from_str(&text).with_context(|| path.display().to_string())?;
+    ensure!(file.version == 1, "unsupported permissions file version");
+    ensure!(file.uid == uid, "permissions file is for another user");
+    ensure!(file.apps.len() <= 512, "too many apps in permissions file");
+    ensure!(
+        file.apps.keys().all(|a| crate::appscope::valid_app_id(a)),
+        "invalid app id in permissions file"
+    );
+    Ok(file
+        .apps
+        .into_iter()
+        .filter(|(_, n)| n.restricted())
+        .collect())
+}
+/// Running instances of restricted apps: lomiri-app-launch services and
+/// app-*.scope / app-*.service units anywhere under the user manager.
+pub fn discover_perm(
+    uid: u32,
+    apps: &BTreeMap<String, AppNet>,
+    root: &Path,
+) -> Result<Vec<PermScope>> {
+    let base = root.join(format!("user.slice/user-{uid}.slice/user@{uid}.service"));
+    let mut result = vec![];
+    if apps.is_empty() || !base.exists() {
+        return Ok(result);
+    }
+    fn walk(
+        apps: &BTreeMap<String, AppNet>,
+        root: &Path,
+        dir: &Path,
+        depth: usize,
+        result: &mut Vec<PermScope>,
+    ) -> Result<()> {
+        ensure!(result.len() <= 1024, "too many app scopes");
+        if depth > 8 {
+            return Ok(());
+        }
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if let Some(id) = crate::appscope::app_id_from_unit(&name) {
+                if let Some(access) = apps.get(&id) {
+                    let rel = entry
+                        .path()
+                        .strip_prefix(root)?
+                        .to_string_lossy()
+                        .into_owned();
+                    if crate::config::valid_cgroup(&rel) {
+                        result.push(PermScope {
+                            app: id,
+                            path: rel,
+                            inode: entry.metadata()?.ino(),
+                            access: *access,
+                        });
+                    }
+                    // An app unit's own sub-cgroups are covered by its match.
+                    continue;
+                }
+            }
+            walk(apps, root, &entry.path(), depth + 1, result)?;
+        }
+        Ok(())
+    }
+    walk(apps, root, &base, 0, &mut result)?;
     result.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(result)
 }

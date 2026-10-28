@@ -129,6 +129,10 @@ pub struct SystemConfig {
     pub apps: Vec<App>,
     pub system_allow: Vec<String>,
     pub mobile_adapter: Option<String>,
+    /// App network permission file written by fp6-permd (app-permissions),
+    /// normally /run/fp6-permissions/network.json. None: feature off.
+    #[serde(default)]
+    pub permissions_file: Option<String>,
 }
 impl SystemConfig {
     pub fn validate(&self) -> Result<()> {
@@ -156,6 +160,9 @@ impl SystemConfig {
         );
         if let Some(path) = &self.mobile_adapter {
             ensure!(path.starts_with('/'), "adapter must be absolute");
+        }
+        if let Some(path) = &self.permissions_file {
+            ensure!(path.starts_with('/'), "permissions file must be absolute");
         }
         Ok(())
     }

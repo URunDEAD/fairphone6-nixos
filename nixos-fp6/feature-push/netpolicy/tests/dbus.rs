@@ -234,6 +234,7 @@ fn real_helper_rejects_other_uid_and_unapproved_mobile() {
             apps: vec![],
             system_allow: vec![],
             mobile_adapter: None,
+            permissions_file: None,
         };
         fp6_netpolicy::runtime::save_json(&dir.join("config.json"), &config).unwrap();
         let mut child = Child(

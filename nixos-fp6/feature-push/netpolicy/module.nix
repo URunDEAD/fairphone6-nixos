@@ -6,6 +6,7 @@ let
     inherit (cfg) uid apps;
     system_allow = cfg.systemAllow;
     mobile_adapter = cfg.mobileAdapter;
+    permissions_file = cfg.permissionsFile;
   };
   policy = pkgs.writeTextDir "share/dbus-1/system.d/org.fairphone.NetPolicy.Helper1.conf" ''
     <!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN"
@@ -39,6 +40,17 @@ in {
       type = lib.types.listOf lib.types.str;
       default = [ "NetworkManager.service" "systemd-resolved.service" "systemd-timesyncd.service" ];
       description = "System service basenames allowed on costly links. Add actual VPN/push units; updates are restricted by default. Helper probes are always exempt.";
+    };
+    permissionsFile = lib.mkOption {
+      type = lib.types.nullOr lib.types.str; default = null;
+      example = "/run/fp6-permissions/network.json";
+      description = ''
+        Per-app network permission file (written by fp6-permd, app-permissions
+        module): apps listed there with a denied class (Wi-Fi/other, mobile,
+        VPN, local network) get their traffic dropped on every interface,
+        matched by their lomiri-app-launch / app-*.scope cgroups. Independent
+        of data saver. Null: off. DESIGN.md "App network permission".
+      '';
     };
     mobileAdapter = lib.mkOption {
       type = lib.types.nullOr lib.types.str; default = null;

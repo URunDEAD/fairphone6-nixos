@@ -1,0 +1,35 @@
+add table inet fp6_netpolicy
+add chain inet fp6_netpolicy perm_0_out
+flush chain inet fp6_netpolicy perm_0_out
+add rule inet fp6_netpolicy perm_0_out oifname "wwan0" drop
+add rule inet fp6_netpolicy perm_0_out oifname "rmnet*" drop
+add rule inet fp6_netpolicy perm_0_out oifname "qmapmux*" drop
+add rule inet fp6_netpolicy perm_0_out oifname "wwan*" drop
+add rule inet fp6_netpolicy perm_0_out oifname "nb0" return
+add rule inet fp6_netpolicy perm_0_out oifname "tun*" return
+add rule inet fp6_netpolicy perm_0_out oifname "tap*" return
+add rule inet fp6_netpolicy perm_0_out oifname "wg*" return
+add rule inet fp6_netpolicy perm_0_out oifname "wt*" return
+add rule inet fp6_netpolicy perm_0_out ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 224.0.0.0/4, 255.255.255.255 } return
+add rule inet fp6_netpolicy perm_0_out ip6 daddr { fc00::/7, fe80::/10, ff00::/8 } return
+add chain inet fp6_netpolicy perm_0_in
+flush chain inet fp6_netpolicy perm_0_in
+add rule inet fp6_netpolicy perm_0_in iifname "wwan0" drop
+add rule inet fp6_netpolicy perm_0_in iifname "rmnet*" drop
+add rule inet fp6_netpolicy perm_0_in iifname "qmapmux*" drop
+add rule inet fp6_netpolicy perm_0_in iifname "wwan*" drop
+add rule inet fp6_netpolicy perm_0_in iifname "nb0" return
+add rule inet fp6_netpolicy perm_0_in iifname "tun*" return
+add rule inet fp6_netpolicy perm_0_in iifname "tap*" return
+add rule inet fp6_netpolicy perm_0_in iifname "wg*" return
+add rule inet fp6_netpolicy perm_0_in iifname "wt*" return
+add rule inet fp6_netpolicy perm_0_in ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 224.0.0.0/4, 255.255.255.255 } return
+add rule inet fp6_netpolicy perm_0_in ip6 saddr { fc00::/7, fe80::/10, ff00::/8 } return
+add chain inet fp6_netpolicy out { type filter hook output priority -5; policy accept; }
+add rule inet fp6_netpolicy out oifname "lo" return
+add rule inet fp6_netpolicy out socket cgroupv2 level 5 "user.slice/user-1000.slice/user@1000.service/app.slice/lomiri-app-launch--application-legacy--chat--.service" jump perm_0_out
+add rule inet fp6_netpolicy out oifname "wwan0" socket cgroupv2 level 2 "system.slice/systemd-resolved.service" return
+add chain inet fp6_netpolicy in { type filter hook input priority -5; policy accept; }
+add rule inet fp6_netpolicy in iifname "lo" return
+add rule inet fp6_netpolicy in socket cgroupv2 level 5 "user.slice/user-1000.slice/user@1000.service/app.slice/lomiri-app-launch--application-legacy--chat--.service" jump perm_0_in
+add rule inet fp6_netpolicy in iifname "wwan0" socket cgroupv2 level 2 "system.slice/systemd-resolved.service" return

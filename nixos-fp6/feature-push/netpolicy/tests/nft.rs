@@ -12,6 +12,7 @@ fn rules(allowed: bool) -> Rules {
         }],
         system_allow: vec!["system.slice/systemd-resolved.service".into()],
         restrict_unknown: true,
+        ..Default::default()
     }
 }
 #[test]

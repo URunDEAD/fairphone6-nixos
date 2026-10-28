@@ -15,6 +15,9 @@ const NM: &str = "org.freedesktop.NetworkManager";
 pub struct Network {
     pub costly_interfaces: Vec<String>,
     pub tunnel_interfaces: Vec<String>,
+    /// NetworkManager modem devices (app network permission: "mobile").
+    #[serde(default)]
+    pub mobile_interfaces: Vec<String>,
     pub wifi: Option<Wifi>,
     pub connectivity_uri: String,
     pub connectivity_enabled: bool,
@@ -56,6 +59,9 @@ pub fn read(bus: &Connection) -> Result<Network> {
             network.tunnel_interfaces.push(interface.clone());
         }
         let cost: u32 = device.get_property("Metered").unwrap_or(0);
+        if kind == 8 {
+            network.mobile_interfaces.push(interface.clone());
+        }
         if kind == 8 || metered(cost) {
             network.costly_interfaces.push(interface.clone());
         }

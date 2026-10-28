@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+pub mod appscope;
 pub mod config;
 pub mod daemon;
 pub mod helper;

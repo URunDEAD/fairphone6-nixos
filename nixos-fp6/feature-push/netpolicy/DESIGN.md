@@ -235,3 +235,60 @@ its owned table after restoring routes.
 
 “Wi-Fi on automatically near saved networks” is explicitly out of scope: no
 location collection, scan database, geofencing or automatic radio enabling.
+
+## App network permission
+
+Settings > Privacy > App permissions (app-permissions module, fp6-permd)
+lets the user take network access away from one app, per class. fp6-permd
+(root) writes the decisions to `permissions_file`
+(`/run/fp6-permissions/network.json`, root-owned, 0644):
+
+```json
+{"version":1,"uid":10000,"apps":{"org.example.Chat":{"wifi":false,"mobile":true,"vpn":true,"local":true}}}
+```
+
+Only restricted apps are listed; a missing file means no restrictions. A
+file that fails to parse (wrong version or uid, invalid app id) keeps the
+previously applied rules and reports the error in the snapshot: a denial does
+not silently lapse. The helper re-reads it on every reconciliation (5 s).
+
+App identity is the unit name of the app's cgroup under
+`user.slice/user-UID.slice/user@UID.service` (src/appscope.rs, same code as
+the broker's caller identity):
+
+* `lomiri-app-launch--<job>--<appid>--<instance>.service` (what
+  lomiri-app-launch creates today, in app.slice);
+* `app[-<launcher>]-<appid>-<random>.scope` and
+  `app[-<launcher>]-<appid>[@<random>].service` (systemd's desktop
+  convention, `-` inside the id escaped as `\x2d`). A launcher that moves
+  apps into their own scopes (crash isolation) only has to keep one of
+  these names; nothing here needs to change.
+
+Sub-cgroups of a matched unit are covered by the match. All instances of an
+app share one regular chain `perm_<n>_{out,in}` (n = position in the sorted
+list; app ids can be longer than nft chain names). Base chains jump to it
+right after the loopback exemption, before system exceptions and data saver,
+on **every** interface:
+
+| Class | Matches (output: `oifname`/`daddr`, input: `iifname`/`saddr`) |
+| --- | --- |
+| mobile | NM modem devices, the mobile adapter's interface, `rmnet*`, `qmapmux*`, `wwan*` |
+| vpn | NM tun/ip-tunnel/WireGuard devices, `tun*`, `tap*`, `wg*`, `wt*` (NetBird) |
+| local | remaining links, destination in 10/8, 172.16/12, 192.168/16, 169.254/16, 224/4, 255.255.255.255, fc00::/7, fe80::/10, ff00::/8 |
+| wifi | everything else (Wi-Fi, Ethernet, USB/BT tethering links) |
+
+Rules are evaluated in that order, each allowed class `return`s (the packet
+continues to the data saver rules), each denied class `drop`s; all four
+denied is a single `drop`. A carrier-grade-NAT 10.x address reached over
+rmnet is therefore "mobile", and a private address reached through a VPN is
+"vpn", not "local". Data saver behaviour, counters and the golden rulesets
+are unchanged; scripts/netns-perm-test.sh checks the classes against a real
+kernel in a network namespace.
+
+Limits: matching starts once the helper has seen the app's cgroup (at most
+one reconciliation after the app starts); packets match per socket, so
+connections made in that window are cut off at that point too. Traffic an
+app hands to another process is attributed to that process: DNS through
+systemd-resolved (the app can still resolve names), downloads through a
+session download service, content-hub/D-Bus services, the VPN daemon's own
+encapsulated packets. System services and the shell are never matched.

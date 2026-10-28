@@ -19,6 +19,7 @@ cargo test
 cargo clippy --all-targets --features ui -- -D warnings
 scripts/dbus-test.sh
 scripts/netns-test.sh
+scripts/netns-perm-test.sh
 scripts/preview.sh
 exit
 nix-build
@@ -89,6 +90,13 @@ The module installs `fp6-netpolicy-helper.service` (system),
 cgroup v2, `CONFIG_SOCK_CGROUP_DATA`, `CONFIG_NF_TABLES`, `CONFIG_NFT_SOCKET` and
 IPv4/IPv6 socket lookup support. Keep existing firewall rules; only the
 `fp6_netpolicy` table belongs to this package.
+
+Per-app network permission (app-permissions module): with
+`permissionsFile = "/run/fp6-permissions/network.json"` the helper also drops
+the traffic of apps the user denied Wi-Fi, mobile data, VPN or the local
+network in Settings > Privacy > App permissions, on every interface and
+independent of data saver ([DESIGN.md](DESIGN.md) "App network permission";
+`scripts/netns-perm-test.sh` tests it in a network namespace).
 
 The UI exposes saver, allow-list, per-app metered/mobile usage, smart switching,
 capped-plan consent, warning/background limits, bad/good sample counts, cooldown,
