@@ -10,6 +10,20 @@ in {
     };
   };
   config = lib.mkIf cfg.enable {
+    # lomiri-content-hub-service aborted (SIGABRT, 15x in one day on r4) when a
+    # peer file listed a type its schema lacks: share: ["all"] reaches
+    # QGSettings::get("all") on com.lomiri.content.hub.share, which has no such
+    # key upstream. The peers are fixed (kdeconnect, webshare); this patch makes
+    # every registry lookup check the schema first, so a bad third-party peer
+    # file only logs a warning.
+    nixpkgs.overlays = [ (_final: prev: {
+      lomiri = prev.lomiri.overrideScope (_lfinal: lprev: {
+        lomiri-content-hub = lprev.lomiri-content-hub.overrideAttrs (old: {
+          patches = (old.patches or [ ]) ++ [ ./lomiri-content-hub-tolerant-registry.patch ];
+          passthru = (old.passthru or { }) // { fp6TolerantRegistry = true; };
+        });
+      });
+    }) ];
     environment.systemPackages = [ cfg.package ];
     environment.pathsToLink = [ "/share/lomiri-content-hub/peers" ];
     services.dbus.packages = [ cfg.package ];

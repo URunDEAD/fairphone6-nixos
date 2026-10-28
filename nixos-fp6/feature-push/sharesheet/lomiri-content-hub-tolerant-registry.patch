@@ -1,0 +1,102 @@
+--- a/src/com/lomiri/content/service/registry.cpp
++++ b/src/com/lomiri/content/service/registry.cpp
+@@ -148,6 +148,22 @@
+ }
+ #endif
+ 
++/* fp6: QGSettings::get()/trySet() on a key that is not in the schema
++ * aborts the whole service (g_settings_schema_get_value). Peer files
++ * name arbitrary type strings (e.g. share: ["all"], which the share
++ * schema does not have), so every lookup checks the schema first. */
++bool has_key(QGSettings* settings, const QString& key)
++{
++    return settings->keys().contains(key);
++}
++
++QStringList get_list(QGSettings* settings, const QString& key)
++{
++    if (not has_key(settings, key))
++        return QStringList();
++    return settings->get(key).toStringList();
++}
++
+ } // End anonymous namespace
+ 
+ Registry::Registry() :
+@@ -266,16 +282,16 @@
+     TRACE() << Q_FUNC_INFO << type.id();
+ 
+     QStringList peers;
+-    peers << m_sources->get("all").toStringList();
++    peers << get_list(m_sources.data(), "all");
+     if (type != cuc::Type::unknown() && valid_type(type))
+-        peers << m_sources->get(type.id()).toStringList();
++        peers << get_list(m_sources.data(), type.id());
+ 
+     Q_FOREACH (QString k, peers)
+     {
+         TRACE() << Q_FUNC_INFO << k;
+         bool defaultPeer = false;
+         QVariant peer_v;
+-        if (type != cuc::Type::unknown())
++        if (type != cuc::Type::unknown() && has_key(m_defaultSources.data(), type.id()))
+             peer_v = m_defaultSources->get(type.id());
+         if (peer_v.type() == QVariant::StringList)
+         {
+@@ -300,9 +316,9 @@
+     TRACE() << Q_FUNC_INFO << type.id();
+ 
+     QStringList peers;
+-    peers << m_dests->get("all").toStringList();
++    peers << get_list(m_dests.data(), "all");
+     if (type != cuc::Type::unknown() && valid_type(type))
+-        peers << m_dests->get(type.id()).toStringList();
++        peers << get_list(m_dests.data(), type.id());
+ 
+ #ifdef WITH_LIBERTINE
+     peers << libertine_app_ids(type.id());
+@@ -323,7 +339,7 @@
+         return;
+ 
+     QStringList peers;
+-    peers << m_shares->get(type.id()).toStringList();
++    peers << get_list(m_shares.data(), type.id());
+ 
+ #ifdef WITH_LIBERTINE
+     peers << libertine_app_ids(type.id());
+@@ -352,6 +368,11 @@
+ bool Registry::install_source_for_type(cuc::Type type, cuc::Peer peer)
+ {
+     TRACE() << Q_FUNC_INFO << "type:" << type.id() << "peer:" << peer.id();
++    if (not has_key(m_sources.data(), type.id()))
++    {
++        qWarning() << "Not installing source" << peer.id() << "for type" << type.id() << ": not a source type";
++        return false;
++    }
+     QStringList l = m_sources->get(type.id()).toStringList();
+     if (not l.contains(peer.id()))
+     {
+@@ -364,6 +385,11 @@
+ bool Registry::install_destination_for_type(cuc::Type type, cuc::Peer peer)
+ {
+     TRACE() << Q_FUNC_INFO << "type:" << type.id() << "peer:" << peer.id();
++    if (not has_key(m_dests.data(), type.id()))
++    {
++        qWarning() << "Not installing destination" << peer.id() << "for type" << type.id() << ": not a destination type";
++        return false;
++    }
+     QStringList l = m_dests->get(type.id()).toStringList();
+     if (not l.contains(peer.id()))
+     {
+@@ -376,6 +402,11 @@
+ bool Registry::install_share_for_type(cuc::Type type, cuc::Peer peer)
+ {
+     TRACE() << Q_FUNC_INFO << "type:" << type.id() << "peer:" << peer.id();
++    if (not has_key(m_shares.data(), type.id()))
++    {
++        qWarning() << "Not installing share" << peer.id() << "for type" << type.id() << ": not a share type";
++        return false;
++    }
+     QStringList l = m_shares->get(type.id()).toStringList();
+     if (not l.contains(peer.id()))
+     {
