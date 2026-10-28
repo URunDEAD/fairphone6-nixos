@@ -1,0 +1,15 @@
+[package]
+name = "fp6-notify-reply"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Sends a freedesktop notification with an inline reply and prints the reply (FP6 test client)"
+publish = false
+
+[dependencies]
+zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
