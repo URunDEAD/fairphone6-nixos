@@ -30,7 +30,8 @@ Rectangle {
                 xsmall: xsmall.font.pixelSize, small: small.font.pixelSize,
                 medium: medium.font.pixelSize, large: large.font.pixelSize,
                 xlarge: xlarge.font.pixelSize, fontUtilsLarge: fu.font.pixelSize,
-                mediumHeight: medium.contentHeight, columnHeight: column.height,
+                mediumHeight: medium.contentHeight, mediumWeight: medium.font.weight,
+                appWeight: Qt.application.font.weight, columnHeight: column.height,
                 columnWidth: column.width
             }));
             column.grabToImage(function (result) {

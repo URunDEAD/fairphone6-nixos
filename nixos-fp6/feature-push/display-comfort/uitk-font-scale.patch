@@ -1,6 +1,6 @@
 diff -ru a/src/LomiriToolkit/lomiritoolkitmodule.cpp b/src/LomiriToolkit/lomiritoolkitmodule.cpp
---- a/src/LomiriToolkit/lomiritoolkitmodule.cpp	2026-10-28 07:17:39.978963779 +0200
-+++ b/src/LomiriToolkit/lomiritoolkitmodule.cpp	2026-10-28 07:18:00.108379935 +0200
+--- a/src/LomiriToolkit/lomiritoolkitmodule.cpp
++++ b/src/LomiriToolkit/lomiritoolkitmodule.cpp
 @@ -170,6 +170,7 @@
      UCApplication::instance(engine);
      UCFontUtils::instance(engine);
@@ -10,9 +10,9 @@ diff -ru a/src/LomiriToolkit/lomiritoolkitmodule.cpp b/src/LomiriToolkit/lomirit
      QQmlContext* context = engine->rootContext();
  
 diff -ru a/src/LomiriToolkit/ucfontutils.cpp b/src/LomiriToolkit/ucfontutils.cpp
---- a/src/LomiriToolkit/ucfontutils.cpp	2026-10-28 07:17:39.978279236 +0200
-+++ b/src/LomiriToolkit/ucfontutils.cpp	2026-10-28 07:18:00.107678617 +0200
-@@ -18,10 +18,116 @@
+--- a/src/LomiriToolkit/ucfontutils.cpp
++++ b/src/LomiriToolkit/ucfontutils.cpp
+@@ -18,10 +18,124 @@
  
  #include "ucunits_p.h"
  
@@ -22,6 +22,7 @@ diff -ru a/src/LomiriToolkit/ucfontutils.cpp b/src/LomiriToolkit/ucfontutils.cpp
 +#include <QtCore/QFileSystemWatcher>
 +#include <QtCore/QStandardPaths>
 +#include <QtCore/QTimer>
++#include <QtGui/QFont>
 +
  UT_NAMESPACE_BEGIN
  
@@ -101,6 +102,13 @@ diff -ru a/src/LomiriToolkit/ucfontutils.cpp b/src/LomiriToolkit/ucfontutils.cpp
 +    return g_userScale;
 +}
 +
++int UCFontUtils::userWeight()
++{
++    static const int weight = qEnvironmentVariable("UITK_FONT_BOLD") == QLatin1String("1")
++        ? QFont::Normal : QFont::Light;
++    return weight;
++}
++
 +void UCFontUtils::watchUserScale()
 +{
 +    static bool started = false;
@@ -129,7 +137,7 @@ diff -ru a/src/LomiriToolkit/ucfontutils.cpp b/src/LomiriToolkit/ucfontutils.cpp
  /*!
   * \qmltype FontUtils
   * \instantiates UCFontUtils
-@@ -68,7 +174,7 @@
+@@ -68,7 +182,7 @@
   */
  qreal UCFontUtils::sizeToPixels(const QString &size)
  {
@@ -139,9 +147,9 @@ diff -ru a/src/LomiriToolkit/ucfontutils.cpp b/src/LomiriToolkit/ucfontutils.cpp
  
  /*!
 diff -ru a/src/LomiriToolkit/ucfontutils_p.h b/src/LomiriToolkit/ucfontutils_p.h
---- a/src/LomiriToolkit/ucfontutils_p.h	2026-10-28 07:17:39.978856504 +0200
-+++ b/src/LomiriToolkit/ucfontutils_p.h	2026-10-28 07:18:00.108068105 +0200
-@@ -55,6 +55,11 @@
+--- a/src/LomiriToolkit/ucfontutils_p.h
++++ b/src/LomiriToolkit/ucfontutils_p.h
+@@ -55,6 +55,14 @@
      explicit UCFontUtils(QObject *parent = 0) : QObject(parent) {}
      ~UCFontUtils() { m_instance = Q_NULLPTR; }
  
@@ -149,13 +157,16 @@ diff -ru a/src/LomiriToolkit/ucfontutils_p.h b/src/LomiriToolkit/ucfontutils_p.h
 +    // default 1) and its live watch (started once per process).
 +    static float userScale();
 +    static void watchUserScale();
++    // FP6: default Label/application font weight: Light, or Normal with
++    // UITK_FONT_BOLD=1 ("Bold text", read once, applies at the next login).
++    static int userWeight();
 +
      Q_INVOKABLE qreal sizeToPixels(const QString &size);
      Q_INVOKABLE qreal modularScale(const QString &size);
  
 diff -ru a/src/LomiriToolkit/uclabel.cpp b/src/LomiriToolkit/uclabel.cpp
---- a/src/LomiriToolkit/uclabel.cpp	2026-10-28 07:17:39.978906780 +0200
-+++ b/src/LomiriToolkit/uclabel.cpp	2026-10-28 07:17:39.990794237 +0200
+--- a/src/LomiriToolkit/uclabel.cpp
++++ b/src/LomiriToolkit/uclabel.cpp
 @@ -52,7 +52,7 @@
      };
      QFont textFont = q->font();
@@ -165,3 +176,24 @@ diff -ru a/src/LomiriToolkit/uclabel.cpp b/src/LomiriToolkit/uclabel.cpp
      q->setFont(textFont);
  }
  
+@@ -136,7 +136,7 @@
+     updatePixelSize();
+     QFont defaultFont = q->font();
+     defaultFont.setFamily(QStringLiteral("Ubuntu"));
+-    defaultFont.setWeight(QFont::Light);
++    defaultFont.setWeight(UCFontUtils::userWeight());
+     q->setFont(defaultFont);
+     updateRenderType();
+ 
+diff -ru a/src/LomiriToolkit/uctheme.cpp b/src/LomiriToolkit/uctheme.cpp
+--- a/src/LomiriToolkit/uctheme.cpp
++++ b/src/LomiriToolkit/uctheme.cpp
+@@ -445,7 +445,7 @@
+     QFont defaultFont = QGuiApplication::font();
+     defaultFont.setFamily(QStringLiteral("Ubuntu"));
+     defaultFont.setPixelSize(UCFontUtils::instance()->sizeToPixels(QStringLiteral("medium")));
+-    defaultFont.setWeight(QFont::Light);
++    defaultFont.setWeight(UCFontUtils::userWeight());
+     QGuiApplication::setFont(defaultFont);
+     setObjectName(QStringLiteral("default"));
+ }

@@ -40,6 +40,18 @@ for n, f in [("shim-130", 1.30), ("shim-085", 0.85)]:
     check(abs(ratio - f) < 0.08, "%s text block height ratio %.3f" % (n, ratio))
 check(r["shim-130"]["gu"] == base["gu"], "grid unit unchanged by the font scale")
 
+# Bold text: QFont::Light = 25, QFont::Normal = 50 (Qt 5).
+rb = {n: json.load(open(os.path.join(out, n + ".json"))) for n in ["stock-bold", "shim-bold", "shim-bold0"]}
+check(r["stock"]["mediumWeight"] == 25 and r["shim-100"]["mediumWeight"] == 25, "default Label weight Light (stock, font-scale lib)")
+check(rb["stock-bold"]["mediumWeight"] == 25, "stock library ignores UITK_FONT_BOLD")
+check(rb["shim-bold"]["mediumWeight"] == 50 and rb["shim-bold"]["appWeight"] == 50, "UITK_FONT_BOLD=1: Label and application font Normal")
+check(rb["shim-bold0"]["mediumWeight"] == 25, "UITK_FONT_BOLD=0: Light")
+check(all(rb["shim-bold"][k] == base[k] for k in keys), "bold keeps the pixel sizes")
+a_, b_ = img("shim-100"), img("shim-bold")
+check(a_.size != b_.size or ImageChops.difference(a_, b_).getbbox() is not None, "bold grab differs from regular")
+a_, b_ = img("stock"), img("shim-bold0")
+check(a_.size == b_.size and ImageChops.difference(a_, b_).getbbox() is None, "UITK_FONT_BOLD=0 grab pixel-identical to stock")
+
 # Live font-scale file (uitk-font-scale.patch watchUserScale).
 def live(n):
     return (json.load(open(os.path.join(out, n + ".before.json"))),

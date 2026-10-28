@@ -6,7 +6,7 @@
 # the scene runs (the size follows without a restart). Also starts a real wrapped UITK app with
 # the same environment and checks which libLomiriToolkit it maps.
 # Build: system.build.fp6-display-comfort.uitkFontScaleTest.
-{ lib, runCommand, makeFontsConf, dejavu_fonts, python3, libsForQt5
+{ lib, runCommand, makeFontsConf, dejavu_fonts, ubuntu-classic, python3, libsForQt5
 , lomiri, uitkFontScaleLib, app ? lomiri.lomiri-calculator-app, appBin ? "lomiri-calculator-app" }:
 let
   qt = libsForQt5;
@@ -17,7 +17,7 @@ let
   plugins = lib.concatMapStringsSep ":" (p: "${lib.getBin p}/lib/qt-5.15.19/plugins") [
     qt.qtbase qt.qtdeclarative qt.qtsvg uitk qt.qtpim
   ];
-  fonts = makeFontsConf { fontDirectories = [ dejavu_fonts ]; };
+  fonts = makeFontsConf { fontDirectories = [ ubuntu-classic dejavu_fonts ]; };
 in runCommand "fp6-uitk-font-scale-test" { nativeBuildInputs = [ python3 python3.pkgs.pillow ]; } ''
   export HOME=$TMPDIR XDG_RUNTIME_DIR=$TMPDIR/rt
   mkdir -m 700 $XDG_RUNTIME_DIR
@@ -28,7 +28,7 @@ in runCommand "fp6-uitk-font-scale-test" { nativeBuildInputs = [ python3 python3
   run() {
     name=$1; shift
     mkdir $TMPDIR/$name
-    ( cd $TMPDIR/$name && env -u UITK_FONT_SCALE "$@" LD_DEBUG=libs LD_DEBUG_OUTPUT=$TMPDIR/ld-$name \
+    ( cd $TMPDIR/$name && env -u UITK_FONT_SCALE -u UITK_FONT_BOLD "$@" LD_DEBUG=libs LD_DEBUG_OUTPUT=$TMPDIR/ld-$name \
       timeout 60 ${lib.getDev qt.qtdeclarative}/bin/qmlscene ${./labels.qml} ) \
       > $out/$name.log 2>&1 || { cat $out/$name.log; exit 1; }
     cp $TMPDIR/$name/grab.png $out/$name.png
@@ -43,6 +43,10 @@ in runCommand "fp6-uitk-font-scale-test" { nativeBuildInputs = [ python3 python3
   run shim-130 LD_LIBRARY_PATH=${uitkFontScaleLib}/lib UITK_FONT_SCALE=1.30
   run shim-085 LD_LIBRARY_PATH=${uitkFontScaleLib}/lib UITK_FONT_SCALE=0.85
   run shim-bad LD_LIBRARY_PATH=${uitkFontScaleLib}/lib UITK_FONT_SCALE=7
+  # Bold text (UITK_FONT_BOLD=1): default weight Light -> Normal.
+  run stock-bold UITK_FONT_BOLD=1
+  run shim-bold LD_LIBRARY_PATH=${uitkFontScaleLib}/lib UITK_FONT_BOLD=1
+  run shim-bold0 LD_LIBRARY_PATH=${uitkFontScaleLib}/lib UITK_FONT_BOLD=0
 
   # Live changes: the font-scale file is written (or removed) while the
   # scene runs, after it has printed its first sizes.
