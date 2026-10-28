@@ -1,0 +1,6 @@
+/target/
+/work/
+/tests/qml/generated/
+/previews/*.log
+/.cargo-home/
+/result*

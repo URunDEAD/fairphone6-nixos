@@ -1,0 +1,17 @@
+[PERFORMANCE]: Last frame took 116 ms to render.
+********* Start testing of qmltestrunner *********
+Config: Using QtTest library 5.15.19, Qt 5.15.19 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 15.2.0), nixos 26.05
+PASS   : qmltestrunner::AudioQuality::initTestCase()
+PASS   : qmltestrunner::AudioQuality::test_01_readonlyBinding()
+PASS   : qmltestrunner::AudioQuality::test_02_explicitSelection()
+PASS   : qmltestrunner::AudioQuality::test_03_statusUpdateDoesNotWrite()
+PASS   : qmltestrunner::AudioQuality::test_04_hiddenWithoutHelper()
+PASS   : qmltestrunner::AudioQuality::cleanupTestCase()
+PASS   : qmltestrunner::PairingInput::initTestCase()
+QWARN  : qmltestrunner::PairingInput::test_passkeyValidation() qml: 'caller' is DEPRECATED. It has no effect.
+PASS   : qmltestrunner::PairingInput::test_passkeyValidation()
+QWARN  : qmltestrunner::PairingInput::test_pinValidation() qml: 'caller' is DEPRECATED. It has no effect.
+PASS   : qmltestrunner::PairingInput::test_pinValidation()
+PASS   : qmltestrunner::PairingInput::cleanupTestCase()
+Totals: 10 passed, 0 failed, 0 skipped, 0 blacklisted, 623ms
+********* Finished testing of qmltestrunner *********
