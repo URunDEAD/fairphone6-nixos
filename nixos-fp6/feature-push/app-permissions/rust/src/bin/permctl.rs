@@ -8,10 +8,12 @@
 //!        descriptor as fd 3 (FP6_DEVICE_FD=3), e.g. a libusb tool using
 //!        libusb_wrap_sys_device
 //!   fp6-permctl state                  JSON state (from the session agent)
-//!   fp6-permctl set APP PERM ask|allow|while_using|deny
+//!   fp6-permctl set APP PERM ask|allow|while_using|deny  ("Only this time"
+//!        is a prompt answer, not a setting)
 //!   fp6-permctl net APP wifi|mobile|vpn|local|all on|off
 //!   fp6-permctl reset APP
-//! PERM: usb nfc bluetooth contacts calendar messages files sensors
+//! PERM: usb nfc bluetooth contacts calendar messages files sensors camera
+//!       microphone location
 
 use fp6_permissions::{BUS_NAME, PATH, SESSION_NAME, SESSION_PATH};
 use std::collections::HashMap;

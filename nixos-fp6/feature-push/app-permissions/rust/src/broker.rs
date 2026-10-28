@@ -66,6 +66,15 @@ pub struct Config {
     /// Generate AppArmor includes / systemd drop-ins.
     #[serde(default = "yes")]
     pub enforce: bool,
+    /// Camera / microphone / location permissions that are enforced (the
+    /// module's media option): shown in Settings, rendered into AppArmor
+    /// includes. Requests for the others still work but change nothing.
+    #[serde(default)]
+    pub media: Vec<Permission>,
+    /// Decisions an app starts with until the user decides otherwise
+    /// (camera app: camera + microphone allowed, ...). Reset goes back here.
+    #[serde(default)]
+    pub defaults: BTreeMap<String, BTreeMap<Permission, Decision>>,
 }
 
 fn default_agent_unit() -> String { "fp6-permission-agent.service".into() }
@@ -82,7 +91,7 @@ impl Config {
         if self.uid < 1000 {
             return Err("uid must be a normal user".into());
         }
-        for a in self.system_apps.iter().chain(self.apparmor.keys()) {
+        for a in self.system_apps.iter().chain(self.apparmor.keys()).chain(self.defaults.keys()) {
             if !appid::valid_app_id(a) {
                 return Err(format!("invalid app id {a:?}"));
             }
@@ -99,6 +108,13 @@ impl Config {
     }
     pub fn is_system_app(&self, id: &str) -> bool {
         self.system_apps.iter().any(|a| a == id)
+    }
+    pub fn preset(&self, id: &str, perm: Permission) -> Option<Decision> {
+        self.defaults.get(id).and_then(|m| m.get(&perm)).copied()
+    }
+    /// Is this permission enforced here (media ones only with the option)?
+    pub fn enforced(&self, perm: Permission) -> bool {
+        !perm.is_media() || self.media.contains(&perm)
     }
 }
 
@@ -133,6 +149,8 @@ pub struct Broker {
     pub focus: Focus,
     pub grants: Vec<Grant>,
     pub agent: Option<String>,
+    /// "Only this time" answers: (app, permission) -> since. In memory only.
+    pub once: BTreeMap<(String, Permission), u64>,
     /// Root of /proc (tests: a fake tree).
     pub proc_root: PathBuf,
     last_written: BTreeMap<PathBuf, String>,
@@ -180,6 +198,7 @@ impl Broker {
             focus: Focus::default(),
             grants: vec![],
             agent: None,
+            once: BTreeMap::new(),
             proc_root: "/proc".into(),
             last_written: BTreeMap::new(),
         })
@@ -274,16 +293,57 @@ impl Broker {
         self.focus.current = app.filter(|a| !a.is_empty());
     }
 
+    /// The decision in force: the user's own, else the configured preset,
+    /// else Ask.
+    pub fn decision(&self, app: &str, perm: Permission) -> Decision {
+        self.store
+            .explicit_decision(app, perm)
+            .or_else(|| self.cfg.preset(app, perm))
+            .unwrap_or_default()
+    }
+
+    /// A subject named by a trusted daemon that only knows the app id
+    /// (GeoClue's agent).
+    pub fn app_subject(&self, id: &str) -> Subject {
+        Subject::App { id: id.to_owned(), confined: self.cfg.apparmor.contains_key(id) }
+    }
+
+    fn once_valid(&self, app: &str, perm: Permission, now: u64) -> bool {
+        self.once.contains_key(&(app.to_owned(), perm)) && policy::once_valid(self.usage(app, now), self.cfg.grace_secs)
+    }
+
     pub fn evaluate(&self, s: &Subject, perm: Permission, now: u64) -> Outcome {
         match s {
             Subject::System { .. } => Outcome::Granted,
+            Subject::App { id, .. } if self.once_valid(id, perm, now) && !self.cfg.is_system_app(id) => {
+                // an explicit Deny set in Settings meanwhile wins (set_decision
+                // drops the grant, this is belt and braces)
+                if self.decision(id, perm) == Decision::Deny { Outcome::Denied } else { Outcome::Granted }
+            }
             Subject::App { id, .. } => policy::evaluate(
-                self.store.decision(id, perm),
+                self.decision(id, perm),
                 self.cfg.is_system_app(id),
                 self.usage(id, now),
                 self.cfg.grace_secs,
             ),
         }
+    }
+
+    /// Drop "only this time" grants of apps that went to the background.
+    /// Returns whether any expired.
+    pub fn expire_once(&mut self, now: u64) -> bool {
+        let before = self.once.len();
+        let expired: Vec<(String, Permission)> = self
+            .once
+            .keys()
+            .filter(|(app, _)| !policy::once_valid(self.usage(app, now), self.cfg.grace_secs))
+            .cloned()
+            .collect();
+        for k in &expired {
+            self.once.remove(k);
+            self.store.log(Event { time: now, app: k.0.clone(), perm: k.1.id().into(), kind: EventKind::Revoked, detail: "only this time: ended".into() });
+        }
+        self.once.len() != before
     }
 
     pub fn record(&mut self, s: &Subject, perm: Permission, granted: bool, detail: &str, now: u64) {
@@ -313,6 +373,7 @@ impl Broker {
         let what = match answer {
             Answer::Allow => "allowed",
             Answer::WhileUsing => "allowed while using",
+            Answer::Once => "allowed this time",
             Answer::Deny => "denied",
             Answer::Dismissed => "dismissed",
         };
@@ -320,11 +381,15 @@ impl Broker {
         if let Some(d) = answer.remembered() {
             self.store.set_decision(app, perm, d, now);
         }
+        if answer == Answer::Once {
+            self.once.insert((app.to_owned(), perm), now);
+        }
     }
 
     /// Settings change. Returns grants that must be revoked now.
     pub fn set_decision(&mut self, app: &str, perm: Permission, d: Decision, now: u64) -> Vec<Grant> {
         self.store.set_decision(app, perm, d, now);
+        self.once.remove(&(app.to_owned(), perm));
         self.store.log(Event { time: now, app: app.into(), perm: perm.id().into(), kind: EventKind::Changed, detail: d.id().into() });
         self.take_revocable(now)
     }
@@ -348,6 +413,7 @@ impl Broker {
 
     pub fn reset_app(&mut self, app: &str, now: u64) -> Vec<Grant> {
         self.store.reset(app);
+        self.once.retain(|(a, _), _| a != app);
         self.store.log(Event { time: now, app: app.into(), perm: "all".into(), kind: EventKind::Changed, detail: "reset".into() });
         self.take_revocable(now)
     }
@@ -359,7 +425,7 @@ impl Broker {
         let mut keep = vec![];
         for g in std::mem::take(&mut self.grants) {
             let due = !self.cfg.is_system_app(&g.app)
-                && policy::revoke_due(self.store.decision(&g.app, g.perm), self.usage(&g.app, now), self.cfg.grace_secs);
+                && policy::revoke_due(self.decision(&g.app, g.perm), self.usage(&g.app, now), self.cfg.grace_secs);
             if due {
                 out.push(g);
             } else {
@@ -404,8 +470,14 @@ impl Broker {
         if !self.cfg.enforce {
             return Ok((changed_profiles, dropins_changed));
         }
+        // Effective decisions (presets included) of the enforced permissions.
         let decisions = |b: &Broker, app: &str| -> render::Decisions {
-            b.store.apps.get(app).map(|a| a.perms.iter().map(|(p, e)| (*p, e.decision)).collect()).unwrap_or_default()
+            Permission::ALL
+                .into_iter()
+                .filter(|p| b.cfg.enforced(*p))
+                .map(|p| (p, b.decision(app, p)))
+                .filter(|(_, d)| *d != Decision::Ask)
+                .collect()
         };
         let profiles: Vec<String> = self.cfg.apparmor.keys().cloned().collect();
         for profile in profiles {
@@ -467,6 +539,10 @@ impl Broker {
         #[derive(Serialize)]
         struct PermOut<'a> {
             decision: &'a str,
+            /// The decision comes from the configuration, not the user.
+            preset: bool,
+            /// An "only this time" grant is active.
+            once: bool,
             changed: u64,
             last_used: u64,
             last_denied: u64,
@@ -483,13 +559,24 @@ impl Broker {
             in_use: bool,
         }
         let mut apps = BTreeMap::new();
-        for (id, a) in &self.store.apps {
-            let perms = a
-                .perms
-                .iter()
-                .map(|(p, e)| {
+        let empty = crate::model::AppEntry::default();
+        let none = crate::model::PermEntry::default();
+        let ids: BTreeSet<&String> = self.store.apps.keys().chain(self.cfg.defaults.keys()).collect();
+        for id in ids {
+            let a = self.store.apps.get(id).unwrap_or(&empty);
+            let mut wanted: BTreeSet<Permission> = a.perms.keys().copied().collect();
+            if let Some(d) = self.cfg.defaults.get(id) {
+                wanted.extend(d.keys().copied());
+            }
+            let perms = wanted
+                .into_iter()
+                .filter(|p| self.cfg.enforced(*p) || a.perms.contains_key(p))
+                .map(|p| {
+                    let e = a.perms.get(&p).unwrap_or(&none);
                     (p.id(), PermOut {
-                        decision: e.decision.id(),
+                        decision: self.decision(id, p).id(),
+                        preset: !e.is_explicit() && self.cfg.preset(id, p).is_some(),
+                        once: self.once_valid(id, p, now),
                         changed: e.changed,
                         last_used: e.last_used,
                         last_denied: e.last_denied,
@@ -515,6 +602,7 @@ impl Broker {
             "history": self.store.history.iter().rev().take(200).collect::<Vec<_>>(),
             "grants": self.grants.iter().map(|g| serde_json::json!({"app": g.app, "perm": g.perm.id(), "node": g.node, "since": g.since})).collect::<Vec<_>>(),
             "agent": self.agent.is_some(),
+            "media": self.cfg.media.iter().map(|p| p.id()).collect::<Vec<_>>(),
             "focus_known": self.focus.known,
         })
         .to_string()

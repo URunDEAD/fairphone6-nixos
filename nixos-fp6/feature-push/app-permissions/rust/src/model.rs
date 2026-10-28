@@ -25,10 +25,18 @@ pub enum Permission {
     Files,
     /// Body and motion sensors (accelerometer, gyroscope, step counter, ...).
     Sensors,
+    /// Camera: PipeWire video capture (fp6-media-gate + WirePlumber) and,
+    /// for AppArmor-confined apps, the camera device nodes.
+    Camera,
+    /// Microphone: PipeWire audio capture from a source (fp6-media-gate +
+    /// WirePlumber); recording what plays (sink monitors) is not covered.
+    Microphone,
+    /// Location: GeoClue (the location agent asks the broker).
+    Location,
 }
 
 impl Permission {
-    pub const ALL: [Permission; 8] = [
+    pub const ALL: [Permission; 11] = [
         Permission::Usb,
         Permission::Nfc,
         Permission::Bluetooth,
@@ -37,7 +45,28 @@ impl Permission {
         Permission::Messages,
         Permission::Files,
         Permission::Sensors,
+        Permission::Camera,
+        Permission::Microphone,
+        Permission::Location,
     ];
+
+    /// Camera, microphone and location: enforced only where the media
+    /// option of the module is on (fp6-media-gate, GeoClue agent), and
+    /// prompted with "Only this time" instead of "Only while using".
+    pub const MEDIA: [Permission; 3] = [Permission::Camera, Permission::Microphone, Permission::Location];
+
+    pub fn is_media(self) -> bool {
+        Permission::MEDIA.contains(&self)
+    }
+
+    /// Answers offered by the prompt.
+    pub fn prompt_options(self) -> &'static [&'static str] {
+        if self.is_media() {
+            &["allow", "once", "deny"]
+        } else {
+            &["allow", "while_using", "deny"]
+        }
+    }
 
     pub fn id(self) -> &'static str {
         match self {
@@ -49,6 +78,9 @@ impl Permission {
             Permission::Messages => "messages",
             Permission::Files => "files",
             Permission::Sensors => "sensors",
+            Permission::Camera => "camera",
+            Permission::Microphone => "microphone",
+            Permission::Location => "location",
         }
     }
 
@@ -67,6 +99,9 @@ impl Permission {
             Permission::Messages => "access your call log and messages",
             Permission::Files => "access files outside its own folder",
             Permission::Sensors => "use body and motion sensors",
+            Permission::Camera => "use the camera",
+            Permission::Microphone => "use the microphone",
+            Permission::Location => "access this device's location",
         }
     }
 
@@ -80,6 +115,9 @@ impl Permission {
             Permission::Messages => "Call log & messages",
             Permission::Files => "Files & media",
             Permission::Sensors => "Body & motion sensors",
+            Permission::Camera => "Camera",
+            Permission::Microphone => "Microphone",
+            Permission::Location => "Location",
         }
     }
 }
@@ -118,6 +156,10 @@ impl Decision {
 pub enum Answer {
     Allow,
     WhileUsing,
+    /// "Only this time": granted until the app has been in the background
+    /// longer than the grace period (or the broker restarts); not remembered,
+    /// the app asks again after that.
+    Once,
     Deny,
     /// Dismissed, timed out, screen locked: this request is refused, the
     /// question is asked again next time.
@@ -129,6 +171,7 @@ impl Answer {
         match s {
             "allow" => Answer::Allow,
             "while_using" => Answer::WhileUsing,
+            "once" => Answer::Once,
             "deny" => Answer::Deny,
             _ => Answer::Dismissed,
         }
@@ -138,8 +181,11 @@ impl Answer {
             Answer::Allow => Some(Decision::Allow),
             Answer::WhileUsing => Some(Decision::WhileUsing),
             Answer::Deny => Some(Decision::Deny),
-            Answer::Dismissed => None,
+            Answer::Once | Answer::Dismissed => None,
         }
+    }
+    pub fn granted(self) -> bool {
+        matches!(self, Answer::Allow | Answer::WhileUsing | Answer::Once)
     }
 }
 
@@ -196,6 +242,16 @@ pub struct PermEntry {
     pub uses: u64,
     /// Short description of the last thing used ("Arduino Uno (2341:0043)").
     pub last_detail: String,
+    /// The decision was made by the user (prompt answer or Settings), so a
+    /// preset from the configuration no longer applies. Entries written
+    /// before this field existed count as explicit once `changed` is set.
+    pub explicit: bool,
+}
+
+impl PermEntry {
+    pub fn is_explicit(&self) -> bool {
+        self.explicit || self.changed != 0
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -263,12 +319,23 @@ impl Store {
             .unwrap_or_default()
     }
 
+    /// The user's own decision, if they made one (None: a preset or Ask
+    /// applies).
+    pub fn explicit_decision(&self, app: &str, perm: Permission) -> Option<Decision> {
+        self.apps
+            .get(app)
+            .and_then(|a| a.perms.get(&perm))
+            .filter(|p| p.is_explicit())
+            .map(|p| p.decision)
+    }
+
     pub fn set_decision(&mut self, app: &str, perm: Permission, d: Decision, now: u64) {
         let e = self.app(app, now).perms.entry(perm).or_default();
-        if e.decision != d {
+        if e.decision != d || !e.is_explicit() {
             e.decision = d;
             e.changed = now;
         }
+        e.explicit = true;
     }
 
     pub fn log(&mut self, ev: Event) {
@@ -337,7 +404,13 @@ mod tests {
         for d in ["ask", "allow", "while_using", "deny"] {
             assert_eq!(Decision::parse(d).unwrap().id(), d);
         }
-        assert_eq!(Permission::parse("camera"), None);
+        assert_eq!(Permission::parse("camera"), Some(Permission::Camera));
+        assert_eq!(Permission::parse("portal"), None);
+        assert!(Permission::Microphone.is_media() && !Permission::Usb.is_media());
+        assert_eq!(Permission::Location.prompt_options(), &["allow", "once", "deny"]);
+        assert_eq!(Permission::Files.prompt_options(), &["allow", "while_using", "deny"]);
+        assert_eq!(Answer::parse("once"), Answer::Once);
+        assert!(Answer::Once.granted() && Answer::Once.remembered().is_none());
     }
 
     #[test]
@@ -370,6 +443,22 @@ mod tests {
             s.note(&format!("app{t}"), Permission::Usb, t % 2 == 0, "", 1000 + t);
         }
         assert_eq!(s.history.len(), HISTORY_MAX);
+    }
+
+    #[test]
+    fn explicit_decisions() {
+        let mut s = Store::new();
+        // a use creates an entry, but that is not a decision
+        s.note("a", Permission::Camera, true, "", 5);
+        assert_eq!(s.explicit_decision("a", Permission::Camera), None);
+        // choosing "ask" (the default value) is still the user's decision
+        s.set_decision("a", Permission::Camera, Decision::Ask, 6);
+        assert_eq!(s.explicit_decision("a", Permission::Camera), Some(Decision::Ask));
+        // old store files: changed != 0 means decided
+        let old: PermEntry = serde_json::from_str(r#"{"decision":"deny","changed":7}"#).unwrap();
+        assert!(old.is_explicit());
+        let old: PermEntry = serde_json::from_str(r#"{"decision":"ask","uses":3}"#).unwrap();
+        assert!(!old.is_explicit());
     }
 
     #[test]

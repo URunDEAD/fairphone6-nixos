@@ -80,6 +80,12 @@ pub fn evaluate(decision: Decision, system_app: bool, usage: Usage, grace: u64) 
     }
 }
 
+/// "Only this time" lasts while the app is in use (focused, or in the
+/// background for at most the grace period).
+pub fn once_valid(usage: Usage, grace: u64) -> bool {
+    usage.in_use(grace)
+}
+
 /// Should an open grant (device fd) of an app be taken back now?
 pub fn revoke_due(decision: Decision, usage: Usage, grace: u64) -> bool {
     match decision {
@@ -120,6 +126,14 @@ mod tests {
         assert!(revoke_due(Decision::WhileUsing, BG, 10));
         assert!(!revoke_due(Decision::Allow, BG, 10));
         assert!(revoke_due(Decision::Deny, FG, 10));
+    }
+
+    #[test]
+    fn once_ends_in_the_background() {
+        assert!(once_valid(FG, 10));
+        assert!(once_valid(JUST_LEFT, 10));
+        assert!(!once_valid(BG, 10));
+        assert!(once_valid(Usage::UNKNOWN, 10));
     }
 
     #[test]

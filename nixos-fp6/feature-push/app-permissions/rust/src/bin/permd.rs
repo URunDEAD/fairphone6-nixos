@@ -10,6 +10,11 @@
 //! contacts service; root, system users or `trusted_units`):
 //!   Authorize(s permission, s caller_bus_name, s detail) -> s
 //!   AuthorizePid(s permission, u pid, s detail) -> s
+//!   AuthorizeApp(s permission, s app_id, s detail) -> s    (GeoClue's agent:
+//!       it only knows the app id GeoClue derived from the client's cgroup)
+//!   CheckPid(s permission, u pid) -> s, CheckApp(s permission, s app_id) -> s
+//!       "granted"|"denied"|"ask" without prompting or logging
+//!       (fp6-media-gate: the verdict it publishes to WirePlumber)
 //! The phone user's session agent (fp6-permission-agent.service only):
 //!   RegisterAgent(), GetState() -> s, SetDecision(s app, s perm, s decision),
 //!   SetNetwork(s app, s class, b allowed), ResetApp(s app),
@@ -145,6 +150,7 @@ impl Api {
                             "detail": detail,
                             "confined": confined,
                             "timeout": timeout,
+                            "options": p.prompt_options(),
                         })
                         .to_string();
                         let answer = self.ask_agent(conn, &agent, json, timeout).await;
@@ -157,7 +163,7 @@ impl Api {
                             // profile must allow what it receives.
                             self.apply(emitter).await;
                         }
-                        matches!(answer, Answer::Allow | Answer::WhileUsing)
+                        answer.granted()
                     }
                     (Outcome::Prompt, Some(_), Subject::System { .. }) => true,
                 }
@@ -181,6 +187,15 @@ impl Api {
             Err(denied("only the permission agent may do this"))
         }
     }
+}
+
+fn outcome(o: Outcome) -> String {
+    match o {
+        Outcome::Granted => "granted",
+        Outcome::Denied => "denied",
+        Outcome::Prompt => "ask",
+    }
+    .into()
 }
 
 fn answer(g: bool) -> String {
@@ -212,12 +227,7 @@ impl Api {
         let (_, c) = caller(conn, &hdr).await?;
         let b = self.b.lock().unwrap();
         let s = b.subject(&c);
-        Ok(match b.evaluate(&s, p, broker::now()) {
-            Outcome::Granted => "granted",
-            Outcome::Denied => "denied",
-            Outcome::Prompt => "ask",
-        }
-        .into())
+        Ok(outcome(b.evaluate(&s, p, broker::now())))
     }
 
     async fn open_device(
@@ -326,6 +336,65 @@ impl Api {
         }
         let s = self.b.lock().unwrap().subject(&creds_of_pid(pid));
         Ok(answer(self.gate(conn, &emitter, &s, p, &detail.chars().take(120).collect::<String>()).await))
+    }
+
+    async fn authorize_app(
+        &self,
+        permission: &str,
+        app_id: &str,
+        detail: &str,
+        #[zbus(header)] hdr: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> fdo::Result<String> {
+        let p = perm(permission)?;
+        let (_, c) = caller(conn, &hdr).await?;
+        if !self.b.lock().unwrap().is_trusted_daemon(&c) {
+            return Err(denied("caller may not authorize on behalf of others"));
+        }
+        let app = app_id.trim_end_matches(".desktop");
+        if !fp6_permissions::appid::valid_app_id(app) {
+            return Err(fdo::Error::InvalidArgs("bad app id".into()));
+        }
+        let s = self.b.lock().unwrap().app_subject(app);
+        Ok(answer(self.gate(conn, &emitter, &s, p, &detail.chars().take(120).collect::<String>()).await))
+    }
+
+    async fn check_pid(
+        &self,
+        permission: &str,
+        pid: u32,
+        #[zbus(header)] hdr: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+    ) -> fdo::Result<String> {
+        let p = perm(permission)?;
+        let (_, c) = caller(conn, &hdr).await?;
+        let b = self.b.lock().unwrap();
+        if !b.is_trusted_daemon(&c) {
+            return Err(denied("caller may not check on behalf of others"));
+        }
+        let s = b.subject(&creds_of_pid(pid));
+        Ok(outcome(b.evaluate(&s, p, broker::now())))
+    }
+
+    async fn check_app(
+        &self,
+        permission: &str,
+        app_id: &str,
+        #[zbus(header)] hdr: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+    ) -> fdo::Result<String> {
+        let p = perm(permission)?;
+        let (_, c) = caller(conn, &hdr).await?;
+        let b = self.b.lock().unwrap();
+        if !b.is_trusted_daemon(&c) {
+            return Err(denied("caller may not check on behalf of others"));
+        }
+        let app = app_id.trim_end_matches(".desktop");
+        if !fp6_permissions::appid::valid_app_id(app) {
+            return Err(fdo::Error::InvalidArgs("bad app id".into()));
+        }
+        Ok(outcome(b.evaluate(&b.app_subject(app), p, broker::now())))
     }
 
     async fn register_agent(
@@ -502,11 +571,15 @@ fn main() {
         loop {
             async_io::Timer::after(Duration::from_secs(2)).await;
             // "While using" grants of apps in the background, unplugged devices.
-            let due = {
+            let (due, once_ended) = {
                 let mut b = b.lock().unwrap();
                 b.grants.retain(|g| g.usb_sysfs.join("authorized").exists());
-                b.take_revocable(broker::now())
+                let now = broker::now();
+                (b.take_revocable(now), b.expire_once(now))
             };
+            if once_ended && due.is_empty() {
+                let _ = Api::changed(&emitter, false).await;
+            }
             if !due.is_empty() {
                 revoke_all(&due);
                 if let Err(e) = b.lock().unwrap().save() {

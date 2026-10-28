@@ -83,6 +83,10 @@ pub fn apparmor_include(profile: &str, d: &Decisions, net: &NetAccess) -> String
     } else if denied(d, Permission::Nfc) {
         out += "  deny network nfc,\n";
     }
+    if denied(d, Permission::Camera) {
+        out += "  # Camera denied in Settings > Privacy > App permissions\n";
+        out += "  deny /dev/video[0-9]* rw,\n  deny /dev/media[0-9]* rw,\n  deny /dev/v4l-subdev[0-9]* rw,\n";
+    }
     if granted(d, Permission::Files) {
         out += "  # Files & media: read\n";
         out += "  @{HOME}/{Documents,Downloads,Music,Pictures,Videos}/{,**} r,\n";
@@ -177,6 +181,13 @@ mod tests {
         assert!(inc.contains("deny @{HOME}/.local/share/evolution/addressbook/** rwkl,"));
         assert!(!inc.contains("calendar"));
         assert!(!inc.contains("network inet"));
+        assert!(!inc.contains("/dev/video"));
+        let cam = apparmor_include("x", &dec(&[(Permission::Camera, Decision::Deny)]), &NetAccess::default());
+        assert!(cam.contains("deny /dev/video[0-9]* rw,") && cam.contains("deny /dev/media[0-9]* rw,"));
+        // allowing the camera or the microphone adds nothing (profiles and
+        // PipeWire decide)
+        let ok = dec(&[(Permission::Camera, Decision::Allow), (Permission::Microphone, Decision::Deny), (Permission::Location, Decision::Deny)]);
+        assert_eq!(apparmor_include("x", &ok, &NetAccess::default()), "");
         assert_eq!(
             systemd_dropin(&d).unwrap().lines().last(),
             Some("RestrictAddressFamilies=~AF_BLUETOOTH")

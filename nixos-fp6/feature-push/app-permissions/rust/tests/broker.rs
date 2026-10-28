@@ -1,6 +1,7 @@
 // Broker logic on a scratch tree: identity, prompting rules, while-using
 // revocation, enforcement files (AppArmor include, drop-ins, network.json).
 use fp6_permissions::broker::{Broker, Config, Creds, Grant, Profile};
+use fp6_permissions::model::Store;
 use fp6_permissions::model::{Answer, Decision, Permission};
 use fp6_permissions::policy::{Outcome, Subject};
 use std::fs;
@@ -33,6 +34,12 @@ fn broker(name: &str) -> (Broker, PathBuf) {
         devices: true,
         network: true,
         enforce: true,
+        media: vec![Permission::Camera, Permission::Microphone, Permission::Location],
+        defaults: [
+            ("lomiri-camera-app".to_string(), [(Permission::Camera, Decision::Allow), (Permission::Microphone, Decision::Allow)].into()),
+            ("morph-browser".to_string(), [(Permission::Camera, Decision::Deny)].into()),
+        ]
+        .into(),
     };
     let mut b = Broker::new(cfg).unwrap();
     b.proc_root = root.join("proc");
@@ -117,6 +124,7 @@ fn prompt_rules_and_system_components() {
 #[test]
 fn enforcement_files() {
     let (mut b, root) = broker("enforce");
+    b.cfg.defaults.clear();
     // nothing restricted: empty network file, empty include, no drop-ins
     let (profiles, dropins) = b.render_all().unwrap();
     assert!(profiles.is_empty() && !dropins);
@@ -173,4 +181,81 @@ fn config_validation() {
     assert_eq!(c.grace_secs, 30);
     assert!(serde_json::from_str::<Config>(r#"{"uid":10000,"bogus":1}"#).is_err());
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn media_presets_and_only_this_time() {
+    let (mut b, root) = broker("media");
+    let cam = Subject::App { id: "lomiri-camera-app".into(), confined: false };
+    let rec = Subject::App { id: "org.example.Recorder".into(), confined: false };
+    // presets apply without a prompt; what they do not cover asks
+    assert_eq!(b.evaluate(&cam, Permission::Camera, 10), Outcome::Granted);
+    assert_eq!(b.evaluate(&cam, Permission::Microphone, 10), Outcome::Granted);
+    assert_eq!(b.evaluate(&cam, Permission::Location, 10), Outcome::Prompt);
+    let st: serde_json::Value = serde_json::from_str(&b.state_json(10)).unwrap();
+    assert_eq!(st["apps"]["lomiri-camera-app"]["perms"]["camera"]["decision"], "allow");
+    assert_eq!(st["apps"]["lomiri-camera-app"]["perms"]["camera"]["preset"], true);
+    assert_eq!(st["media"], serde_json::json!(["camera", "microphone", "location"]));
+    // the user's choice wins over the preset, even "ask"; reset restores it
+    b.set_decision("lomiri-camera-app", Permission::Camera, Decision::Ask, 11);
+    assert_eq!(b.evaluate(&cam, Permission::Camera, 11), Outcome::Prompt);
+    let st: serde_json::Value = serde_json::from_str(&b.state_json(11)).unwrap();
+    assert_eq!(st["apps"]["lomiri-camera-app"]["perms"]["camera"]["preset"], false);
+    b.reset_app("lomiri-camera-app", 12);
+    assert_eq!(b.evaluate(&cam, Permission::Camera, 12), Outcome::Granted);
+    // a use does not turn a preset into a decision
+    b.record(&cam, Permission::Camera, true, "", 13);
+    assert_eq!(b.store.explicit_decision("lomiri-camera-app", Permission::Camera), None);
+    assert_eq!(b.decision("lomiri-camera-app", Permission::Camera), Decision::Allow);
+
+    // "Only this time": granted while in use, not remembered, ends in the background
+    b.set_focus(Some("org.example.Recorder".into()), 20);
+    assert_eq!(b.evaluate(&rec, Permission::Microphone, 20), Outcome::Prompt);
+    b.log_prompt("org.example.Recorder", Permission::Microphone, Answer::Once, 20);
+    assert_eq!(b.evaluate(&rec, Permission::Microphone, 21), Outcome::Granted);
+    assert_eq!(b.store.explicit_decision("org.example.Recorder", Permission::Microphone), None);
+    assert_eq!(b.evaluate(&rec, Permission::Camera, 21), Outcome::Prompt, "only the permission asked for");
+    b.set_focus(Some("lomiri-clock-app".into()), 30);
+    assert_eq!(b.evaluate(&rec, Permission::Microphone, 50), Outcome::Granted, "within grace");
+    assert!(!b.expire_once(50));
+    assert!(b.expire_once(100));
+    assert_eq!(b.evaluate(&rec, Permission::Microphone, 100), Outcome::Denied, "background, ask: refused quietly");
+    // a Settings change drops the grant at once
+    b.set_focus(Some("org.example.Recorder".into()), 110);
+    b.log_prompt("org.example.Recorder", Permission::Microphone, Answer::Once, 110);
+    b.set_decision("org.example.Recorder", Permission::Microphone, Decision::Deny, 111);
+    assert_eq!(b.evaluate(&rec, Permission::Microphone, 111), Outcome::Denied);
+    assert!(b.once.is_empty());
+
+    // daemons naming an app by id (GeoClue's agent)
+    assert_eq!(b.app_subject("morph-browser"), Subject::App { id: "morph-browser".into(), confined: true });
+    assert_eq!(b.app_subject("lomiri-weather-app"), Subject::App { id: "lomiri-weather-app".into(), confined: false });
+
+    // confined app with the camera preset "deny": the device nodes are denied
+    b.render_all().unwrap();
+    let inc = fs::read_to_string(root.join("state/apparmor/morph-browser")).unwrap();
+    assert!(inc.contains("deny /dev/video[0-9]* rw,"), "{inc}");
+    // without the media option nothing camera-related is enforced
+    b.cfg.media.clear();
+    let (profiles, _) = b.render_all().unwrap();
+    assert_eq!(profiles, vec!["morph-browser".to_string()]);
+    assert!(!fs::read_to_string(root.join("state/apparmor/morph-browser")).unwrap().contains("/dev/video"));
+    let st: serde_json::Value = serde_json::from_str(&b.state_json(120)).unwrap();
+    assert!(st["apps"]["lomiri-camera-app"]["perms"].get("microphone").is_none(), "presets of unenforced permissions are hidden");
+    // stores from before the media permissions still load
+    let old: Store = serde_json::from_str(r#"{"version":1,"apps":{"a":{"perms":{"usb":{"decision":"allow","changed":5}}}}}"#).unwrap();
+    assert_eq!(old.explicit_decision("a", Permission::Usb), Some(Decision::Allow));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn presets_are_validated() {
+    let j = r#"{"uid":10000,"media":["camera"],"defaults":{"lomiri-camera-app":{"camera":"allow","microphone":"while_using"}}}"#;
+    let c: Config = serde_json::from_str(j).unwrap();
+    assert!(c.validate().is_ok());
+    assert_eq!(c.preset("lomiri-camera-app", Permission::Microphone), Some(Decision::WhileUsing));
+    assert!(c.enforced(Permission::Camera) && !c.enforced(Permission::Location) && c.enforced(Permission::Usb));
+    assert!(serde_json::from_str::<Config>(r#"{"uid":10000,"defaults":{"a":{"camera":"maybe"}}}"#).is_err());
+    let c: Config = serde_json::from_str(r#"{"uid":10000,"defaults":{"../x":{"camera":"allow"}}}"#).unwrap();
+    assert!(c.validate().is_err());
 }

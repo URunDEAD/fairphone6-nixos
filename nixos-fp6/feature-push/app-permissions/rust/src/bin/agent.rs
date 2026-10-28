@@ -5,7 +5,8 @@
 //!  * Registers with fp6-permd on the system bus and answers its
 //!    org.fairphone.PermissionAgent1.Prompt calls: the question goes to the
 //!    Lomiri shell (Fp6PermissionPrompt.qml) through the session action
-//!    group com.fairphone6.Permissions ("prompt" state, "ack", "respond");
+//!    group com.fairphone6.Permissions ("prompt" state, "ack", "respond":
+//!    allow / while_using / once / deny / dismissed);
 //!    if the shell does not pick it up within 1.5 s (shell without the
 //!    patch, restarting), a snap-decision notification asks instead.
 //!  * Forwards the focused app from the shell ("focus") for "Allow only
@@ -265,6 +266,9 @@ impl Agent {
         if j["options"].as_array().is_none_or(|o| o.iter().any(|x| x == "while_using")) {
             actions.extend(["while_using".to_string(), "Only while using the app".to_string()]);
         }
+        if j["options"].as_array().is_some_and(|o| o.iter().any(|x| x == "once")) {
+            actions.extend(["once".to_string(), "Only this time".to_string()]);
+        }
         let detail = j["detail"].as_str().unwrap_or("");
         let args = Variant::tuple_from_iter([
             "Permissions".to_variant(),
@@ -296,7 +300,7 @@ impl Agent {
             (a.queue.remove(pos).unwrap(), a.session.clone())
         };
         let answer = match answer {
-            "allow" | "while_using" | "deny" => answer,
+            "allow" | "while_using" | "once" | "deny" => answer,
             _ => "dismissed",
         };
         log(format!("{} {}: {answer}", p.req["app"].as_str().unwrap_or("?"), p.req["perm"].as_str().unwrap_or("?")));
@@ -335,9 +339,14 @@ impl Agent {
                 .and_then(|t| serde_json::from_str(&t).ok())
                 .unwrap_or(json!({}));
             let mut newest = a.location_last;
+            // With the location permission enforced, the broker logs every
+            // GeoClue request itself (AuthorizeApp from the location agent).
+            let broker_logs_location = a.broker_state["media"].as_array().is_some_and(|m| m.iter().any(|p| p == "location"));
             for e in loc["apps"].as_array().into_iter().flatten() {
                 let t = e["time"].as_f64().unwrap_or(0.0);
-                if t > a.location_last {
+                if t > a.location_last && broker_logs_location {
+                    newest = newest.max(t);
+                } else if t > a.location_last {
                     if let Some(id) = e["id"].as_str() {
                         let granted = e["granted"].as_bool().unwrap_or(true);
                         events.push((id.trim_end_matches(".desktop").to_owned(), "location", if granted { String::new() } else { "refused (location off)".into() }));
