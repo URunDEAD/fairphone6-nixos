@@ -345,3 +345,17 @@ fn exec_search_covers_session_profiles() {
         assert!(dirs.iter().any(|p| p == std::path::Path::new(d)), "{d}");
     }
 }
+#[test]
+fn keyboard_names_ignore_nix_wrappers() {
+    for argv0 in [
+        "/nix/store/x-maliit-keyboard-2.3.1/bin/maliit-keyboard",
+        "/nix/store/x-maliit-keyboard-2.3.1/bin/.maliit-keyboard-wrapped",
+        "..maliit-keyboard-wrapped-wrapped",
+        "maliit-server",
+    ] {
+        assert!(base::is_keyboard(argv0), "{argv0}");
+    }
+    for argv0 in ["", "maliit-keyboard-settings", "/bin/sh", "keyboard"] {
+        assert!(!base::is_keyboard(argv0), "{argv0}");
+    }
+}

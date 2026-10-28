@@ -46,12 +46,10 @@ pub fn check(id: &str) -> Check {
         "zram" => zram(),
         "display-manager" => active("display-manager.service", false),
         "lomiri" => active("lomiri.service", true),
-        "maliit" => match capture("pgrep", &["-x", "maliit-server"]) {
-            Ok(_) => (Status::Pass, "Keyboard process is running".into()),
-            Err(_) => (
-                Status::Fail,
-                "Keyboard process is absent or cannot be inspected".into(),
-            ),
+        "maliit" => match keyboard_running() {
+            Some(true) => (Status::Pass, "Keyboard process is running".into()),
+            Some(false) => (Status::Fail, "Keyboard process is absent".into()),
+            None => (Status::Warn, "Process list cannot be inspected".into()),
         },
         "audio-sink" | "audio-source" => {
             let node = if id == "audio-sink" {
@@ -96,6 +94,43 @@ pub fn check(id: &str) -> Check {
     Check::new(id, result.0, &result.1)
 }
 type Outcome = (Status, String);
+/// Program name with Nix wrapper decorations removed: `.maliit-keyboard-wrapped`
+/// and `..maliit-keyboard-wrapped-wrapped` both become `maliit-keyboard`.
+pub fn program_name(path: &str) -> &str {
+    let mut name = path.rsplit('/').next().unwrap_or("");
+    name = name.trim_start_matches('.');
+    while let Some(n) = name.strip_suffix("-wrapped") {
+        name = n;
+    }
+    name
+}
+pub fn is_keyboard(argv0: &str) -> bool {
+    matches!(program_name(argv0), "maliit-server" | "maliit-keyboard")
+}
+/// Scans /proc for the keyboard by argv[0] and executable (comm is truncated
+/// to 15 bytes, which hides wrapped Nix store names). None if /proc is unreadable.
+fn keyboard_running() -> Option<bool> {
+    let entries = fs::read_dir("/proc").ok()?;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if !name.to_string_lossy().bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        let dir = entry.path();
+        if let Ok(cmdline) = fs::read(dir.join("cmdline")) {
+            let argv0 = cmdline.split(|b| *b == 0).next().unwrap_or(&[]);
+            if is_keyboard(&String::from_utf8_lossy(argv0)) {
+                return Some(true);
+            }
+        }
+        if let Ok(exe) = fs::read_link(dir.join("exe")) {
+            if is_keyboard(&exe.to_string_lossy()) {
+                return Some(true);
+            }
+        }
+    }
+    Some(false)
+}
 fn active(unit: &str, user: bool) -> Outcome {
     let mut args = vec!["show", "--property=ActiveState", "--value", unit];
     if user {
