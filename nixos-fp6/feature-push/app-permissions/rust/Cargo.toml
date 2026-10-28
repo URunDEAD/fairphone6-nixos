@@ -1,0 +1,38 @@
+[package]
+name = "fp6-permissions"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Runtime app permissions for Lomiri on the Fairphone 6: prompt broker (USB/NFC/Bluetooth/contacts/calendar/messages/files/sensors), session agent and CLI"
+
+[lib]
+name = "fp6_permissions"
+path = "src/lib.rs"
+
+[[bin]]
+name = "fp6-permd"
+path = "src/bin/permd.rs"
+
+[[bin]]
+name = "fp6-permission-agent"
+path = "src/bin/agent.rs"
+
+[[bin]]
+name = "fp6-permctl"
+path = "src/bin/permctl.rs"
+
+[dependencies]
+gio = "0.20"
+glib = "0.20"
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
+futures-lite = "2"
+async-io = "2"
+async-lock = "3"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
