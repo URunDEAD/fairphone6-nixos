@@ -152,6 +152,26 @@ pub fn set_oom_adj(pids: &[i32], value: i32) -> usize {
     changed
 }
 
+/// Processes the low-memory killer must never take down, even if one ended
+/// up in an app unit: the shell / compositor, the keyboard, the greeter and
+/// session, telephony, audio and the modem stack (comm names, 15 chars).
+pub const PROTECTED_COMMS: [&str; 22] = [
+    ".lomiri-wrapped", "lomiri", "lomiri-greeter", "lomiri-session", ".lomiri-session",
+    "maliit-server", "..maliit-keyboa", ".maliit-server-", "lightdm", "Xwayland",
+    "ofonod", ".ofonod-wrapped", ".lomiri-telepho", ".telepathy-ofon", "telepathy-ofono",
+    "pipewire", "wireplumber", "pipewire-pulse", "rmtfs", "pd-mapper", "tqftpserv", "qrtr-ns",
+];
+
+pub fn is_protected_comm(comm: &str) -> bool {
+    let c = comm.trim();
+    PROTECTED_COMMS.contains(&c) || c.starts_with("lomiri-app-laun") || c.starts_with("systemd")
+}
+
+/// True when any process of the cgroup is a protected one (see PROTECTED_COMMS).
+pub fn has_protected(cgroup: &Path) -> bool {
+    pids(cgroup).iter().any(|p| std::fs::read_to_string(format!("/proc/{p}/comm")).is_ok_and(|c| is_protected_comm(&c)))
+}
+
 /// SIGKILL the whole app cgroup (cgroup.kill, Linux 5.14+); signal fallback.
 pub fn kill(cgroup: &Path) -> bool {
     if std::fs::write(cgroup.join("cgroup.kill"), "1").is_ok() {
@@ -239,6 +259,50 @@ pub fn meminfo() -> MemInfo {
     parse_meminfo(&std::fs::read_to_string("/proc/meminfo").unwrap_or_default())
 }
 
+/// The RAM picture for Settings > Memory & performance (bytes).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct MemBreakdown {
+    pub free: u64,
+    /// Page cache + buffers + reclaimable slab, minus shmem (which cannot be dropped).
+    pub cache: u64,
+    pub shmem: u64,
+}
+
+pub fn parse_breakdown(text: &str) -> MemBreakdown {
+    let mut v = std::collections::HashMap::new();
+    for line in text.lines() {
+        let mut it = line.split_whitespace();
+        if let (Some(k), Some(n)) = (it.next(), it.next()) {
+            v.insert(k.trim_end_matches(':').to_string(), n.parse::<u64>().unwrap_or(0) * 1024);
+        }
+    }
+    let g = |k: &str| v.get(k).copied().unwrap_or(0);
+    MemBreakdown {
+        free: g("MemFree"),
+        cache: (g("Cached") + g("Buffers") + g("SReclaimable")).saturating_sub(g("Shmem")),
+        shmem: g("Shmem"),
+    }
+}
+
+/// PIDs of this user's processes whose comm is one of `names` (the shell's hot set).
+pub fn pids_by_comm(names: &[&str]) -> Vec<i32> {
+    let uid = unsafe { libc::getuid() };
+    let Ok(entries) = std::fs::read_dir("/proc") else { return Vec::new() };
+    let mut out = Vec::new();
+    for e in entries.flatten() {
+        let Some(pid) = e.file_name().to_str().and_then(|n| n.parse::<i32>().ok()) else { continue };
+        let Ok(comm) = std::fs::read_to_string(format!("/proc/{pid}/comm")) else { continue };
+        if !names.contains(&comm.trim()) {
+            continue;
+        }
+        use std::os::unix::fs::MetadataExt;
+        if std::fs::metadata(format!("/proc/{pid}")).is_ok_and(|m| m.uid() == uid) {
+            out.push(pid);
+        }
+    }
+    out
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Zram {
     pub active: bool,
@@ -308,6 +372,25 @@ mod tests {
         assert_eq!(m.available, 5000000 * 1024);
         let (s, f) = psi_avg10("some avg10=1.50 avg60=0.00 avg300=0.00 total=10\nfull avg10=0.25 avg60=0.00 avg300=0.00 total=3\n");
         assert_eq!((s, f), (1.5, 0.25));
+        let b = parse_breakdown("MemFree: 100 kB\nBuffers: 20 kB\nCached: 300 kB\nSReclaimable: 10 kB\nShmem: 30 kB\n");
+        assert_eq!(b, MemBreakdown { free: 100 * 1024, cache: 300 * 1024, shmem: 30 * 1024 });
+    }
+
+    #[test]
+    fn protected_names() {
+        for c in [".lomiri-wrapped\n", "..maliit-keyboa", "ofonod", "pipewire", "rmtfs", "systemd", "lomiri-app-laun"] {
+            assert!(is_protected_comm(c), "{c}");
+        }
+        for c in ["morph-browser", ".lomiri-system-", "camera-app", "firefox"] {
+            assert!(!is_protected_comm(c), "{c}");
+        }
+    }
+
+    #[test]
+    fn own_comm() {
+        let comm = std::fs::read_to_string("/proc/self/comm").unwrap();
+        assert!(pids_by_comm(&[comm.trim()]).contains(&(std::process::id() as i32)));
+        assert!(pids_by_comm(&["no-such-process-name"]).is_empty());
     }
 
     #[test]

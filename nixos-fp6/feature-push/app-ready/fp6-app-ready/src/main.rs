@@ -12,7 +12,11 @@
 //!   * follows battery saver (/run/fp6-battery/saver): defers prelaunch and
 //!     preload, halves the budget, closes background apps earlier and sets
 //!     saver-freeze so Lomiri suspends every background app,
-//!   * writes $XDG_RUNTIME_DIR/fp6-app-ready/status.json for the Settings page.
+//!   * writes $XDG_RUNTIME_DIR/fp6-app-ready/status.json for the Settings page,
+//!   * Memory & performance: learns app usage on the device (predict.rs),
+//!     keeps the likely next apps ready / started hidden / warm, warms the
+//!     shell's files after login and after a reclaim, applies the memory
+//!     profile (profile.rs) through fp6-memory-profile@<name>.service.
 //!
 //!   fp6-app-ready [run]              daemon
 //!   fp6-app-ready status             the daemon's status JSON (D-Bus)
@@ -22,17 +26,26 @@
 //!   fp6-app-ready residency APP [MB] cached / planned bytes of APP's files
 //!   fp6-app-ready learn APP          record APP's mapped files now
 //!   fp6-app-ready apps               installed apps as the Settings page lists them
+//!   fp6-app-ready predict            the likely next apps now (D-Bus, JSON)
+//!   fp6-app-ready clear-history      forget the learned usage and file lists (D-Bus)
+//!   fp6-app-ready apply-profile NAME root: vm sysctls, read-ahead, MGLRU of a profile
+//!   fp6-app-ready profile NAME       print a profile's numbers
 //!
 //! Session D-Bus: com.fairphone6.AppReady /com/fairphone6/AppReady
-//!   Status() -> s (JSON), Preload(s app) -> s (JSON), Prelaunch(s app) -> b
+//!   Status() -> s (JSON), Preload(s app) -> s (JSON), Prelaunch(s app) -> b,
+//!   Predict() -> s (JSON), ClearHistory() -> b
 
 mod apps;
 mod config;
+mod context;
 mod engine;
 mod policy;
+mod predict;
 mod prelaunch;
 mod preload;
 mod procs;
+mod profile;
+mod qmlcache;
 mod watch;
 mod zram;
 
@@ -136,6 +149,45 @@ fn main() {
                 }
             }
         }
+        Some("predict") => match call("Predict", None) {
+            Ok(s) => {
+                println!("{s}");
+                0
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                1
+            }
+        },
+        Some("clear-history") => match call("ClearHistory", None) {
+            Ok(s) => {
+                println!("{s}");
+                0
+            }
+            Err(_) => {
+                // daemon not running: remove the files directly
+                let _ = std::fs::remove_file(predict::model_path());
+                println!("removed the usage model and {} file lists", preload::clear_learned());
+                0
+            }
+        },
+        Some("apply-profile") if !arg(1).is_empty() => {
+            let p = profile::Profile::parse(&arg(1));
+            if p.name() != arg(1) {
+                eprintln!("unknown profile {:?} (conservative, balanced, aggressive)", arg(1));
+                2
+            } else {
+                for line in profile::apply(p) {
+                    println!("{line}");
+                }
+                0
+            }
+        }
+        Some("profile") => {
+            let p = profile::Profile::parse(&arg(1));
+            println!("{}: {:?}", p.name(), p.tuning());
+            0
+        }
         Some("apps") => {
             for app in apps::scan(&apps::data_dirs(), &apps::current_desktops()) {
                 println!("{}\t{}\t{}", app.id, app.name, app.icon);
@@ -158,7 +210,7 @@ fn call(method: &str, app: Option<&str>) -> Result<String, String> {
     }
     .map_err(|e| e.to_string())?;
     let body = reply.body();
-    if method == "Prelaunch" {
+    if method == "Prelaunch" || method == "ClearHistory" {
         return body.deserialize::<bool>().map(|b| b.to_string()).map_err(|e| e.to_string());
     }
     body.deserialize::<String>().map_err(|e| e.to_string())
@@ -187,6 +239,12 @@ fn read_config(s: &gio::Settings) -> Config {
         mlock_mb: s.int("mlock-mb").clamp(0, 512) as u32,
         zram_enabled: s.boolean("zram-enabled"),
         low_memory_killer: s.boolean("low-memory-killer"),
+        profile: profile::Profile::parse(&s.string("profile")),
+        prediction: s.boolean("prediction"),
+        ready_apps: usize::try_from(s.int("ready-apps")).ok(),
+        preload_at_boot: s.boolean("preload-at-boot"),
+        zram_percent: Some(s.int("zram-percent")).filter(|p| profile::ZRAM_SIZES.contains(&(*p as u32))).map(|p| p as u32),
+        never_keep: strv(s, "never-keep"),
     }
 }
 
@@ -230,6 +288,14 @@ impl AppReady {
     fn prelaunch(&self, app: String) -> bool {
         self.ask(Command::Prelaunch(app)).as_deref() == Some("true")
     }
+
+    fn predict(&self) -> String {
+        self.ask(Command::Predict).unwrap_or_default()
+    }
+
+    fn clear_history(&self) -> bool {
+        self.ask(Command::ClearHistory).as_deref() == Some("true")
+    }
 }
 
 // -------------------------------------------------------------------- daemon
@@ -249,6 +315,18 @@ fn run() -> i32 {
     if settings.string("status-file") != status_file.as_str() {
         let _ = settings.set_string("status-file", &status_file);
     }
+    // App QML disk caches (QML_FORCE_DISK_CACHE, app-ready-fp6.nix): empty
+    // them once after a system change, before this session's apps start.
+    let cache_home = preload::cache_dir().parent().map(PathBuf::from).unwrap_or_default();
+    match qmlcache::wipe_if_system_changed(&cache_home, &predict::state_dir(), &qmlcache::system_stamp()) {
+        Ok(0) => {}
+        Ok(n) => log(format!("new system: removed {n} compiled QML files from the app caches")),
+        Err(e) => log(format!("QML cache stamp: {e}")),
+    }
+    // Last session's predictions are not this session's.
+    if !settings.strv("predicted").is_empty() {
+        let _ = settings.set_strv("predicted", &[] as &[&str]);
+    }
     let cfg = read_config(&settings);
     log(format!("fp6-app-ready ready: {cfg:?}"));
 
@@ -263,8 +341,12 @@ fn run() -> i32 {
                     let _ = s.set_string("status-file", &status_file);
                 }
             }
-            "installed-apps" | "saver-freeze" => {}
+            // written by us
+            "installed-apps" | "saver-freeze" | "predicted" => {}
             "app-list-request" => publish_apps(s),
+            "clear-history-request" => {
+                let _ = tx.send(Event::ClearHistory);
+            }
             _ => {
                 let _ = tx.send(Event::Config(read_config(s)));
             }
@@ -302,7 +384,17 @@ fn run() -> i32 {
         }
     });
 
-    let engine = engine::Engine::new(cfg, runtime, system);
+    let mut engine = engine::Engine::new(cfg, runtime, system);
+    // The predicted apps kept ready, for Lomiri's Stage.qml (suspends them in
+    // the background like keep-ready).
+    engine.set_ready_callback(Box::new(|apps: &[String]| {
+        let s = gio::Settings::new(SCHEMA);
+        let refs: Vec<&str> = apps.iter().map(String::as_str).collect();
+        if let Err(e) = s.set_strv("predicted", refs.as_slice()) {
+            log(format!("predicted: {e}"));
+        }
+        gio::Settings::sync();
+    }));
     std::thread::Builder::new().name("engine".into()).spawn(move || engine.run(rx)).expect("engine thread");
     glib::MainLoop::new(None, false).run();
     0

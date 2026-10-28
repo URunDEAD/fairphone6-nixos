@@ -23,6 +23,8 @@ pub enum Event {
     Pressure,
     /// Battery saver on/off (/run/fp6-battery/saver, battery agent).
     Saver(bool),
+    /// Settings > Memory & performance: clear learned history.
+    ClearHistory,
     Command(Command, Sender<String>),
 }
 
@@ -31,6 +33,9 @@ pub enum Command {
     Status,
     Preload(String),
     Prelaunch(String),
+    /// Current predictions (JSON).
+    Predict,
+    ClearHistory,
 }
 
 /// Unprivileged PSI trigger on /proc/pressure/memory: 150 ms of "some" stall

@@ -228,6 +228,11 @@ pub fn plan(app_id: &str, budget: u64) -> Plan {
             }
         }
     }
+    budgeted(candidates, budget, learned)
+}
+
+/// Deduplicated regular, non-empty files of `candidates` in order, up to `budget` bytes.
+pub fn budgeted(candidates: Vec<PathBuf>, budget: u64, learned: bool) -> Plan {
     let mut seen = HashSet::new();
     let mut plan = Plan { learned, ..Plan::default() };
     for f in candidates {
@@ -256,6 +261,44 @@ fn open_ro(path: &Path) -> Option<File> {
         .open(path)
         .or_else(|_| std::fs::OpenOptions::new().read(true).custom_flags(libc::O_CLOEXEC).open(path))
         .ok()
+}
+
+/// The shell's hot set besides the files Lomiri / Maliit have mapped (the
+/// engine adds those): icon theme caches and the user's fontconfig caches.
+pub fn shell_extra_files() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for dir in apps::data_dirs() {
+        let Ok(themes) = std::fs::read_dir(dir.join("icons")) else { continue };
+        for t in themes.flatten() {
+            let cache = t.path().join("icon-theme.cache");
+            if cache.is_file() {
+                out.push(cache);
+            }
+        }
+    }
+    let fc = cache_dir().parent().map(|c| c.join("fontconfig")).unwrap_or_default();
+    if let Ok(entries) = std::fs::read_dir(fc) {
+        out.extend(entries.flatten().map(|e| e.path()).filter(|p| p.is_file()));
+    }
+    out
+}
+
+/// Remove every learned file list (Settings: clear learned history).
+pub fn clear_learned() -> usize {
+    let Ok(entries) = std::fs::read_dir(cache_dir()) else { return 0 };
+    entries
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "files"))
+        .filter(|e| std::fs::remove_file(e.path()).is_ok())
+        .count()
+}
+
+/// Share of the plan's bytes in the page cache (1.0 for an empty plan).
+pub fn resident_ratio(plan: &Plan) -> f64 {
+    if plan.total == 0 {
+        return 1.0;
+    }
+    resident_total(plan) as f64 / plan.total as f64
 }
 
 /// posix_fadvise(WILLNEED) over every planned file. Returns bytes requested.
@@ -402,6 +445,11 @@ mod tests {
         // Just written, so cached.
         assert!(resident_total(&p) > 0);
         assert!(plan("../x", 1 << 30).files.is_empty());
+        assert!(resident_ratio(&p) > 0.0 && resident_ratio(&Plan::default()) == 1.0);
+        let b2 = budgeted(vec![a.clone(), a.clone(), b.clone(), tmp.join("missing")], 1 << 30, false);
+        assert_eq!(b2.files.len(), 2);
+        assert_eq!(clear_learned(), 1);
+        assert!(!learned_path("test-app").exists());
         std::fs::remove_dir_all(tmp).unwrap();
     }
 }

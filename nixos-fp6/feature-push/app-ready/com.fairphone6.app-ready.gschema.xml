@@ -7,7 +7,7 @@
   <schema id="com.fairphone6.app-ready" path="/com/fairphone6/app-ready/">
     <key name="keep-ready" type="as">
       <default>[]</default>
-      <summary>Apps kept ready in memory</summary>
+      <summary>Apps kept ready in memory (Settings: "Always keep ready")</summary>
       <description>In the background these apps are suspended (no CPU) instead of running, and they are closed last when memory runs low.</description>
     </key>
     <key name="prelaunch" type="as">
@@ -52,6 +52,49 @@
       <default>true</default>
       <summary>Close background apps when memory runs low</summary>
       <description>Other background apps first, kept-ready apps last; never the app on screen or the shell.</description>
+    </key>
+    <!-- Memory & performance (Settings > Memory & performance) -->
+    <key name="profile" type="s">
+      <choices>
+        <choice value="conservative"/>
+        <choice value="balanced"/>
+        <choice value="aggressive"/>
+      </choices>
+      <default>'aggressive'</default>
+      <summary>Memory profile</summary>
+      <description>conservative: few apps kept, little cache warming, early closing. balanced. aggressive: free RAM is used to keep the likely next apps ready and their files cached; apps are still closed (least likely first) before memory runs out.</description>
+    </key>
+    <key name="prediction" type="b">
+      <default>true</default>
+      <summary>Learn which apps are used when, and keep the likely next ones ready</summary>
+      <description>Learned on the device only (hour, weekday/weekend, charging, Wi-Fi connected, headphones as yes/no; which app follows which). No network names or locations.</description>
+    </key>
+    <key name="ready-apps" type="i">
+      <range min="-1" max="12"/>
+      <default>-1</default>
+      <summary>Predicted apps kept ready (-1 = the profile's number)</summary>
+    </key>
+    <key name="preload-at-boot" type="b">
+      <default>true</default>
+      <summary>Warm the shell's and the likely apps' files after login</summary>
+    </key>
+    <key name="zram-percent" type="i">
+      <range min="0" max="100"/>
+      <default>0</default>
+      <summary>Compressed memory size in % of RAM (25, 50, 75, 100; 0 = the profile's size)</summary>
+    </key>
+    <key name="never-keep" type="as">
+      <default>[]</default>
+      <summary>Apps never kept ready</summary>
+      <description>Not kept ready, started or warmed by prediction; closed first when memory runs low.</description>
+    </key>
+    <key name="predicted" type="as">
+      <default>[]</default>
+      <summary>Predicted apps kept ready now (written by fp6-app-ready, read by Lomiri)</summary>
+    </key>
+    <key name="clear-history-request" type="i">
+      <default>0</default>
+      <summary>Changed by the Settings page to clear the learned usage history</summary>
     </key>
     <key name="installed-apps" type="as">
       <default>[]</default>
