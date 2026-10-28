@@ -5,7 +5,10 @@
 //!   * sets oom_score_adj per app state (foreground / kept ready / background),
 //!   * closes background apps on PSI memory pressure (unpinned first),
 //!   * starts "prelaunch" apps hidden at login (patched Lomiri keeps them off
-//!     screen; Lomiri freezes kept-ready apps in the background),
+//!     screen; Lomiri freezes kept-ready apps in the background), and keeps
+//!     every always-keep-ready app resident: started hidden after login and
+//!     again a while after it was closed, as the profile and memory allow
+//!     (resident.rs),
 //!   * warms the page cache with each "preload" app's files (fadvise WILLNEED,
 //!     optional mlock of a hot set),
 //!   * switches the zram swap on/off,
@@ -46,6 +49,7 @@ mod preload;
 mod procs;
 mod profile;
 mod qmlcache;
+mod resident;
 mod watch;
 mod zram;
 

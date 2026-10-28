@@ -26,6 +26,7 @@ use crate::profile;
 use crate::preload::{self, Locked, Plan};
 use crate::procs::{self, AppUnit};
 use crate::watch::{launch_matches as watch_launch_matches, Command, Event};
+use crate::resident::{self, Gone};
 use crate::{log, prelaunch, zram};
 
 const SETTINGS_APP: &str = "lomiri-system-settings";
@@ -53,6 +54,8 @@ enum Task {
     SaveModel,
     /// Root-side profile settings and zram size.
     ApplyProfile,
+    /// Start the always-keep-ready apps that are not running (resident.rs).
+    KeepResident,
 }
 
 /// Predicted apps are offered at most this many (status, warm list).
@@ -131,6 +134,14 @@ pub struct Engine {
     last_prelaunch: Option<Instant>,
     last_warm: u64,
     learned_at: HashMap<String, Instant>,
+    // ------------------------------------------------ always keep ready
+    /// Kept-ready apps that went away: why, and when.
+    pinned_gone: HashMap<String, (Gone, Instant)>,
+    /// Kept-ready apps we started hidden, and when.
+    pinned_started: HashMap<String, Instant>,
+    /// Failed hidden starts in a row (resident::failures_after_exit).
+    pinned_failures: HashMap<String, u32>,
+    last_resident_launch: Option<Instant>,
 }
 
 fn now_unix() -> u64 {
@@ -198,6 +209,10 @@ impl Engine {
             last_prelaunch: None,
             last_warm: 0,
             learned_at: HashMap::new(),
+            pinned_gone: HashMap::new(),
+            pinned_started: HashMap::new(),
+            pinned_failures: HashMap::new(),
+            last_resident_launch: None,
         };
         e.model = predict::load(&e.model_path);
         // Apps already running (daemon restart): they count as resumed when opened.
@@ -217,6 +232,8 @@ impl Engine {
         if e.cfg.preload_at_boot {
             e.schedule(Duration::from_secs(50), Task::ShellWarm);
         }
+        // After login prelaunch: the other always-keep-ready apps.
+        e.schedule(resident::LOGIN_SETTLE, Task::KeepResident);
         e
     }
 
@@ -293,6 +310,17 @@ impl Engine {
                     self.prelaunch_queue.extend(added);
                     self.schedule(Duration::from_secs(2), Task::Prelaunch);
                 }
+                // Newly kept-ready apps: a fresh start (no old failures), soon.
+                let newly_pinned: Vec<String> =
+                    self.pinned_apps().into_iter().filter(|a| !old.pinned(a)).collect();
+                for app in &newly_pinned {
+                    self.pinned_failures.remove(app);
+                }
+                self.pinned_gone.retain(|a, _| self.cfg.pinned(a));
+                self.pinned_failures.retain(|a, _| self.cfg.pinned(a));
+                if !newly_pinned.is_empty() || old.profile != self.cfg.profile {
+                    self.reschedule(Duration::from_secs(5), Task::KeepResident);
+                }
                 self.preload.retain(|k, _| self.cfg.preload.contains(k));
                 if old.profile != self.cfg.profile || old.zram_percent != self.cfg.zram_percent {
                     self.schedule(Duration::from_millis(500), Task::ApplyProfile);
@@ -356,6 +384,7 @@ impl Engine {
                         if !self.prelaunch_queue.is_empty() {
                             self.schedule(Duration::from_secs(30), Task::Prelaunch);
                         }
+                        self.schedule(Duration::from_secs(40), Task::KeepResident);
                         if self.preload_deferred {
                             self.schedule(Duration::from_secs(60), Task::Preload);
                         }
@@ -426,6 +455,7 @@ impl Engine {
                 }
             }
             Task::ApplyProfile => self.apply_profile(),
+            Task::KeepResident => self.keep_resident(),
         }
     }
 
@@ -545,6 +575,10 @@ impl Engine {
         match prelaunch::launch_hidden(&self.runtime, app) {
             Ok(()) => {
                 log(format!("prelaunched {app} (hidden)"));
+                if self.cfg.pinned(app) {
+                    self.pinned_started.insert(app.to_string(), Instant::now());
+                    self.pinned_gone.remove(app);
+                }
                 if !self.prelaunched.iter().any(|a| a == app) {
                     self.prelaunched.push(app.to_string());
                 }
@@ -727,8 +761,20 @@ impl Engine {
         }
         let gone: Vec<String> = self.running_since.keys().filter(|a| !now_running.contains(*a)).cloned().collect();
         for app in gone {
-            self.running_since.remove(&app);
+            let ran = self.running_since.remove(&app).map_or(Duration::ZERO, |t| t.elapsed());
             let killed = self.kills.iter().any(|k| k.app_id == app && now_unix().saturating_sub(k.at) < 10);
+            if self.cfg.pinned(&app) {
+                // Kept ready: started hidden again later (resident.rs).
+                let ours = self.pinned_started.remove(&app).is_some_and(|t| t.elapsed() <= ran + Duration::from_secs(5));
+                let f = resident::failures_after_exit(self.pinned_failures.get(&app).copied().unwrap_or(0), ours, ran);
+                if f >= resident::MAX_FAILURES {
+                    log(format!("{app}: died {f} times right after a hidden start: not started again"));
+                }
+                self.pinned_failures.insert(app.clone(), f);
+                let why = if killed { Gone::Killed } else { Gone::Closed };
+                self.pinned_gone.insert(app.clone(), (why, Instant::now()));
+                self.schedule(Duration::from_secs(5), Task::KeepResident);
+            }
             if !killed {
                 self.user_closed.insert(app, Instant::now());
             }
@@ -820,6 +866,71 @@ impl Engine {
         }
     }
 
+    /// Always-keep-ready apps (keep-ready + prelaunch lists) in list order.
+    fn pinned_apps(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for a in self.cfg.prelaunch.iter().chain(self.cfg.keep_ready.iter()) {
+            if !self.cfg.never(a) && !out.contains(a) {
+                out.push(a.clone());
+            }
+        }
+        out
+    }
+
+    /// Start one kept-ready app that is not running, hidden, when the
+    /// profile, memory and CPU allow (resident.rs); look again when due.
+    fn keep_resident(&mut self) {
+        let pinned = self.pinned_apps();
+        if pinned.is_empty() {
+            return;
+        }
+        let running: HashSet<String> =
+            self.apps().into_iter().filter(|u| !procs::pids(&u.cgroup).is_empty()).map(|u| u.app_id).collect();
+        let states: Vec<resident::AppState> = pinned
+            .iter()
+            .filter(|a| crate::apps::find(a).is_some())
+            .map(|a| resident::AppState {
+                app: a.clone(),
+                running: running.contains(a),
+                gone: self.pinned_gone.get(a).map(|(g, t)| (*g, t.elapsed())),
+                failures: self.pinned_failures.get(a).copied().unwrap_or(0),
+            })
+            .collect();
+        let t = self.cfg.tuning();
+        let m = procs::meminfo();
+        let (psi_some, _) = procs::psi_avg10(&std::fs::read_to_string("/proc/pressure/memory").unwrap_or_default());
+        let env = resident::Env {
+            relaunch_after: resident::relaunch_after(self.cfg.profile),
+            saver: self.saver,
+            since_start: self.started.elapsed(),
+            avail_pct: Self::avail_pct(&m),
+            min_avail_pct: t.prelaunch_min_avail_pct,
+            psi_some,
+            load: loadavg1(),
+            since_focus_change: self.last_focus.values().map(|at| at.elapsed()).min(),
+            since_last_launch: self.last_resident_launch.map(|at| at.elapsed()),
+        };
+        match resident::next(&states, &env) {
+            resident::Next::Launch(app) => {
+                self.last_resident_launch = Some(Instant::now());
+                let why = match self.pinned_gone.get(&app) {
+                    Some((Gone::Killed, _)) => "closed for memory earlier",
+                    Some((Gone::Closed, _)) => "closed earlier",
+                    None => "not running",
+                };
+                if self.prelaunch_app(&app) {
+                    log(format!("{app}: kept ready, started hidden ({why}, {} % RAM available)", env.avail_pct));
+                } else {
+                    let f = self.pinned_failures.entry(app.clone()).or_insert(0);
+                    *f += 1;
+                }
+                self.schedule(resident::LAUNCH_SPACING, Task::KeepResident);
+            }
+            resident::Next::Wait(d) => self.reschedule(d.max(Duration::from_secs(1)), Task::KeepResident),
+            resident::Next::Idle => {}
+        }
+    }
+
     /// fadvise WILLNEED over the predicted apps' files, within the profile's
     /// total and without going below its free-memory floor.
     fn warm_predicted(&mut self) {
@@ -894,6 +1005,7 @@ impl Engine {
             log(format!("memory back ({} % available): warming again", Self::avail_pct(&m)));
             self.warm_shell();
             self.warm_predicted();
+            self.schedule(Duration::from_secs(30), Task::KeepResident);
             return;
         }
         self.rewarm_tries += 1;

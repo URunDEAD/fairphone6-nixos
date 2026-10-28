@@ -8,7 +8,7 @@
     <key name="keep-ready" type="as">
       <default>[]</default>
       <summary>Apps kept ready in memory (Settings: "Always keep ready")</summary>
-      <description>In the background these apps are suspended (no CPU) instead of running, and they are closed last when memory runs low.</description>
+      <description>In the background these apps are suspended (no CPU) instead of running, and they are closed last when memory runs low. With the Balanced or Aggressive profile they are also started hidden after login and again a while after they were closed, while memory allows.</description>
     </key>
     <key name="prelaunch" type="as">
       <default>[]</default>
