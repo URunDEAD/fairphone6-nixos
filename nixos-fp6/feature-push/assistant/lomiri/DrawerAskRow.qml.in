@@ -1,0 +1,36 @@
+            // FP6 Assistant (nixos-fp6/feature-push/assistant): hand the typed
+            // text to the assistant ("Ask the assistant: …"); Enter does the
+            // same when no app matches.
+            AbstractButton {
+                id: fp6AskAssistant
+                objectName: "fp6AskAssistant"
+                anchors { left: parent.left; right: parent.right; top: searchFieldContainer.bottom; leftMargin: units.gu(1); rightMargin: units.gu(1) }
+                height: searchField.displayText !== "" ? units.gu(5) : 0
+                visible: height > 0
+                function ask() {
+                    var t = searchField.displayText;
+                    if (t === "") return;
+                    searchField.text = "";
+                    root.hideRequested();
+                    Qt.openUrlExternally("assistant:///ask?q=" + encodeURIComponent(t));
+                }
+                onClicked: ask()
+                Rectangle {
+                    anchors { fill: parent; topMargin: units.gu(0.5) }
+                    radius: units.gu(1)
+                    color: root.lightMode ? Qt.rgba(0, 0, 0, 0.06) : Qt.rgba(1, 1, 1, 0.1)
+                }
+                Row {
+                    anchors { left: parent.left; leftMargin: units.gu(1.5); verticalCenter: parent.verticalCenter; verticalCenterOffset: units.gu(0.25) }
+                    spacing: units.gu(1)
+                    Icon { name: "message-new"; width: units.gu(2.5); height: width; color: root.lightMode ? "#111111" : "#F7F7F7"; anchors.verticalCenter: parent.verticalCenter }
+                    Label {
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: fp6AskAssistant.width - units.gu(7)
+                        elide: Text.ElideRight
+                        color: root.lightMode ? "#111111" : "#F7F7F7"
+                        text: i18n.tr("Ask the assistant: “%1”").arg(searchField.displayText)
+                    }
+                }
+            }
+

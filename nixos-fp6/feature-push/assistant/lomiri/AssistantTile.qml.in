@@ -1,0 +1,10 @@
+    // ---- FP6 Assistant (nixos-fp6/feature-push/assistant): a button that
+    // opens the Springboard; opt-in from the editor's tray.
+    QsTileDef {
+        id: fp6AssistantTile
+        tileId: "assistant"; label: i18n.tr("Assistant")
+        iconOn: "message-new"
+        toggleable: false; canWide: false; pageOnly: true
+        lockPolicy: "unlock"
+        settingsUrl: "assistant:///"
+    }
