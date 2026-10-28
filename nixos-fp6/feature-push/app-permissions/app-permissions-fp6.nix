@@ -33,6 +33,16 @@
 #  * System Settings > Security & Privacy > App permissions (AppAccess.qml
 #    patched in the wrapper): per permission, per app (all permissions +
 #    network toggles + reset), network access list, history.
+#  * Camera / microphone / location (option media, default off): fp6-permd
+#    decides (presets for the system apps, prompt Allow / Only this time /
+#    Don't allow, Settings rows). Microphone and camera through PipeWire:
+#    fp6-media-gate (user service) publishes per-client verdicts that
+#    WirePlumber (wireplumber/fp6-media-permissions.lua) enforces when
+#    linking; pipewire-pulse runs with pipewire-pulse-peer-pid.patch so
+#    PulseAudio clients are known by their real pid. Camera device nodes:
+#    AppArmor denial for confined apps the user refused. Location: GeoClue
+#    with geoclue-fp6-app-identity.patch asks its agent (fp6-location-
+#    indicator), which asks fp6-permd. Lomiri's trust-store is not used.
 # System components keep their access: everything that is not an app unit
 # (shell, telephony, MTP/usb-modes, KDE Connect, Quick Share, webshare,
 # OTA, SSH sessions) and the apps in systemApps.
@@ -47,10 +57,30 @@ let
   profiles = lib.optionalAttrs (cfg.apparmor && (aa.enable or false))
     (lib.filterAttrs (n: p: p.state != "disable" && (aa.apps ? ${n})) config.security.apparmor.policies);
   stateDir = "/var/lib/fp6-permissions";
-  brokerConfig = (pkgs.formats.json { }).generate "fp6-permd.json" {
+  media = cfg.media;
+  mediaOn = cfg.enable && media.enable;
+  mediaPerms = lib.optional media.camera "camera" ++ lib.optional media.microphone "microphone"
+    ++ lib.optional media.location "location";
+  pwGate = mediaOn && (media.camera || media.microphone);
+  locationGate = mediaOn && media.location;
+  pipewire = config.services.pipewire.package;
+  pipewirePulsePatched = pipewire.overrideAttrs (old: {
+    patches = (old.patches or [ ]) ++ [ ./pipewire/pipewire-pulse-peer-pid.patch ];
+  });
+  geocluePatched = config.services.geoclue2.package.overrideAttrs (old: {
+    patches = (old.patches or [ ]) ++ [ ./geoclue/geoclue-fp6-app-identity.patch ];
+  });
+  # Apps GeoClue's configuration allowed without asking keep location.
+  geoclueAllowed = lib.mapAttrs' (_: a: lib.nameValuePair a.desktopID { location = "allow"; })
+    (lib.filterAttrs (_: a: a.isAllowed && !a.isSystem) (config.services.geoclue2.appConfig or { }));
+  presets = lib.recursiveUpdate (lib.optionalAttrs media.location geoclueAllowed) media.defaults;
+  extraTrusted = lib.optional pwGate "fp6-media-gate.service"
+    ++ lib.optional locationGate "fp6-location-indicator.service";
+  brokerConfig = (pkgs.formats.json { }).generate "fp6-permd.json" brokerSettings;
+  brokerSettings = {
     inherit uid;
     system_apps = cfg.systemApps;
-    trusted_units = cfg.trustedUnits;
+    trusted_units = lib.unique (cfg.trustedUnits ++ extraTrusted);
     agent_unit = "fp6-permission-agent.service";
     apparmor = lib.mapAttrs (_: p: { path = toString p.path; complain = p.state == "complain"; }) profiles;
     apparmor_parser = "${pkgs.apparmor-parser}/bin/apparmor_parser";
@@ -62,6 +92,8 @@ let
     devices = cfg.devices;
     network = cfg.network;
     enforce = true;
+    media = lib.optionals mediaOn mediaPerms;
+    defaults = lib.optionalAttrs mediaOn (lib.mapAttrs (_: lib.filterAttrs (p: _: lib.elem p mediaPerms)) presets);
   };
   busPolicy = pkgs.writeTextDir "share/dbus-1/system.d/org.fairphone.Permissions1.conf" ''
     <!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN"
@@ -185,6 +217,63 @@ in {
       default = 30;
       description = "\"Allow only while using\": the app keeps access this long after it lost focus; open USB devices are taken back after that.";
     };
+    media = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          Camera, microphone and location permissions per app (kill switch,
+          off by default): prompts (Allow / Only this time / Don't allow),
+          Settings rows, enforcement through PipeWire/WirePlumber
+          (fp6-media-gate), AppArmor (camera nodes of confined apps) and
+          GeoClue's agent. Off: everything as before (no gate, stock
+          pipewire-pulse and GeoClue).
+        '';
+      };
+      camera = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Gate PipeWire video capture (and the camera nodes of confined apps).";
+      };
+      microphone = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Gate PipeWire audio capture from microphones.";
+      };
+      location = lib.mkOption {
+        type = lib.types.bool;
+        default = (config.services.fp6Cellular.gnss.enable or false) && config.services.geoclue2.enable;
+        defaultText = lib.literalExpression "config.services.fp6Cellular.gnss.enable && config.services.geoclue2.enable";
+        description = "Gate GeoClue per app (needs the fp6-location-indicator agent of the cellular module).";
+      };
+      defaults = lib.mkOption {
+        type = lib.types.attrsOf (lib.types.attrsOf (lib.types.enum [ "allow" "while_using" "ask" "deny" ]));
+        default = {
+          lomiri-camera-app = { camera = "allow"; microphone = "allow"; location = "while_using"; };
+          lomiri-camera-app-secure = { camera = "allow"; microphone = "allow"; };
+          lomiri-barcode-reader-app = { camera = "while_using"; };
+          fp6-wifi-qr-scan = { camera = "while_using"; };
+          fp6-magnifier = { camera = "while_using"; };
+          fairphone-ocr = { camera = "while_using"; };
+          lomiri-weather-app = { location = "while_using"; };
+          "io.github.rinigus.PureMaps" = { location = "while_using"; };
+          fp6-gps = { location = "while_using"; };
+          fp6-speed = { location = "while_using"; };
+          fp6-altimeter = { location = "while_using"; };
+          fp6-compass = { location = "while_using"; };
+          fp6-sound = { microphone = "while_using"; };
+          fp6-tuner = { microphone = "while_using"; };
+          fp6-callrec = { microphone = "allow"; };
+        };
+        description = ''
+          Starting decisions per app id (camera / microphone / location) until
+          the user changes them; Reset in Settings goes back to these. Apps
+          GeoClue's configuration allowed (services.geoclue2.appConfig) start
+          with location allowed. System apps (systemApps: Phone, Messaging,
+          Settings, dictation, captions, ...) and services are never asked.
+        '';
+      };
+    };
     promptTimeout = lib.mkOption {
       type = lib.types.ints.between 5 600;
       default = 60;
@@ -192,8 +281,14 @@ in {
     };
   };
 
-  config = lib.mkIf cfg.enable {
+  config = lib.mkIf cfg.enable (lib.mkMerge [ {
     assertions = [
+      { assertion = media.enable -> mediaPerms != [ ];
+        message = "appPermissions.media: enable at least one of camera, microphone, location."; }
+      { assertion = pwGate -> (config.services.pipewire.enable && config.services.pipewire.wireplumber.enable && config.services.pipewire.pulse.enable);
+        message = "appPermissions.media camera/microphone need PipeWire with WirePlumber and pipewire-pulse."; }
+      { assertion = locationGate -> (config.services.geoclue2.enable && (config.services.fp6Cellular.gnss.enable or false));
+        message = "appPermissions.media.location needs GeoClue and the fp6-location-indicator agent (services.fp6Cellular.gnss)."; }
       { assertion = config.users.users ? ${user} && uid != null && uid >= 1000;
         message = "appPermissions.user must be an existing normal user with a fixed uid."; }
       { assertion = cfg.network -> (config.hardware.fairphone6.netpolicy.enable or false);
@@ -325,9 +420,56 @@ in {
 
     system.build.fp6-app-permissions = {
       inherit (pkg) core lssPlugin;
-      inherit brokerConfig udevRules;
+      inherit brokerConfig brokerSettings udevRules;
       lomiri = pkgs.lomiri.lomiri;
       lomiri-system-settings = pkgs.lomiri.lomiri-system-settings;
     };
-  };
+  }
+
+  (lib.mkIf pwGate {
+    # WirePlumber enforces the gate's verdicts when linking.
+    services.pipewire.wireplumber.extraScripts."fp6-media-permissions.lua" = builtins.readFile ./wireplumber/fp6-media-permissions.lua;
+    services.pipewire.wireplumber.extraConfig."60-fp6-media-permissions" = {
+      "wireplumber.components" = [ { name = "fp6-media-permissions.lua"; type = "script/lua"; provides = "custom.fp6-media-permissions"; } ];
+      # optional: a script problem is logged, audio keeps working (ungated)
+      "wireplumber.profiles".main."custom.fp6-media-permissions" = "optional";
+    };
+    # PulseAudio clients by their real pid (SO_PEERCRED): only the pulse
+    # server runs the patched build, libraries and other users stay stock.
+    systemd.user.services.pipewire-pulse.serviceConfig.ExecStart = [ "" "${pipewirePulsePatched}/bin/pipewire-pulse" ];
+    systemd.user.services.fp6-media-gate = {
+      description = "FP6 camera and microphone permissions for PipeWire clients";
+      wantedBy = [ "graphical-session.target" ];
+      partOf = [ "graphical-session.target" ];
+      after = [ "wireplumber.service" "pipewire.service" ];
+      wants = [ "wireplumber.service" ];
+      unitConfig = { ConditionUser = user; StartLimitIntervalSec = 0; };
+      environment = {
+        FP6_PW_DUMP = "${pipewire}/bin/pw-dump";
+        FP6_PW_METADATA = "${pipewire}/bin/pw-metadata";
+        FP6_MEDIA_PERMS = lib.concatStringsSep " " (lib.filter (p: p != "location") mediaPerms);
+      };
+      serviceConfig = {
+        ExecStart = "${pkg.core}/bin/fp6-media-gate";
+        Restart = "always";
+        RestartSec = 3;
+      };
+    };
+  })
+
+  (lib.mkIf locationGate {
+    # GeoClue names host apps by AppArmor profile / app cgroup and asks the
+    # agent about them; the agent asks fp6-permd.
+    systemd.services.geoclue.serviceConfig.ExecStart = [ "" "${geocluePatched}/libexec/geoclue" ];
+    systemd.user.services.fp6-location-indicator.environment.FP6_LOCATION_PERMISSIONS = "1";
+  })
+
+  (lib.mkIf mediaOn {
+    system.build.fp6-app-permissions-media = {
+      inherit pipewirePulsePatched geocluePatched;
+      inherit (pkg) core;
+      config = brokerConfig;
+    };
+  })
+  ]);
 }

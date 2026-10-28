@@ -58,6 +58,9 @@ struct Gate {
     proc_root: PathBuf,
     pw_metadata: String,
     remote: String,
+    /// Gated permissions (FP6_MEDIA_PERMS, default both); the others are
+    /// published as granted and never prompted.
+    enabled: Vec<Permission>,
 }
 
 /// The app a process belongs to, or None for a system component (mirrors
@@ -113,6 +116,9 @@ impl Gate {
     }
 
     fn verdict(&self, who: &Who, perm: Permission) -> String {
+        if !self.enabled.contains(&perm) {
+            return "granted".into();
+        }
         let v = match who {
             Who::System(_) => Some("granted".to_owned()),
             Who::App(a) => self.call("CheckApp", &(perm.id(), a.as_str())),
@@ -256,6 +262,9 @@ impl Gate {
             st.who.get(&client).cloned()
         };
         let Some(who) = who else { return };
+        if !self.enabled.contains(&perm) {
+            return;
+        }
         let Some(app) = self.app_key(&who) else { return };
         {
             let mut st = self.st.lock().unwrap();
@@ -326,6 +335,9 @@ fn main() {
         proc_root: "/proc".into(),
         pw_metadata,
         remote,
+        enabled: std::env::var("FP6_MEDIA_PERMS")
+            .map(|v| v.split_whitespace().filter_map(Permission::parse).filter(|p| media::GATED.contains(p)).collect())
+            .unwrap_or_else(|_| media::GATED.to_vec()),
     });
     {
         let g = g.clone();
