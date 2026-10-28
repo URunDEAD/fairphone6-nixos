@@ -19,6 +19,14 @@ non-system apps when no agent is registered. AuthorizeApp grants the
 requested accuracy while location detection is on and refuses it when off;
 MaxAccuracyLevel follows the toggle (0 = none).
 
+Per-app location permission (app-permissions module, media option; the
+unit then sets FP6_LOCATION_PERMISSIONS=1): GeoClue (patched to name host
+apps by AppArmor profile / app cgroup and to ask the agent about them)
+calls AuthorizeApp with that app id; while location detection is on, the
+answer comes from fp6-permd (AuthorizeApp "location": the app's setting, or
+the Allow / Only this time / Don't allow prompt), asked asynchronously so a
+prompt does not block the indicator. Only GeoClue may call AuthorizeApp.
+
 Privacy (privacy-lock module):
   * every AuthorizeApp answer is recorded in
     $XDG_RUNTIME_DIR/fp6-privacy/location-apps.json (last 20: desktop id,
@@ -50,6 +58,9 @@ AGENT_XML = """<node><interface name="org.freedesktop.GeoClue2.Agent">
 <property name="MaxAccuracyLevel" type="u" access="read"/>
 </interface></node>"""
 ACCURACY_EXACT = 8
+PERMD = "org.fairphone.Permissions1"
+PERMD_PATH = "/org/fairphone/Permissions1"
+USE_PERMD = os.environ.get("FP6_LOCATION_PERMISSIONS") == "1"
 CONF = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
                     "fp6-location", "enabled")
 QT_CACHE = os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"),
@@ -203,14 +214,44 @@ class Indicator:
     def max_accuracy(self):
         return ACCURACY_EXACT if self.enabled else 0
 
+    def from_geoclue(self, sender):
+        try:
+            owner = self.system.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus",
+                                          "org.freedesktop.DBus", "GetNameOwner",
+                                          GLib.Variant("(s)", ("org.freedesktop.GeoClue2",)),
+                                          GLib.VariantType("(s)"), Gio.DBusCallFlags.NONE, 2000, None)
+            return owner.unpack()[0] == sender
+        except GLib.Error:
+            return False
+
     def agent_call(self, conn, sender, path, iface, method, params, inv):
-        if method == "AuthorizeApp":
-            app, req = params.unpack()
-            ok = self.enabled
+        if method != "AuthorizeApp":
+            inv.return_dbus_error("org.freedesktop.DBus.Error.UnknownMethod", method)
+            return
+        app, req = params.unpack()
+        if USE_PERMD and not self.from_geoclue(sender):
+            inv.return_dbus_error("org.freedesktop.DBus.Error.AccessDenied", "only GeoClue may ask")
+            return
+
+        def answer(ok):
             record_app(app, ok)
             inv.return_value(GLib.Variant("(bu)", (ok, min(req, self.max_accuracy()) if ok else 0)))
-        else:
-            inv.return_dbus_error("org.freedesktop.DBus.Error.UnknownMethod", method)
+
+        if not self.enabled or not USE_PERMD:
+            answer(self.enabled)
+            return
+
+        def done(conn, res):
+            try:
+                ok = conn.call_finish(res).unpack()[0] == "granted"
+            except GLib.Error as e:
+                log(f"permission broker: {e.message}")
+                ok = False
+            answer(ok and self.enabled)
+
+        self.system.call(PERMD, PERMD_PATH, PERMD, "AuthorizeApp",
+                         GLib.Variant("(sss)", ("location", app.removesuffix(".desktop"), "")),
+                         GLib.VariantType("(s)"), Gio.DBusCallFlags.NONE, 100000, None, done)
 
     def agent_get(self, conn, sender, path, iface, prop):
         if prop == "MaxAccuracyLevel":

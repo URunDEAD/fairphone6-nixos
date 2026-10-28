@@ -1,0 +1,255 @@
+--- a/src/gclue-client-info.c
++++ b/src/gclue-client-info.c
+@@ -38,6 +38,9 @@
+ 
+         guint32 user_id;
+         char *xdg_id;
++        /* FP6: xdg_id names an app of the host (AppArmor profile or app
++         * cgroup), not a Flatpak */
++        gboolean host_app;
+ };
+ 
+ G_DEFINE_TYPE_WITH_CODE (GClueClientInfo,
+@@ -217,6 +220,178 @@
+ }
+ 
+ 
++/* FP6 app permissions: app ids of host (non-Flatpak) apps, so that the agent
++ * is asked about them by an id the app cannot choose (the DesktopId
++ * property is the app's own claim). Same rules as fp6-permd
++ * (app-permissions/rust/src/appid.rs). */
++static gboolean
++fp6_valid_app_id (const char *s)
++{
++        gsize len;
++
++        if (s == NULL || s[0] == '\0' || s[0] == '.' || s[0] == '-')
++                return FALSE;
++        len = strlen (s);
++        if (len > 180)
++                return FALSE;
++        for (; *s != '\0'; s++) {
++                if (!g_ascii_isalnum (*s) && *s != '.' && *s != '_' && *s != '-')
++                        return FALSE;
++        }
++        return TRUE;
++}
++
++/* systemd unit-name unescaping (\xNN) */
++static char *
++fp6_unescape (const char *s, gsize len)
++{
++        GString *out = g_string_sized_new (len);
++        gsize i;
++
++        for (i = 0; i < len; i++) {
++                if (s[i] == '\\' && i + 3 < len && s[i + 1] == 'x' &&
++                    g_ascii_isxdigit (s[i + 2]) && g_ascii_isxdigit (s[i + 3])) {
++                        g_string_append_c (out, (char) ((g_ascii_xdigit_value (s[i + 2]) << 4) |
++                                                        g_ascii_xdigit_value (s[i + 3])));
++                        i += 3;
++                        continue;
++                }
++                g_string_append_c (out, s[i]);
++        }
++        return g_string_free (out, FALSE);
++}
++
++static char *
++fp6_checked (char *id)
++{
++        if (fp6_valid_app_id (id))
++                return id;
++        g_free (id);
++        return NULL;
++}
++
++/* lomiri-app-launch--<job>--<appid>--<instance>.service,
++ * app[-<launcher>]-<appid>-<random>.scope,
++ * app[-<launcher>]-<appid>[@<random>].service */
++static char *
++fp6_app_id_from_unit (const char *unit)
++{
++        if (g_str_has_prefix (unit, "lomiri-app-launch--") &&
++            g_str_has_suffix (unit, ".service")) {
++                const char *rest = unit + strlen ("lomiri-app-launch--");
++                gsize len = strlen (rest) - strlen (".service");
++                g_autofree char *body = g_strndup (rest, len);
++                char *job_end = strstr (body, "--");
++                char *inst;
++
++                if (job_end == NULL)
++                        return NULL;
++                job_end += 2;
++                inst = g_strrstr (job_end, "--");
++                if (inst == NULL || inst == job_end)
++                        return NULL;
++                return fp6_checked (fp6_unescape (job_end, inst - job_end));
++        }
++        if (g_str_has_prefix (unit, "app-")) {
++                const char *rest = unit + strlen ("app-");
++                g_autofree char *body = NULL;
++                g_auto(GStrv) parts = NULL;
++                guint n;
++                const char *id;
++
++                if (g_str_has_suffix (unit, ".scope")) {
++                        body = g_strndup (rest, strlen (rest) - strlen (".scope"));
++                        parts = g_strsplit (body, "-", -1);
++                        n = g_strv_length (parts);
++                        if (n == 2)
++                                id = parts[0];
++                        else if (n == 3)
++                                id = parts[1];
++                        else
++                                return NULL;
++                } else if (g_str_has_suffix (unit, ".service")) {
++                        char *at;
++
++                        body = g_strndup (rest, strlen (rest) - strlen (".service"));
++                        at = strchr (body, '@');
++                        if (at != NULL)
++                                *at = '\0';
++                        parts = g_strsplit (body, "-", -1);
++                        n = g_strv_length (parts);
++                        if (n == 1)
++                                id = parts[0];
++                        else if (n == 2)
++                                id = parts[1];
++                        else
++                                return NULL;
++                        /* D-Bus activated session services */
++                        if (g_strcmp0 (parts[0], "dbus") == 0 || id[0] == ':')
++                                return NULL;
++                } else {
++                        return NULL;
++                }
++                return fp6_checked (fp6_unescape (id, strlen (id)));
++        }
++        return NULL;
++}
++
++static char *
++get_fp6_app_id (guint32 pid)
++{
++        g_autofree char *path = NULL;
++        g_autofree char *label = NULL;
++        g_autofree char *content = NULL;
++        g_auto(GStrv) lines = NULL;
++        int i;
++
++        /* Confined app: the AppArmor profile is the app id. */
++        path = g_strdup_printf ("/proc/%u/attr/apparmor/current", pid);
++        if (!g_file_get_contents (path, &label, NULL, NULL)) {
++                g_free (path);
++                path = g_strdup_printf ("/proc/%u/attr/current", pid);
++                g_file_get_contents (path, &label, NULL, NULL);
++        }
++        if (label != NULL) {
++                char *p;
++
++                g_strstrip (label);
++                if (label[0] != '\0' && strcmp (label, "unconfined") != 0) {
++                        p = g_strrstr (label, " (");
++                        if (p != NULL && g_str_has_suffix (p, ")"))
++                                *p = '\0';
++                        p = strstr (label, "//");
++                        if (p != NULL)
++                                *p = '\0';
++                        if (fp6_valid_app_id (label))
++                                return g_strdup (label);
++                        /* confined, but not as an app */
++                        return g_strdup ("unknown");
++                }
++        }
++
++        /* Unconfined: the app unit in the cgroup path (deepest first). */
++        g_free (path);
++        path = g_strdup_printf ("/proc/%u/cgroup", pid);
++        if (!g_file_get_contents (path, &content, NULL, NULL))
++                return NULL;
++        lines = g_strsplit (content, "\n", -1);
++        for (i = 0; lines[i] != NULL; i++) {
++                g_auto(GStrv) comps = NULL;
++                int n;
++
++                if (!g_str_has_prefix (lines[i], "0::"))
++                        continue;
++                comps = g_strsplit (lines[i] + strlen ("0::"), "/", -1);
++                for (n = g_strv_length (comps) - 1; n >= 0; n--) {
++                        char *id = fp6_app_id_from_unit (comps[n]);
++
++                        if (id != NULL)
++                                return id;
++                }
++        }
++        return NULL;
++}
++
+ /* Based on got_credentials_cb() from xdg-app source code */
+ static char *
+ get_xdg_id (guint32 pid)
+@@ -299,6 +474,12 @@
+         g_variant_unref (results);
+ 
+         priv->xdg_id = get_xdg_id (pid);
++        if (priv->xdg_id == NULL) {
++                priv->xdg_id = get_fp6_app_id (pid);
++                priv->host_app = (priv->xdg_id != NULL);
++                if (priv->host_app)
++                        g_debug ("Found host app id %s", priv->xdg_id);
++        }
+ 
+         priv->watch_id = g_bus_watch_name_on_connection (priv->connection,
+                                                          priv->bus_name,
+@@ -488,3 +669,11 @@
+ 
+         return info->priv->xdg_id;
+ }
++
++gboolean
++gclue_client_info_is_host_app (GClueClientInfo *info)
++{
++        g_return_val_if_fail (GCLUE_IS_CLIENT_INFO(info), FALSE);
++
++        return info->priv->host_app;
++}
+--- a/src/gclue-client-info.h
++++ b/src/gclue-client-info.h
+@@ -70,6 +70,7 @@
+ gboolean          gclue_client_info_check_bus_name (GClueClientInfo    *info,
+                                                     const char         *bus_name);
+ const char *      gclue_client_info_get_xdg_id     (GClueClientInfo *info);
++gboolean          gclue_client_info_is_host_app    (GClueClientInfo *info);
+ 
+ G_END_DECLS
+ 
+--- a/src/gclue-service-client.c
++++ b/src/gclue-service-client.c
+@@ -467,7 +467,13 @@
+                                               priv->client_info);
+         system_app = (gclue_client_info_get_xdg_id (priv->client_info) == NULL);
+ 
+-        if (app_perm == GCLUE_APP_PERM_ALLOWED || system_app) {
++        /* FP6: host apps (identified by AppArmor profile or app cgroup)
++         * always go to the agent, which asks the permission broker; an
++         * "allowed" entry in the configuration is its starting decision
++         * there, not a way around it. */
++        if ((app_perm == GCLUE_APP_PERM_ALLOWED &&
++             !gclue_client_info_is_host_app (priv->client_info)) ||
++            system_app) {
+                 /* Since we have no reliable way to identify system apps, no
+                  * need for auth for them. */
+                 complete_start (data);
+--- a/src/gclue-service-manager.c
++++ b/src/gclue-service-manager.c
+@@ -497,6 +497,9 @@
+         agent = gclue_agent_proxy_new_for_bus_finish (res, &error);
+         if (agent == NULL)
+             goto error_out;
++        /* FP6: AuthorizeApp may show a permission prompt (up to a minute)
++         * instead of answering at once. */
++        g_dbus_proxy_set_default_timeout (G_DBUS_PROXY (agent), 120 * 1000);
+ 
+         user_id = gclue_client_info_get_user_id (data->info);
+         g_debug ("New agent for user ID '%u'", user_id);
