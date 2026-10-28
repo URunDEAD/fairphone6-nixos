@@ -71,7 +71,7 @@ ItemPage {
             }
             SettingsListItems.StandardProgression {
                 objectName: "displayComfort"
-                text: i18n.tr("Text size, display size, night light")
+                text: i18n.tr("Text size, bold text, display size, night light")
                 onClicked: Qt.openUrlExternally("settings:///system/display-comfort")
             }
 
