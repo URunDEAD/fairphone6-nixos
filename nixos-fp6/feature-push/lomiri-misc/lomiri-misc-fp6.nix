@@ -134,6 +134,14 @@ in {
         duplicate name" warnings).
       '';
     };
+    uitkSkipFlakyTest = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Skip lomiri-ui-toolkit's timing-flaky visual::test_back_button_wide
+        (tst_multicolumnheader.13.qml) in every UITK variant of the system.
+      '';
+    };
     keyboardSocketWaitSeconds = lib.mkOption {
       type = lib.types.ints.between 1 30;
       default = 5;
@@ -155,6 +163,32 @@ in {
     # packages are taken from every definition except the NixOS dbus
     # module's own ([ dbus system.path ]): touching system.path here (even
     # its name) would recurse into this very postBuild.
+    # lomiri-ui-toolkit's xvfb suite: visual::test_back_button_wide
+    # (tst_multicolumnheader.13.qml, fixed wait(100) / waitForRendering
+    # steps) is timing-flaky on the loaded shared builder. lomiri-gpu-fp6.nix
+    # skips it since 2026-10-24, but in a lib.mkAfter overlay, and not every
+    # UITK in the system closure inherits that one: the variant without the
+    # async-loader patch that lomiri-camera-app, content-hub, gallery etc.
+    # build against (y2l98rq2...) still ran it and failed on 2026-10-28
+    # 19:12 while two UITK check phases ran at once, then passed on the
+    # rebuild at 19:59 (unrelated to the lomiri-app-launch patch: UITK does
+    # not depend on lomiri-app-launch). The same one-function skip here, in
+    # a lib.mkBefore overlay, reaches every variant; idempotent with the
+    # later one. Everything else in the check phase still runs.
+    (lib.mkIf cfg.uitkSkipFlakyTest {
+      nixpkgs.overlays = lib.mkBefore [ (_final: prev: {
+        lomiri = prev.lomiri.overrideScope (_lfinal: lprev: {
+          lomiri-ui-toolkit = lprev.lomiri-ui-toolkit.overrideAttrs (old: {
+            postPatch = (old.postPatch or "") + ''
+              grep -q 'FP6: timing-flaky' tests/unit/visual13/tst_multicolumnheader.13.qml || \
+                substituteInPlace tests/unit/visual13/tst_multicolumnheader.13.qml \
+                  --replace-fail 'function test_back_button_wide() {' \
+                    'function test_back_button_wide() { skip("FP6: timing-flaky on the shared builder");'
+            '';
+          });
+        });
+      }) ];
+    })
     (lib.mkIf cfg.dbusDedupe {
       environment.extraSetup = let
         defs = builtins.filter (d: !lib.hasSuffix "/services/system/dbus.nix" (toString d.file))
