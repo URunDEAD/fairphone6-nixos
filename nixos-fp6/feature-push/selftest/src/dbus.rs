@@ -69,6 +69,53 @@ pub fn str_prop<'a>(p: &'a Props, name: &str) -> Option<&'a str> {
     p.get(name).and_then(|v| <&str>::try_from(v).ok())
 }
 
+/// Status of an installed unit whose bus name is not owned. `state` is
+/// `systemctl show` output (LoadState, ActiveState, SubState, WantedBy,
+/// RequiredBy, UpheldBy). A stopped unit that nothing starts at login
+/// (on-demand, or D-Bus activated) is normal and passes; a stopped unit that a
+/// target wants, or one that keeps restarting, is a warning.
+pub fn stopped_unit_status(state: &str, activatable: bool) -> (Status, &'static str) {
+    let prop = |name: &str| {
+        state
+            .lines()
+            .find_map(|l| l.strip_prefix(name).and_then(|v| v.strip_prefix('=')))
+            .unwrap_or("")
+            .trim()
+    };
+    let active = prop("ActiveState");
+    if matches!(active, "failed" | "active") {
+        return (
+            Status::Fail,
+            "Installed service has failed or is active without its expected bus name",
+        );
+    }
+    if prop("SubState") == "auto-restart" || matches!(active, "activating" | "reloading") {
+        return (
+            Status::Warn,
+            "Installed service is restarting or starting without its bus name yet",
+        );
+    }
+    let wanted = ["WantedBy", "RequiredBy", "UpheldBy"]
+        .iter()
+        .any(|k| !prop(k).is_empty());
+    if activatable {
+        (
+            Status::Pass,
+            "Installed and D-Bus activatable; stopped until needed, activation intentionally avoided",
+        )
+    } else if !wanted {
+        (
+            Status::Pass,
+            "Installed on-demand service is stopped; no activation requested",
+        )
+    } else {
+        (
+            Status::Warn,
+            "Installed service is stopped although a target wants it; no activation requested",
+        )
+    }
+}
+
 pub fn check(p: &Probe) -> Check {
     let finish = |s, d| Check::new(&format!("feature-{}", p.id), s, d);
     let c = match connect(&p.bus) {
@@ -90,17 +137,16 @@ pub fn check_on(c: &Connection, p: &Probe) -> Check {
                     "org.freedesktop.DBus",
                 )?;
                 let names: Vec<String> = bus.call("ListActivatableNames", &())?;
-                if names.contains(&p.name) {
-                    return Ok(finish(
-                        Status::Warn,
-                        "Installed and activatable, but stopped; activation intentionally avoided",
-                    ));
-                }
+                let activatable = names.contains(&p.name);
                 if let Some(unit) = &p.unit {
                     let mut args = vec![
                         "show",
                         "--property=LoadState",
                         "--property=ActiveState",
+                        "--property=SubState",
+                        "--property=WantedBy",
+                        "--property=RequiredBy",
+                        "--property=UpheldBy",
                         unit.as_str(),
                     ];
                     if p.bus == "session" {
@@ -109,19 +155,10 @@ pub fn check_on(c: &Connection, p: &Probe) -> Check {
                     match crate::process::capture("systemctl", &args) {
                         Ok(state) if state.lines().any(|l| l == "LoadState=not-found") => {}
                         Ok(state) => {
-                            return Ok(
-                                if state.lines().any(|l| {
-                                    matches!(l, "ActiveState=failed" | "ActiveState=active")
-                                }) {
-                                    finish(Status::Fail, "Installed service has failed or is active without its expected bus name")
-                                } else {
-                                    finish(
-                                        Status::Warn,
-                                        "Installed service is stopped; no activation requested",
-                                    )
-                                },
-                            )
+                            let (status, detail) = stopped_unit_status(&state, activatable);
+                            return Ok(finish(status, detail));
                         }
+                        Err(_) if activatable => {}
                         Err(_) => {
                             return Ok(finish(
                                 Status::Warn,
@@ -129,6 +166,12 @@ pub fn check_on(c: &Connection, p: &Probe) -> Check {
                             ))
                         }
                     }
+                }
+                if activatable {
+                    return Ok(finish(
+                        Status::Pass,
+                        "Installed and D-Bus activatable; stopped until needed, activation intentionally avoided",
+                    ));
                 }
                 return Ok(if p.required {
                     finish(Status::Fail, "Required service is not installed or owned")

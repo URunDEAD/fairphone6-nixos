@@ -231,9 +231,19 @@ pub fn inspect_desktop(
             fields.insert(key.trim(), value.trim());
         }
     }
-    if fields.get("X-Lomiri-Touch") != Some(&"true") {
+    if fields.get("X-Lomiri-Touch") != Some(&"true") || fields.get("Hidden") == Some(&"true") {
         return Ok(false);
     }
+    // Entries Lomiri never lists (NoDisplay, OnlyShowIn/NotShowIn) can still be
+    // launched as handlers, so Exec is checked, but they need no icon.
+    let listed_in = |key: &str| {
+        fields
+            .get(key)
+            .is_some_and(|v| v.split(';').any(|d| d.trim() == "Lomiri"))
+    };
+    let shown = fields.get("NoDisplay") != Some(&"true")
+        && (!fields.contains_key("OnlyShowIn") || listed_in("OnlyShowIn"))
+        && !listed_in("NotShowIn");
     let args = shell_words::split(
         fields
             .get("Exec")
@@ -270,8 +280,12 @@ pub fn inspect_desktop(
             return Err("Desktop TryExec is missing");
         }
     }
+    if !shown {
+        return Ok(true);
+    }
     let icon = fields
         .get("Icon")
+        .filter(|v| !v.is_empty())
         .ok_or("Touch desktop entry has no Icon")?;
     if Path::new(icon).is_absolute() {
         if !Path::new(icon).is_file() {
@@ -371,11 +385,20 @@ pub fn desktops(dirs: &[PathBuf], search: &[PathBuf]) -> Check {
         })
         .collect();
     let mut count = 0;
-    let mut bad = 0;
+    let mut failing: Vec<(String, &'static str)> = vec![];
+    let mut ids = HashSet::new();
     for path in entries
         .iter()
         .filter(|p| p.extension().is_some_and(|v| v == "desktop"))
     {
+        // The first data dir that has an id wins (XDG precedence), as in the launcher.
+        let id = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if !ids.insert(id.clone()) {
+            continue;
+        }
         let Ok(text) = read_small(path) else {
             complete = false;
             continue;
@@ -383,11 +406,23 @@ pub fn desktops(dirs: &[PathBuf], search: &[PathBuf]) -> Check {
         match inspect_desktop(&text, search, &icons) {
             Ok(true) => count += 1,
             Ok(false) => {}
-            Err(_) => {
+            Err(reason) => {
                 count += 1;
-                bad += 1;
+                failing.push((id, reason));
             }
         }
+    }
+    let bad = failing.len();
+    failing.sort();
+    const LISTED: usize = 10;
+    let mut list = failing
+        .iter()
+        .take(LISTED)
+        .map(|(id, reason)| format!("{id} ({reason})"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if bad > LISTED {
+        list.push_str(&format!(", +{} more", bad - LISTED));
     }
     Check::new(
         "desktops",
@@ -401,7 +436,12 @@ pub fn desktops(dirs: &[PathBuf], search: &[PathBuf]) -> Check {
             Status::Pass
         },
         &format!(
-            "{count} touch desktop entries checked; {bad} have invalid Exec or Icon{}",
+            "{count} touch desktop entries checked; {bad} have invalid Exec or Icon{}{}",
+            if bad > 0 {
+                format!(": {list}")
+            } else {
+                String::new()
+            },
             if complete { "" } else { "; search incomplete" }
         ),
     )

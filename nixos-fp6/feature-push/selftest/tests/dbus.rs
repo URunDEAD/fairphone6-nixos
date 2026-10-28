@@ -99,7 +99,8 @@ fn private_bus_shapes_properties_absence_and_no_activation() {
     assert_eq!(dbus::check_on(&client, &probe).status, Status::Fail);
     probe.required = false;
     probe.name = "com.fairphone6.Stopped".into();
-    assert_eq!(dbus::check_on(&client, &probe).status, Status::Warn);
+    // D-Bus activatable but not running: started on demand, so it passes.
+    assert_eq!(dbus::check_on(&client, &probe).status, Status::Pass);
     assert!(dbus::owner(&client, &probe.name).unwrap().is_none());
     probe.name = "com.fairphone6.Synthetic1".into();
     let value = Arc::new(Mutex::new(
@@ -345,19 +346,35 @@ fn installed_unit_hint_prevents_skipping_stopped_or_failed_features() {
     let systemctl = bus._dir.path().join("systemctl");
     let cfg = bus._dir.path().join("probes.toml");
     std::fs::write(&cfg, format!("{}unit='synthetic.service'\n", config())).unwrap();
-    for (load, active, expected) in [
-        ("loaded", "inactive", Status::Warn),
-        ("loaded", "active", Status::Fail),
-        ("loaded", "failed", Status::Fail),
-        ("not-found", "inactive", Status::Skip),
+    for (load, active, sub, wanted, expected) in [
+        ("loaded", "inactive", "dead", "", Status::Pass),
+        (
+            "loaded",
+            "inactive",
+            "dead",
+            "graphical-session.target",
+            Status::Warn,
+        ),
+        (
+            "loaded",
+            "activating",
+            "auto-restart",
+            "graphical-session.target",
+            Status::Warn,
+        ),
+        ("loaded", "active", "running", "", Status::Fail),
+        ("loaded", "failed", "failed", "", Status::Fail),
+        ("not-found", "inactive", "dead", "", Status::Skip),
     ] {
         std::fs::write(
             &systemctl,
             format!(
-                "#!{}\nprintf 'LoadState={}\\nActiveState={}\\n'\n",
+                "#!{}\nprintf 'LoadState={}\\nActiveState={}\\nSubState={}\\nWantedBy={}\\nRequiredBy=\\nUpheldBy=\\n'\n",
                 shell.display(),
                 load,
-                active
+                active,
+                sub,
+                wanted
             ),
         )
         .unwrap();

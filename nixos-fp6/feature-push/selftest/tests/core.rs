@@ -1,7 +1,7 @@
 use fp6_selftest::{
     base,
     config::Config,
-    files,
+    dbus, files,
     process::{self, Failure},
     report::{self, Check, Report, Status},
     runner,
@@ -151,6 +151,92 @@ fn touch_desktops_validate_exec_env_and_icons() {
         ),
         Ok(false)
     );
+}
+#[test]
+fn hidden_desktops_need_no_icon_and_failures_are_named() {
+    let temp = tempfile::tempdir().unwrap();
+    let bin = temp.path().join("bin");
+    let apps = temp.path().join("share/applications");
+    let icons = temp.path().join("share/icons/hicolor/scalable/apps");
+    for d in [&bin, &apps, &icons] {
+        fs::create_dir_all(d).unwrap();
+    }
+    let exe = bin.join("fixture-app");
+    fs::write(&exe, "synthetic executable fixture").unwrap();
+    fs::set_permissions(&exe, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::write(icons.join("fixture-icon.svg"), "<svg/>").unwrap();
+    let search = vec![bin.clone()];
+    let none = HashSet::new();
+    let good = include_str!("fixtures/desktops/good.desktop");
+    let no_icon = good.replace("Icon=fixture-icon", "Icon=");
+    assert!(files::inspect_desktop(&no_icon, &search, &none).is_err());
+    for hidden in ["NoDisplay=true", "OnlyShowIn=Old;", "NotShowIn=Lomiri;"] {
+        let text = format!("{no_icon}{hidden}\n");
+        assert_eq!(
+            files::inspect_desktop(&text, &search, &none),
+            Ok(true),
+            "{hidden}"
+        );
+    }
+    let shown = format!("{no_icon}OnlyShowIn=Lomiri;\n");
+    assert!(files::inspect_desktop(&shown, &search, &none).is_err());
+    let deleted = format!("{no_icon}Hidden=true\n");
+    assert_eq!(files::inspect_desktop(&deleted, &search, &none), Ok(false));
+    // Hidden entries still need a working Exec.
+    let broken = format!(
+        "{}NoDisplay=true\n",
+        good.replace("fixture-app", "missing-app")
+    );
+    assert!(files::inspect_desktop(&broken, &search, &none).is_err());
+
+    fs::write(apps.join("good-app.desktop"), good).unwrap();
+    fs::write(apps.join("blank-icon.desktop"), &no_icon).unwrap();
+    fs::write(
+        apps.join("helper.desktop"),
+        format!("{no_icon}NoDisplay=true\n"),
+    )
+    .unwrap();
+    let check = files::desktops(&[temp.path().join("share")], &search);
+    assert_eq!(check.status, Status::Fail);
+    assert!(
+        check.detail.starts_with(
+            "3 touch desktop entries checked; 1 have invalid Exec or Icon: blank-icon ("
+        ),
+        "{}",
+        check.detail
+    );
+    assert!(!check.detail.contains("good-app") && !check.detail.contains("helper"));
+}
+#[test]
+fn stopped_services_on_demand_pass_wanted_or_restarting_warn() {
+    let st = |active: &str, sub: &str, wanted: &str| {
+        format!("LoadState=loaded\nActiveState={active}\nSubState={sub}\nWantedBy={wanted}\nRequiredBy=\nUpheldBy=\n")
+    };
+    use dbus::stopped_unit_status as s;
+    assert_eq!(s(&st("inactive", "dead", ""), false).0, Status::Pass);
+    assert_eq!(s(&st("inactive", "dead", ""), true).0, Status::Pass);
+    assert_eq!(
+        s(&st("inactive", "dead", "graphical-session.target"), true).0,
+        Status::Pass
+    );
+    assert_eq!(
+        s(&st("inactive", "dead", "graphical-session.target"), false).0,
+        Status::Warn
+    );
+    assert_eq!(
+        s(
+            &st("activating", "auto-restart", "graphical-session.target"),
+            false
+        )
+        .0,
+        Status::Warn
+    );
+    assert_eq!(
+        s(&st("activating", "auto-restart", ""), true).0,
+        Status::Warn
+    );
+    assert_eq!(s(&st("failed", "failed", ""), true).0, Status::Fail);
+    assert_eq!(s(&st("active", "running", ""), false).0, Status::Fail);
 }
 #[test]
 fn journal_and_memory_reduce_to_safe_counts() {
