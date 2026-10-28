@@ -1,0 +1,17 @@
+--- a/Fp6BatteryExtras.qml
++++ b/Fp6BatteryExtras.qml
+@@ -73,6 +73,14 @@
+         onClicked: extras.open("Fp6UsagePage.qml")
+     }
+ 
++    // FP6 charging feedback (nixos-fp6/feature-push/charging-feedback).
++    SettingsListItems.SingleValueProgression {
++        objectName: "fp6ChargingFeedback"
++        text: i18n.tr("Charging feedback")
++        value: i18n.tr("Animation, sound, lock screen")
++        onClicked: extras.open("Fp6ChargingFeedbackPage.qml")
++    }
++
+     SettingsListItems.Standard {
+         text: i18n.tr("Show charging speed in the status bar")
+         CheckBox {
