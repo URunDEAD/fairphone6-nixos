@@ -781,7 +781,11 @@ fn sampler(shared: Arc<Shared>, wake_rx: mpsc::Receiver<Wake>, wake_tx: mpsc::Se
             mode_since = now;
             calibrator = (mode == BackMode::Calibrate).then(|| Calibrator::new(now));
             cal_groups = 0;
-            clear_tap_log(&shared);
+            // Starting a run clears the page's log; ending one keeps it, so
+            // the page still sees the calibration result.
+            if mode != BackMode::Normal {
+                clear_tap_log(&shared);
+            }
         }
         if mode == BackMode::Test && now - mode_since > TEST_TIMEOUT {
             end_back_mode("test mode timeout");
