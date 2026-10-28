@@ -146,6 +146,14 @@ let
       # Hardware volume / HFP auto-switch unchanged (options default null).
       # nixos-fp6/feature-push/bt-codecs/README.md
       ({ ... }: { imports = [ ./bt-codecs/module.nix ]; hardware.fairphone6.bluetoothAudio = { enable = true; user = "user"; }; })
+      # On-device LLM runtime (from a Codex worker): llama.cpp llama-server (CPU,
+      # ARMv8.6 dotprod/i8mm) behind the Rust fp6-llm manager, D-Bus
+      # com.fairphone6.LocalLlm1, loopback only; models download only when the
+      # user taps Download (SHA-256 checked); lazy load, idle/memory-pressure/
+      # battery-saver unload; 8192-token context, lowered when RAM is short.
+      # Used by the Assistant. Vulkan and KleidiAI stay off until measured.
+      # results/feature-push-20261024/local-llm/README.md
+      ({ ... }: { imports = [ ./local-llm/module.nix ]; hardware.fairphone6.localLlm = { enable = true; user = "user"; }; })
       ({ config, lib, ... }: let
       kernel = config.mobile.boot.stage-1.kernel.package;
     in {
