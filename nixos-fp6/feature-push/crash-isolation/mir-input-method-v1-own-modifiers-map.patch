@@ -1,0 +1,94 @@
+diff --git a/src/include/server/mir/scene/text_input_hub.h b/src/include/server/mir/scene/text_input_hub.h
+index e8cf622..642a2d2 100644
+--- a/src/include/server/mir/scene/text_input_hub.h
++++ b/src/include/server/mir/scene/text_input_hub.h
+@@ -21,8 +21,10 @@
+ #include "mir/int_wrapper.h"
+ 
+ #include <memory>
++#include <cstdint>
+ #include <optional>
+ #include <string>
++#include <vector>
+ 
+ struct wl_array;
+ 
+@@ -142,7 +144,11 @@ struct TextInputChange
+     std::optional<TextInputKeySym> keysym;
+ 
+     /// \remark Defined for text input v1 and v2, not v3.
+-    std::optional<wl_array*> modifier_map;
++    /// The bytes of the input method's modifiers_map array. A copy: the
++    /// wl_array passed to the request handler is freed by libwayland as soon
++    /// as the handler returns, and this change is sent later (on the next
++    /// commit/keysym, through the Wayland executor).
++    std::optional<std::vector<uint8_t>> modifier_map;
+ 
+     /// \remark Defined for text input v1 and v2, not v3.
+     std::optional<CursorPosition> cursor_position;
+diff --git a/src/server/frontend_wayland/input_method_v1.cpp b/src/server/frontend_wayland/input_method_v1.cpp
+index b030d48..cdb6c37 100644
+--- a/src/server/frontend_wayland/input_method_v1.cpp
++++ b/src/server/frontend_wayland/input_method_v1.cpp
+@@ -327,7 +327,12 @@ private:
+ 
+         void modifiers_map(struct wl_array *map) override
+         {
+-            change.pending_change.modifier_map = map;
++            // Copy: *map belongs to libwayland's request closure and is
++            // freed when this handler returns. Keeping the pointer made the
++            // next text change send freed memory (SIGSEGV in
++            // serialize_closure on the Mir/Wayland thread).
++            auto const* const bytes = static_cast<uint8_t const*>(map->data);
++            change.pending_change.modifier_map = std::vector<uint8_t>(bytes, bytes + map->size);
+             change.waiting_status = InputMethodV1ChangeWaitingStatus::none;
+         }
+ 
+diff --git a/src/server/frontend_wayland/text_input_v1.cpp b/src/server/frontend_wayland/text_input_v1.cpp
+index 344b4f1..b556f92 100644
+--- a/src/server/frontend_wayland/text_input_v1.cpp
++++ b/src/server/frontend_wayland/text_input_v1.cpp
+@@ -23,6 +23,7 @@
+ #include "mir/wayland/client.h"
+ 
+ #include <memory>
++#include <wayland-util.h>
+ #include <boost/throw_exception.hpp>
+ #include <deque>
+ #include <utility>
+@@ -289,7 +290,10 @@ void TextInputV1::send_text_change(ms::TextInputChange const& change)
+     }
+     if (change.modifier_map)
+     {
+-        send_modifiers_map_event(change.modifier_map.value());
++        auto const& bytes = change.modifier_map.value();
++        // Read-only view of the owned bytes for libwayland's marshaller.
++        wl_array map{bytes.size(), bytes.size(), const_cast<uint8_t*>(bytes.data())};
++        send_modifiers_map_event(&map);
+     }
+     if (change.direction)
+     {
+diff --git a/src/server/frontend_wayland/text_input_v2.cpp b/src/server/frontend_wayland/text_input_v2.cpp
+index b169e8b..aa3ad9f 100644
+--- a/src/server/frontend_wayland/text_input_v2.cpp
++++ b/src/server/frontend_wayland/text_input_v2.cpp
+@@ -24,6 +24,7 @@
+ #include <boost/throw_exception.hpp>
+ #include <mir/wayland/client.h>
+ #include <deque>
++#include <wayland-util.h>
+ 
+ namespace mf = mir::frontend;
+ namespace mw = mir::wayland;
+@@ -303,7 +304,10 @@ void mf::TextInputV2::send_text_change(ms::TextInputChange const& change)
+     }
+     if (change.modifier_map)
+     {
+-        send_modifiers_map_event(change.modifier_map.value());
++        auto const& bytes = change.modifier_map.value();
++        // Read-only view of the owned bytes for libwayland's marshaller.
++        wl_array map{bytes.size(), bytes.size(), const_cast<uint8_t*>(bytes.data())};
++        send_modifiers_map_event(&map);
+     }
+     if (change.direction)
+     {
