@@ -35,6 +35,37 @@ pub fn data_dirs() -> Vec<PathBuf> {
     }
     dirs
 }
+/// Executable search path for desktop Exec= entries. A systemd user unit
+/// gets a minimal PATH (coreutils, systemd, ...), while the launcher resolves
+/// Exec in the session PATH, so the session/NixOS profile directories are
+/// always appended after the inherited PATH.
+pub fn exec_search_dirs() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> =
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect();
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let user = std::env::var("USER").ok().filter(|u| !u.is_empty()).or_else(|| {
+        nix::unistd::User::from_uid(nix::unistd::getuid())
+            .ok()
+            .flatten()
+            .map(|u| u.name)
+    });
+    if let Some(home) = &home {
+        dirs.push(home.join(".local/bin"));
+    }
+    dirs.push("/run/wrappers/bin".into());
+    if let Some(home) = &home {
+        dirs.push(home.join(".nix-profile/bin"));
+        dirs.push(home.join(".local/state/nix/profile/bin"));
+    }
+    if let Some(user) = &user {
+        dirs.push(PathBuf::from("/etc/profiles/per-user").join(user).join("bin"));
+    }
+    dirs.push("/nix/var/nix/profiles/default/bin".into());
+    dirs.push("/run/current-system/sw/bin".into());
+    let mut seen = HashSet::new();
+    dirs.retain(|d| !d.as_os_str().is_empty() && seen.insert(d.clone()));
+    dirs
+}
 pub fn schema_dirs() -> Vec<PathBuf> {
     let mut dirs = vec![];
     if let Some(p) = std::env::var_os("GSETTINGS_SCHEMA_DIR") {

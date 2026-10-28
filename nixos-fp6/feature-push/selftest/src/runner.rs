@@ -39,8 +39,7 @@ pub fn worker(id: &str, cfg: &Config) -> Check {
         "schemas" => files::schemas(&files::schema_dirs()),
         "desktops" => files::desktops(
             &files::data_dirs(),
-            &std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
-                .collect::<Vec<_>>(),
+            &files::exec_search_dirs(),
         ),
         _ if base::CHECKS.contains(&id) => base::check(id),
         _ => Check::new("worker", Status::Fail, "Unknown check identifier"),

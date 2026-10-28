@@ -338,3 +338,10 @@ fn inherited_array_keys_are_rejected_even_from_non_fairphone_parent() {
         Ok(1)
     );
 }
+#[test]
+fn exec_search_covers_session_profiles() {
+    let dirs = files::exec_search_dirs();
+    for d in ["/run/wrappers/bin", "/run/current-system/sw/bin"] {
+        assert!(dirs.iter().any(|p| p == std::path::Path::new(d)), "{d}");
+    }
+}
