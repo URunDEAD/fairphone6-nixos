@@ -26,6 +26,11 @@
 #    session (greeter or user) the socket exists and the check passes at once,
 #    so ExecStart / ExecStopPost / Restart / PartOf stay as lomiri-gpu-fp6.nix
 #    and lomiri-polish-fp6.nix set them.
+#  * hideIndicatorsClient: Lomiri installs indicators-client.desktop, its
+#    developer test app for the indicator menus, as a visible touch app with
+#    an empty Icon= (a blank tile in the app drawer; fp6-selftest's desktops
+#    check failed on it on r4). It is set to NoDisplay=true; the binary stays
+#    installed.
 { config, lib, pkgs, ... }:
 let
   cfg = config.hardware.fairphone6.lomiriMisc;
@@ -97,6 +102,11 @@ in {
       default = true;
       description = "Only start lomiri-keyboard once a Wayland compositor socket exists.";
     };
+    hideIndicatorsClient = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = "Hide Lomiri's indicators-client test app from the app drawer.";
+    };
     keyboardSocketWaitSeconds = lib.mkOption {
       type = lib.types.ints.between 1 30;
       default = 5;
@@ -116,6 +126,19 @@ in {
     (lib.mkIf cfg.greeterKeyboard {
       systemd.user.services.lomiri-keyboard.serviceConfig.ExecCondition = "${waitWaylandSocket}";
       system.build.fp6-lomiri-keyboard-wait-wayland = waitWaylandSocket;
+    })
+    (lib.mkIf cfg.hideIndicatorsClient {
+      nixpkgs.overlays = [ (_final: prev: {
+        lomiri = prev.lomiri.overrideScope (_lfinal: lprev: {
+          lomiri = lprev.lomiri.overrideAttrs (old: {
+            postInstall = (old.postInstall or "") + ''
+              f=$out/share/applications/indicators-client.desktop
+              grep -qx 'NoDisplay=false' "$f"
+              sed -i 's/^NoDisplay=false$/NoDisplay=true/' "$f"
+            '';
+          });
+        });
+      }) ];
     })
     {
       assertions = [{
