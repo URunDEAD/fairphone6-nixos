@@ -21,6 +21,8 @@ Window {
             font.pixelSize: 48
             focus: true
             inputMethodHints: Qt.ImhNone
+            // render.sh checks what the keyboard committed.
+            onTextChanged: console.log("fp6-field-text: [" + text + "]")
         }
     }
     // "clear" button (render.sh taps it between scenarios).

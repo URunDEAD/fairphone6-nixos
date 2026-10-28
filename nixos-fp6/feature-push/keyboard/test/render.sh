@@ -10,7 +10,11 @@ set -euo pipefail
 out=${1:?usage: fp6-keyboard-render OUTDIR}
 mkdir -p "$out"
 work=$(mktemp -d)
-cleanup() { kill "${pids[@]}" 2>/dev/null || true; rm -rf "$work"; }
+cleanup() {
+  kill "${pids[@]}" 2>/dev/null || true
+  cp "$work"/*.log "$out"/ 2>/dev/null || true
+  rm -rf "$work"
+}
 pids=()
 trap cleanup EXIT
 
@@ -58,12 +62,13 @@ printf '[Icon Theme]\nName=hicolor\nInherits=suru\nDirectories=\n' >"$XDG_DATA_H
 export XDG_DATA_DIRS="$XDG_DATA_HOME:$SURU_ICONS/share"
 
 kbd_pid=
-start_keyboard() { # active-language enabled-languages
+start_keyboard() { # active-language enabled-languages [extra keyfile lines]
   [ -n "$kbd_pid" ] && { kill "$kbd_pid" 2>/dev/null || true; wait "$kbd_pid" 2>/dev/null || true; }
   cat >"$XDG_CONFIG_HOME/glib-2.0/settings/keyfile" <<KEYS
 [org/maliit/keyboard/maliit]
 active-language='$1'
 enabled-languages=$2
+${3:-}
 KEYS
   "$MALIIT_KEYBOARD/bin/maliit-keyboard" >>"$work/maliit.log" 2>&1 &
   kbd_pid=$!
@@ -155,7 +160,42 @@ shot lang-switch-space-swipe-to-en
 type_osk "see you to"; shot en-ribbon-see-you-to
 fresh_client
 
+# Dictation key (maliit-keyboard-dictation-key.patch) against the fake
+# com.fairphone6.Dictation1 (tests/fp6/fake_dictation_service.h): no
+# microphone, Stop returns a fixed synthetic sentence after 1.5 s.
+# Setting on but no service: no key (the bottom row is unchanged).
+"$FAKE_DICTATION" "Ne vedem mâine la cafea." >"$work/fake.log" 2>&1 &
+fake_pid=$!
+pids+=("$fake_pid")
+sleep 1
+grep -q ready "$work/fake.log"
+start_keyboard ro "['en', 'ro']" "dictation-key=true"
+fresh_client
+type_osk "salut"
+mic_x=$(( KW + 48 + KW + KW / 2 )) # symbol key (+ action padding 2 gu), globe, mic
+read -r _ sy < <(space_xy)
+tap "$mic_x" "$sy"; sleep 0.8
+shot dictation-listening
+tap "$mic_x" "$sy"; sleep 0.5
+shot dictation-transcribing
+sleep 2.5
+shot dictation-inserted
+grep -q 'fp6-field-text: \[Salut Ne vedem mâine la cafea. \]' "$work/client.log" \
+  || { echo "dictation text not inserted:" >&2; grep fp6-field-text "$work/client.log" | tail -3 >&2; exit 1; }
+# Long-press while listening cancels: nothing more is inserted.
+tap "$mic_x" "$sy"; sleep 0.8
+hold "$mic_x" "$sy"; release
+sleep 2.5
+shot dictation-cancelled
+last=$(grep fp6-field-text "$work/client.log" | tail -1)
+[ "$last" = 'qml: fp6-field-text: [Salut Ne vedem mâine la cafea. ]' ] \
+  || { echo "text changed after cancel: $last" >&2; exit 1; }
+kill "$fake_pid"; sleep 1
+shot dictation-service-gone
+fresh_client
+
 cp "$work/maliit.log" "$out/maliit.log"
+cp "$work/client.log" "$out/client.log"
 if grep -E 'qml:.*(Error|error)|is not a type|ReferenceError|TypeError|Cannot assign|file:.*\.qml:[0-9]+' "$work/maliit.log" \
     | grep -v 'Binding loop' >"$out/qml-errors.txt"; then
   echo "QML errors in the keyboard log:" >&2; cat "$out/qml-errors.txt" >&2; exit 1

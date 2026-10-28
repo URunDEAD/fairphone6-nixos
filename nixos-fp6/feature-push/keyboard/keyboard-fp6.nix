@@ -28,7 +28,13 @@
 #    with ț first on t (long-press gives ț; ă on a, ș on s, î on i, â second
 #    on a), „ ” on the comma key; quick horizontal swipe on space switches
 #    language (globe key still taps to the next, long-press for the menu);
-#    a zero-width MicKey slot for the dictation bridge (not wired).
+#    a zero-width MicKey slot for the dictation key.
+#  * maliit-keyboard-dictation-key.patch: the microphone key, wired to the
+#    on-device dictation service (dictation/, com.fairphone6.Dictation1) by a
+#    C++ DictationBridge in the keyboard plugin. Tap to listen, tap again to
+#    insert the text at the cursor (sendCommitString), long-press to cancel.
+#    Shown when the GSettings key dictation-key is on and the service runs;
+#    see dictationKey below.
 #  * enabled-languages default ['en', 'ro'] as a dconf system-db value (the
 #    user's own choice in Settings > Language & Text > Keyboard layouts wins).
 #  * Generated key click WAV at the path the GSettings default names, and the
@@ -37,6 +43,7 @@
 { config, lib, pkgs, ... }:
 let
   cfg = config.hardware.fairphone6.keyboard;
+  dictationEnabled = lib.attrByPath [ "hardware" "fairphone6" "dictation" "enable" ] false config;
 in {
   options.hardware.fairphone6.keyboard = {
     enable = lib.mkEnableOption "maliit-keyboard spell checking, word prediction and Romanian support";
@@ -58,6 +65,19 @@ in {
         database; a value the user sets in Settings wins).
       '';
     };
+    dictationKey = lib.mkOption {
+      type = lib.types.bool;
+      default = dictationEnabled;
+      defaultText = lib.literalExpression "config.hardware.fairphone6.dictation.enable";
+      description = ''
+        Default of org.maliit.keyboard.maliit dictation-key: show the
+        microphone key for on-device dictation. The user can change it in
+        the dconf/GSettings database, e.g. with
+        `gsettings set org.maliit.keyboard.maliit dictation-key false`.
+        Even when on, the key only appears while the dictation service
+        (com.fairphone6.Dictation1) is running and the field is plain text.
+      '';
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -67,6 +87,7 @@ in {
     programs.dconf.profiles.user.databases = [{
       settings."org/maliit/keyboard/maliit" = {
         enabled-languages = cfg.defaultEnabledLanguages;
+        dictation-key = cfg.dictationKey;
       };
     }];
 

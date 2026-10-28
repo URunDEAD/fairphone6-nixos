@@ -17,7 +17,10 @@ in {
     patches = (old.patches or [ ]) ++ [
       ./maliit-keyboard-ngram-prediction.patch
       ./maliit-keyboard-ro-layout-space-swipe-mic-slot.patch
+      ./maliit-keyboard-dictation-key.patch
     ];
+    # dbus-daemon for the dictation bridge test below.
+    nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ lib.optional canExecute final.dbus;
     cmakeFlags = (old.cmakeFlags or [ ]) ++ [
       "-DHUNSPELL_DICT_PATH=${dicts}/share/hunspell"
     ];
@@ -30,6 +33,16 @@ in {
       ./fp6-ngrampredictor-test \
         ${models}/share/fp6-keyboard/ngram_ro.tsv ${models}/share/fp6-keyboard/parity_ro.tsv \
         ${models}/share/fp6-keyboard/ngram_en.tsv ${models}/share/fp6-keyboard/parity_en.tsv
+      # Microphone key <-> com.fairphone6.Dictation1 bridge against a fake
+      # service on a private session bus (no microphone, synthetic text).
+      cat > fp6-session.conf <<EOF
+      <!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+       "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+      <busconfig><type>session</type><listen>unix:tmpdir=$TMPDIR</listen>
+      <policy context="default"><allow send_destination="*" eavesdrop="true"/><allow eavesdrop="true"/><allow own="*"/></policy>
+      </busconfig>
+      EOF
+      dbus-run-session --config-file=fp6-session.conf -- ./fp6-dictationbridge-test
     '';
     postInstall = (old.postInstall or "") + ''
       for l in en ro; do
@@ -41,6 +54,8 @@ in {
       grep -q "$out/share/maliit/keyboard2/sounds/key_tick2_quiet.wav" \
         $out/share/glib-2.0/schemas/org.maliit.keyboard.maliit.gschema.xml
       test -e $out/lib/maliit/keyboard2/qml/keys/MicKey.qml
+      grep -q dictation.toggle $out/lib/maliit/keyboard2/qml/keys/MicKey.qml
+      grep -q '"dictation-key"' $out/share/glib-2.0/schemas/org.maliit.keyboard.maliit.gschema.xml
     '';
     preFixup = (old.preFixup or "") + ''
       qtWrapperArgs+=(--prefix QT_PLUGIN_PATH : ${final.lomiri.hfd-service}/${qtPluginPrefix})

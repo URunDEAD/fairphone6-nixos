@@ -1,0 +1,1373 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 474b283..bfc56ff 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -152,7 +152,9 @@ set(MALIIT_KEYBOARD_COMMON_SOURCES
+         src/plugin/keyboardsettings.cpp
+         src/plugin/keyboardsettings.h
+         src/plugin/device.cpp
+-        src/plugin/device.h)
++        src/plugin/device.h
++        src/plugin/dictationbridge.cpp
++        src/plugin/dictationbridge.h)
+ 
+ add_library(maliit-keyboard-common STATIC ${MALIIT_KEYBOARD_COMMON_SOURCES})
+ target_link_libraries(maliit-keyboard-common Qt5::DBus Qt5::QuickControls2 Maliit::Plugins maliit-keyboard-lib maliit-keyboard-view gsettings-qt Qt5::Multimedia ${Intl_LIBRARIES})
+@@ -427,6 +429,20 @@ if(enable-tests)
+             tests/unittests/ut_word-candidates/wordengineprobe.h)
+     create_test(ut_wordengine)
+ 
++    # FP6: dictation bridge test (run under a private session bus by the Nix
++    # build) and the fake service used by the keyboard render harness.
++    add_executable(fp6-dictationbridge-test
++            tests/fp6/dictationbridge_test.cpp
++            tests/fp6/fake_dictation_service.h
++            src/plugin/dictationbridge.cpp
++            src/plugin/dictationbridge.h)
++    target_include_directories(fp6-dictationbridge-test PRIVATE src/plugin tests/fp6)
++    target_link_libraries(fp6-dictationbridge-test Qt5::Core Qt5::DBus)
++    add_executable(fp6-fake-dictation
++            tests/fp6/fake_dictation_main.cpp
++            tests/fp6/fake_dictation_service.h)
++    target_link_libraries(fp6-fake-dictation Qt5::Core Qt5::DBus)
++
+     set_property(TEST ${test_targets} PROPERTY ENVIRONMENT
+             MALIIT_PLUGINS_DATADIR=${CMAKE_SOURCE_DIR}/data)
+ 
+diff --git a/data/schemas/org.maliit.keyboard.maliit.gschema.xml b/data/schemas/org.maliit.keyboard.maliit.gschema.xml
+index f999b36..b6aff5f 100644
+--- a/data/schemas/org.maliit.keyboard.maliit.gschema.xml
++++ b/data/schemas/org.maliit.keyboard.maliit.gschema.xml
+@@ -92,5 +92,10 @@
+       <description>Shows the magnifier when a key is pressed.</description>
+       <default>true</default>
+     </key>
++    <key name="dictation-key" type="b">
++      <summary>Dictation key</summary>
++      <description>Show the microphone key for on-device voice dictation (com.fairphone6.Dictation1). The key only appears while the dictation service is running.</description>
++      <default>false</default>
++    </key>
+   </schema>
+ </schemalist>
+diff --git a/qml/keys/MicKey.qml b/qml/keys/MicKey.qml
+index b2bb821..974b1b0 100644
+--- a/qml/keys/MicKey.qml
++++ b/qml/keys/MicKey.qml
+@@ -1,11 +1,14 @@
+ /*
+- * FP6: reserved slot for a dictation (microphone) key.
++ * FP6: microphone key for on-device dictation.
+  *
+- * Zero width and invisible until a "dictation" context object exists and
+- * reports available === true. The dictation bridge (com.fairphone6.Dictation1,
+- * ~/Desktop/fp6-codex/dictation/integration) is expected to expose that object
+- * from InputMethod and implement start()/stop()/cancel() there; this key only
+- * forwards press/release. Nothing calls D-Bus from here.
++ * "dictation" is the DictationBridge context object set by InputMethod
++ * (src/plugin/dictationbridge.h). The key is zero width and invisible
++ * unless dictation.available: the dictation-key setting is on, the
++ * com.fairphone6.Dictation1 service is running and the field is plain text.
++ *
++ * Tap: start listening. Tap again: stop; the recognised text is committed at
++ * the cursor by InputMethod. Long-press while active: cancel (nothing is
++ * inserted). Nothing calls D-Bus from QML.
+  *
+  * This program is free software; you can redistribute it and/or modify
+  * it under the terms of the GNU Lesser General Public License as published by
+@@ -13,13 +16,17 @@
+  */
+ 
+ import QtQuick 2.4
++import QtQuick.Controls 2.12
+ import MaliitKeyboard 2.0
+ 
+ ActionKey {
+     id: micKey
+ 
+-    readonly property bool available: typeof dictation !== "undefined" && dictation !== null
+-                                      && dictation.available === true
++    readonly property bool hasBridge: typeof dictation !== "undefined" && dictation !== null
++    readonly property bool available: hasBridge && dictation.available === true
++    readonly property string phase: hasBridge ? dictation.phase : "idle"
++    readonly property bool active: phase !== "idle"
++    readonly property bool recording: phase === "listening" || phase === "starting"
+     property bool held: false
+ 
+     visible: available
+@@ -34,17 +41,98 @@ ActionKey {
+     overridePressArea: true
+     action: "dictation"
+ 
++    Accessible.role: Accessible.Button
++    Accessible.name: recording ? qsTr("Stop dictation") : qsTr("Voice dictation")
++
++    function statusText() {
++        if (phase === "starting")
++            return qsTr("Starting microphone…");
++        if (phase === "listening")
++            return qsTr("Listening… tap to stop");
++        if (phase === "transcribing")
++            return qsTr("Writing…");
++        if (!hasBridge)
++            return "";
++        switch (dictation.message) {
++        case "busy": return qsTr("Microphone is in use");
++        case "no-model": return qsTr("No speech model installed (Voice dictation settings)");
++        case "no-service": return qsTr("Dictation is not running");
++        case "limit": return qsTr("Stopped after 30 seconds, nothing inserted");
++        case "failed": return qsTr("Dictation failed");
++        case "not-here": return qsTr("Dictation is off in this field");
++        case "nothing-heard": return qsTr("Nothing recognised");
++        }
++        return "";
++    }
++
+     onPressed: {
++        held = false;
+         if (!available)
+             return;
+         Feedback.keyPressed();
++    }
++    onPressAndHold: {
++        if (!available || !active)
++            return;
++        Feedback.keyPressed();
+         held = true;
+-        dictation.start();
++        dictation.cancel();
+     }
+     onReleased: {
+-        if (!available || !held)
++        if (!available || held) {
++            held = false;
+             return;
+-        held = false;
+-        dictation.stop();
++        }
++        dictation.toggle();
++    }
++
++    // Recording: the key turns red and pulses. Transcribing: a spinner.
++    Rectangle {
++        id: recordingFill
++        visible: micKey.available && micKey.active
++        anchors.top: parent.top
++        anchors.left: parent.left
++        anchors.right: parent.right
++        anchors.margins: micKey.keyMargin
++        height: panel.keyHeight - micKey.rowMargin - 2 * micKey.keyMargin
++        radius: Device.gu(0.6)
++        color: micKey.recording ? "#d32f2f" : "#757575"
++        opacity: 0.55
++        SequentialAnimation on opacity {
++            running: micKey.recording
++            loops: Animation.Infinite
++            NumberAnimation { from: 0.35; to: 0.8; duration: 600; easing.type: Easing.InOutQuad }
++            NumberAnimation { from: 0.8; to: 0.35; duration: 600; easing.type: Easing.InOutQuad }
++            onRunningChanged: if (!running) recordingFill.opacity = 0.55
++        }
++    }
++    BusyIndicator {
++        visible: micKey.available && micKey.phase === "transcribing"
++        running: visible
++        anchors.centerIn: recordingFill
++        width: Math.min(recordingFill.width, recordingFill.height) * 0.9
++        height: width
++    }
++
++    // Non-modal status bubble above the key (listening state and errors).
++    Rectangle {
++        id: bubble
++        readonly property string text: micKey.available ? micKey.statusText() : ""
++        visible: text !== ""
++        z: 10
++        anchors.bottom: parent.top
++        anchors.bottomMargin: Device.gu(0.5)
++        x: 0
++        width: bubbleLabel.implicitWidth + Device.gu(2)
++        height: bubbleLabel.implicitHeight + Device.gu(1)
++        radius: height / 2
++        color: micKey.recording ? "#d32f2f" : "#424242"
++        Label {
++            id: bubbleLabel
++            anchors.centerIn: parent
++            text: bubble.text
++            color: "white"
++            font.pixelSize: Device.gu(1.6)
++        }
+     }
+ }
+diff --git a/src/plugin/dictationbridge.cpp b/src/plugin/dictationbridge.cpp
+new file mode 100644
+index 0000000..a1a2538
+--- /dev/null
++++ b/src/plugin/dictationbridge.cpp
+@@ -0,0 +1,311 @@
++/*
++ * FP6: see dictationbridge.h.
++ *
++ * Service contract (dictation/docs/com.fairphone6.Dictation1.xml, DESIGN.md):
++ *   Start() -> t id; Stop(t id) -> s text (may take up to 90 s; clients use a
++ *   100 s timeout); Cancel(t id); StatusChanged(s state, b mic_active) with
++ *   state idle/starting/recording/transcribing. Only the connection that
++ *   called Start may Stop/Cancel, so one QDBusConnection is used throughout.
++ *   The service never puts recognised text in a signal; it only comes back in
++ *   the Stop reply, and this bridge never logs it.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU Lesser General Public License as published by
++ * the Free Software Foundation; version 3.
++ */
++
++#include "dictationbridge.h"
++
++#include <QDebug>
++#include <QtDBus/QDBusConnectionInterface>
++#include <QtDBus/QDBusMessage>
++#include <QtDBus/QDBusPendingCallWatcher>
++#include <QtDBus/QDBusPendingReply>
++#include <QtDBus/QDBusServiceWatcher>
++
++using namespace MaliitKeyboard;
++
++const QString DictationBridge::DefaultService = QStringLiteral("com.fairphone6.Dictation1");
++const QString DictationBridge::ObjectPath = QStringLiteral("/com/fairphone6/Dictation1");
++const QString DictationBridge::Interface = QStringLiteral("com.fairphone6.Dictation1");
++
++namespace {
++const int StartTimeoutMs = 25000;
++const int StopTimeoutMs = 100000;
++const int CancelTimeoutMs = 25000;
++}
++
++DictationBridge::DictationBridge(const QDBusConnection &bus, QObject *parent, const QString &service)
++    : QObject(parent)
++    , m_bus(bus)
++    , m_service(service)
++    , m_watcher(new QDBusServiceWatcher(service, bus,
++                                        QDBusServiceWatcher::WatchForRegistration
++                                        | QDBusServiceWatcher::WatchForUnregistration, this))
++{
++    m_messageTimer.setSingleShot(true);
++    connect(&m_messageTimer, &QTimer::timeout, this, [this]() { setMessage(QString(), 0); });
++
++    connect(m_watcher, &QDBusServiceWatcher::serviceRegistered, this, &DictationBridge::onServiceRegistered);
++    connect(m_watcher, &QDBusServiceWatcher::serviceUnregistered, this, &DictationBridge::onServiceUnregistered);
++
++    if (!m_bus.isConnected()) {
++        qWarning() << "fp6 dictation: no session bus, microphone key disabled";
++        return;
++    }
++
++    // Subscribe before asking whether the service is there (no missed idle).
++    m_bus.connect(m_service, ObjectPath, Interface, QStringLiteral("StatusChanged"),
++                  this, SLOT(onStatusChanged(QString,bool)));
++
++    QDBusMessage hasOwner = QDBusMessage::createMethodCall(
++        QStringLiteral("org.freedesktop.DBus"), QStringLiteral("/org/freedesktop/DBus"),
++        QStringLiteral("org.freedesktop.DBus"), QStringLiteral("NameHasOwner"));
++    hasOwner << m_service;
++    auto *w = new QDBusPendingCallWatcher(m_bus.asyncCall(hasOwner), this);
++    connect(w, &QDBusPendingCallWatcher::finished, this, [this](QDBusPendingCallWatcher *w) {
++        QDBusPendingReply<bool> reply = *w;
++        w->deleteLater();
++        if (!reply.isError() && reply.value() && !m_registered)
++            onServiceRegistered();
++    });
++}
++
++DictationBridge::~DictationBridge()
++{
++    // Do not leave the microphone open if the keyboard goes away mid-session.
++    if (m_id != 0 && (m_phase == Phase::Listening || m_phase == Phase::Transcribing))
++        sendCancel(m_id);
++}
++
++bool DictationBridge::available() const { return m_available; }
++
++QString DictationBridge::phase() const
++{
++    switch (m_phase) {
++    case Phase::Starting: return QStringLiteral("starting");
++    case Phase::Listening: return QStringLiteral("listening");
++    case Phase::Transcribing: return QStringLiteral("transcribing");
++    case Phase::Idle: break;
++    }
++    return QStringLiteral("idle");
++}
++
++bool DictationBridge::listening() const { return m_phase == Phase::Listening || m_phase == Phase::Starting; }
++bool DictationBridge::busy() const { return m_phase == Phase::Transcribing; }
++QString DictationBridge::message() const { return m_message; }
++
++void DictationBridge::setEnabled(bool enabled)
++{
++    if (m_enabled == enabled)
++        return;
++    m_enabled = enabled;
++    if (!enabled)
++        invalidate();
++    updateAvailable();
++}
++
++void DictationBridge::setAllowed(bool allowed)
++{
++    if (m_allowed == allowed)
++        return;
++    m_allowed = allowed;
++    if (!allowed)
++        invalidate();
++    updateAvailable();
++}
++
++void DictationBridge::updateAvailable()
++{
++    const bool available = m_enabled && m_registered && m_allowed;
++    if (available == m_available)
++        return;
++    m_available = available;
++    Q_EMIT availableChanged();
++}
++
++void DictationBridge::setPhase(Phase phase)
++{
++    if (phase == m_phase)
++        return;
++    m_phase = phase;
++    if (phase == Phase::Listening)
++        m_listenClock.start();
++    Q_EMIT phaseChanged();
++}
++
++void DictationBridge::setMessage(const QString &message, int timeoutMs)
++{
++    m_messageTimer.stop();
++    if (!message.isEmpty() && timeoutMs > 0)
++        m_messageTimer.start(timeoutMs);
++    if (message == m_message)
++        return;
++    m_message = message;
++    Q_EMIT messageChanged();
++}
++
++QDBusPendingCallWatcher *DictationBridge::call(const QString &method, const QList<QVariant> &args, int timeoutMs)
++{
++    QDBusMessage msg = QDBusMessage::createMethodCall(m_service, ObjectPath, Interface, method);
++    msg.setArguments(args);
++    return new QDBusPendingCallWatcher(m_bus.asyncCall(msg, timeoutMs), this);
++}
++
++void DictationBridge::sendCancel(quint64 id)
++{
++    auto *w = call(QStringLiteral("Cancel"), { QVariant::fromValue<qulonglong>(id) }, CancelTimeoutMs);
++    connect(w, &QDBusPendingCallWatcher::finished, w, &QObject::deleteLater);
++}
++
++void DictationBridge::toggle()
++{
++    switch (m_phase) {
++    case Phase::Idle:
++        break;
++    case Phase::Starting:
++        // Second tap before Start replied: stop as soon as the id arrives.
++        m_stopWhenStarted = true;
++        return;
++    case Phase::Listening:
++        stopSession();
++        return;
++    case Phase::Transcribing:
++        // Text is on its way; a tap here does nothing (long-press cancels).
++        return;
++    }
++
++    if (!m_available) {
++        setMessage(m_registered ? QStringLiteral("not-here") : QStringLiteral("no-service"));
++        return;
++    }
++
++    setMessage(QString(), 0);
++    m_stopWhenStarted = false;
++    m_id = 0;
++    setPhase(Phase::Starting);
++
++    const quint64 generation = m_generation;
++    auto *w = call(QStringLiteral("Start"), {}, StartTimeoutMs);
++    connect(w, &QDBusPendingCallWatcher::finished, this, [this, generation](QDBusPendingCallWatcher *w) {
++        QDBusPendingReply<qulonglong> reply = *w;
++        w->deleteLater();
++        if (generation != m_generation) {
++            // The field went away while starting: release the microphone.
++            if (!reply.isError())
++                sendCancel(reply.value());
++            return;
++        }
++        if (reply.isError()) {
++            setPhase(Phase::Idle);
++            setMessage(describeError(reply.error().message()));
++            return;
++        }
++        m_id = reply.value();
++        setPhase(Phase::Listening);
++        if (m_stopWhenStarted) {
++            m_stopWhenStarted = false;
++            stopSession();
++        }
++    });
++}
++
++void DictationBridge::stopSession()
++{
++    if (m_phase != Phase::Listening || m_id == 0)
++        return;
++    setPhase(Phase::Transcribing);
++
++    const quint64 generation = m_generation;
++    auto *w = call(QStringLiteral("Stop"), { QVariant::fromValue<qulonglong>(m_id) }, StopTimeoutMs);
++    connect(w, &QDBusPendingCallWatcher::finished, this, [this, generation](QDBusPendingCallWatcher *w) {
++        QDBusPendingReply<QString> reply = *w;
++        w->deleteLater();
++        if (generation != m_generation)
++            return; // never deliver text to a field other than the one it was spoken for
++        m_id = 0;
++        setPhase(Phase::Idle);
++        if (reply.isError()) {
++            setMessage(describeError(reply.error().message()));
++            return;
++        }
++        const QString text = reply.value().trimmed();
++        if (text.isEmpty()) {
++            setMessage(QStringLiteral("nothing-heard"));
++            return;
++        }
++        Q_EMIT finalText(text);
++    });
++}
++
++void DictationBridge::cancel()
++{
++    invalidate();
++}
++
++void DictationBridge::invalidate()
++{
++    ++m_generation;
++    m_stopWhenStarted = false;
++    if (m_id != 0 && m_phase != Phase::Idle)
++        sendCancel(m_id);
++    m_id = 0;
++    setPhase(Phase::Idle);
++}
++
++void DictationBridge::onStatusChanged(const QString &state, bool micActive)
++{
++    Q_UNUSED(micActive);
++    // The service goes idle before its Stop reply arrives, so only a session
++    // that is still listening has ended on its own (30 s limit, capture
++    // error). The text of that session is discarded by the service.
++    if (state == QLatin1String("idle") && m_phase == Phase::Listening) {
++        const bool limit = m_listenClock.isValid() && m_listenClock.elapsed() >= 29000;
++        ++m_generation;
++        m_id = 0;
++        setPhase(Phase::Idle);
++        setMessage(limit ? QStringLiteral("limit") : QStringLiteral("failed"));
++    }
++}
++
++void DictationBridge::onServiceRegistered()
++{
++    m_registered = true;
++    updateAvailable();
++}
++
++void DictationBridge::onServiceUnregistered()
++{
++    m_registered = false;
++    // Whatever was running died with the service.
++    ++m_generation;
++    m_id = 0;
++    m_stopWhenStarted = false;
++    if (m_phase != Phase::Idle)
++        setMessage(QStringLiteral("failed"));
++    setPhase(Phase::Idle);
++    updateAvailable();
++}
++
++QString DictationBridge::describeError(const QString &serviceMessage)
++{
++    if (serviceMessage.contains(QLatin1String("Model missing")))
++        return QStringLiteral("no-model");
++    if (serviceMessage == QLatin1String("Busy"))
++        return QStringLiteral("busy");
++    if (serviceMessage.contains(QLatin1String("Recording limit")))
++        return QStringLiteral("limit");
++    return QStringLiteral("failed");
++}
++
++QString DictationBridge::spaced(const QString &left, const QString &right, const QString &result)
++{
++    QString text = result.trimmed();
++    if (text.isEmpty())
++        return text;
++    if (!left.isEmpty() && !left.back().isSpace())
++        text.prepend(QLatin1Char(' '));
++    if (right.isEmpty() || !(right.front().isSpace() || right.front().isPunct()))
++        text.append(QLatin1Char(' '));
++    return text;
++}
+diff --git a/src/plugin/dictationbridge.h b/src/plugin/dictationbridge.h
+new file mode 100644
+index 0000000..76b8e0e
+--- /dev/null
++++ b/src/plugin/dictationbridge.h
+@@ -0,0 +1,125 @@
++/*
++ * FP6: bridge between the keyboard's microphone key and the on-device
++ * dictation service (com.fairphone6.Dictation1 on the session bus,
++ * nixos-fp6/feature-push/dictation).
++ *
++ * Tap the key: Start. Tap again: Stop, and the recognised text is emitted
++ * through finalText() so InputMethod can commit it to the focused field.
++ * Long-press: Cancel. All D-Bus calls are asynchronous.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU Lesser General Public License as published by
++ * the Free Software Foundation; version 3.
++ */
++
++#ifndef MALIIT_KEYBOARD_DICTATIONBRIDGE_H
++#define MALIIT_KEYBOARD_DICTATIONBRIDGE_H
++
++#include <QElapsedTimer>
++#include <QObject>
++#include <QString>
++#include <QTimer>
++#include <QtDBus/QDBusConnection>
++
++class QDBusPendingCallWatcher;
++class QDBusServiceWatcher;
++
++namespace MaliitKeyboard {
++
++class DictationBridge : public QObject
++{
++    Q_OBJECT
++    // The key is shown when this is true.
++    Q_PROPERTY(bool available READ available NOTIFY availableChanged)
++    // "idle", "starting", "listening", "transcribing"
++    Q_PROPERTY(QString phase READ phase NOTIFY phaseChanged)
++    Q_PROPERTY(bool listening READ listening NOTIFY phaseChanged)
++    Q_PROPERTY(bool busy READ busy NOTIFY phaseChanged)
++    // Short, non-modal status for the key's bubble, as a code the QML
++    // translates: "", "busy", "no-model", "no-service", "limit", "failed",
++    // "not-here", "nothing-heard".
++    Q_PROPERTY(QString message READ message NOTIFY messageChanged)
++
++public:
++    static const QString DefaultService;
++    static const QString ObjectPath;
++    static const QString Interface;
++
++    explicit DictationBridge(const QDBusConnection &bus,
++                             QObject *parent = nullptr,
++                             const QString &service = DefaultService);
++    ~DictationBridge() override;
++
++    bool available() const;
++    QString phase() const;
++    bool listening() const;
++    bool busy() const;
++    QString message() const;
++
++    bool serviceRegistered() const { return m_registered; }
++
++    //! The user setting (GSettings dictation-key).
++    void setEnabled(bool enabled);
++    //! Whether the focused field may receive dictation (free text, not hidden).
++    void setAllowed(bool allowed);
++
++    //! Mic key tap: start when idle, stop when listening.
++    Q_INVOKABLE void toggle();
++    //! Mic key long-press, or the user aborting: discard the session.
++    Q_INVOKABLE void cancel();
++    //! The input context went away (focus loss, field change, hide, reset):
++    //! cancel any session and drop any result still on its way.
++    void invalidate();
++
++    //! Text to commit for a result, given the text left/right of the cursor:
++    //! trimmed; a space before it unless at the start or after whitespace,
++    //! a space after it unless more text follows that starts with whitespace
++    //! or punctuation. Empty when there is nothing to insert.
++    static QString spaced(const QString &left, const QString &right, const QString &result);
++
++    //! Message code for a service error text (see the message property).
++    static QString describeError(const QString &serviceMessage);
++
++Q_SIGNALS:
++    void availableChanged();
++    void phaseChanged();
++    void messageChanged();
++    //! Recognised text for the input context that was current at Start.
++    void finalText(const QString &text);
++
++private:
++    enum class Phase { Idle, Starting, Listening, Transcribing };
++
++    void setPhase(Phase phase);
++    void setMessage(const QString &message, int timeoutMs = 4000);
++    void updateAvailable();
++    void stopSession();
++    void sendCancel(quint64 id);
++    QDBusPendingCallWatcher *call(const QString &method, const QList<QVariant> &args, int timeoutMs);
++
++    Q_SLOT void onStatusChanged(const QString &state, bool micActive);
++    Q_SLOT void onServiceRegistered();
++    Q_SLOT void onServiceUnregistered();
++
++    QDBusConnection m_bus;
++    QString m_service;
++    QDBusServiceWatcher *m_watcher;
++    QTimer m_messageTimer;
++    QElapsedTimer m_listenClock;
++
++    bool m_enabled = false;
++    bool m_allowed = true;
++    bool m_registered = false;
++    bool m_available = false;
++
++    Phase m_phase = Phase::Idle;
++    QString m_message;
++    quint64 m_id = 0;
++    // Bumped on every invalidate(); replies carry the value they were sent with.
++    quint64 m_generation = 0;
++    bool m_stopWhenStarted = false;
++};
++
++} // namespace MaliitKeyboard
++
++#endif // MALIIT_KEYBOARD_DICTATIONBRIDGE_H
+diff --git a/src/plugin/inputmethod.cpp b/src/plugin/inputmethod.cpp
+index 23cacca..22a8c23 100644
+--- a/src/plugin/inputmethod.cpp
++++ b/src/plugin/inputmethod.cpp
+@@ -92,6 +92,16 @@ InputMethod::InputMethod(MAbstractInputMethodHost *host)
+ {
+     Q_D(InputMethod);
+ 
++    // FP6: microphone key for on-device dictation. The bridge talks to
++    // com.fairphone6.Dictation1; the key (qml/keys/MicKey.qml) is shown when
++    // the dictation-key setting is on and the service is running. Created
++    // first: the register*() calls below can already reset() the editor.
++    d->dictation = new DictationBridge(QDBusConnection::sessionBus(), this);
++    d->dictation->setEnabled(d->m_settings.dictationKey());
++    connect(&d->m_settings, &KeyboardSettings::dictationKeyChanged,
++            d->dictation, &DictationBridge::setEnabled);
++    connect(d->dictation, &DictationBridge::finalText, this, &InputMethod::onDictationText);
++
+     // FIXME: Reconnect feedback instance.
+     Setup::connectAll(&d->event_handler, &d->editor);
+     connect(&d->editor,  &AbstractTextEditor::autoCapsActivated, this, &InputMethod::activateAutocaps);
+@@ -139,6 +149,8 @@ InputMethod::InputMethod(MAbstractInputMethodHost *host)
+     d->animationEnabled = animationOk && animationEnv != 0;
+     Q_EMIT animationEnabledChanged();
+ 
++    d->view->rootContext()->setContextProperty(QStringLiteral("dictation"), d->dictation);
++
+     QString prefix = qgetenv("KEYBOARD_PREFIX_PATH");
+     if (!prefix.isEmpty()) {
+         d->view->setSource(QUrl::fromLocalFile(prefix + QDir::separator() + g_maliit_keyboard_qml));
+@@ -170,6 +182,8 @@ void InputMethod::show()
+ void InputMethod::hide()
+ {
+     Q_D(InputMethod);
++    if (d->dictation)
++        d->dictation->invalidate();
+     d->m_geometry->setShown(false);
+ }
+ 
+@@ -189,6 +203,9 @@ void InputMethod::reset()
+     //we need to clear preedit/word candidates in this case
+     qDebug() << "inputMethod::reset()";
+     Q_D(InputMethod);
++    // FP6: a result still on its way must not land in the next field.
++    if (d->dictation)
++        d->dictation->invalidate();
+     d->editor.clearPreedit();
+     d->previous_position = -1;
+     Q_EMIT keyboardReset();
+@@ -238,6 +255,10 @@ QString InputMethod::activeSubView(Maliit::HandlerState state) const
+ 
+ void InputMethod::handleFocusChange(bool focusIn)
+ {
++    Q_D(InputMethod);
++    // FP6: focus moved (in or out): drop any dictation for the old field.
++    if (d->dictation)
++        d->dictation->invalidate();
+     if (!focusIn) {
+         hide();
+     }
+@@ -449,6 +470,9 @@ void InputMethod::update()
+ 
+     updateAutoCaps();
+ 
++    if (d->dictation)
++        d->dictation->setAllowed(d->fieldAllowsDictation());
++
+     QString text;
+     int position;
+     bool ok = d->host->surroundingText(text, position);
+@@ -648,6 +672,32 @@ void InputMethod::setActiveLanguage(const QString &newLanguage)
+     Q_EMIT activeLanguageChanged(d->activeLanguage);
+ }
+ 
++//! \brief InputMethod::onDictationText commits recognised dictation text at
++//! the cursor through the input method host, like a word picked from the
++//! ribbon. The bridge only emits it for the input context the dictation was
++//! started in; the field is checked once more here. No key events, no
++//! clipboard, and the word engine does not see (or auto-correct) the text.
++void InputMethod::onDictationText(const QString &text)
++{
++    Q_D(InputMethod);
++    if (!d->m_geometry->shown() || !d->fieldAllowsDictation())
++        return;
++
++    d->editor.commitPreedit();
++    const QString left = d->editor.text()->surroundingLeft();
++    const QString right = d->editor.text()->surroundingRight();
++    const QString commit = DictationBridge::spaced(left, right, text);
++    if (commit.isEmpty())
++        return;
++
++    d->host->sendCommitString(commit);
++    // Keep the local copy in step until the client reports the new text.
++    d->editor.text()->setSurrounding(left + commit + right);
++    d->editor.text()->setSurroundingOffset(left.length() + commit.length());
++    d->editor.wordEngine()->clearCandidates();
++    checkAutocaps();
++}
++
+ void InputMethod::onWordEnginePluginChanged()
+ {
+     reset();
+diff --git a/src/plugin/inputmethod.h b/src/plugin/inputmethod.h
+index f29ae7e..2916e95 100644
+--- a/src/plugin/inputmethod.h
++++ b/src/plugin/inputmethod.h
+@@ -188,6 +188,8 @@ private:
+ 
+     Q_SLOT void onWordEnginePluginChanged();
+ 
++    Q_SLOT void onDictationText(const QString &text);
++
+     void checkAutocaps();
+ 
+     const QScopedPointer<InputMethodPrivate> d_ptr;
+diff --git a/src/plugin/inputmethod_p.h b/src/plugin/inputmethod_p.h
+index 749ff3d..0ef37d6 100644
+--- a/src/plugin/inputmethod_p.h
++++ b/src/plugin/inputmethod_p.h
+@@ -18,6 +18,7 @@
+ #include "coreutils.h"
+ 
+ #include "device.h"
++#include "dictationbridge.h"
+ #include "editor.h"
+ #include "feedback.h"
+ #include "gettext.h"
+@@ -97,6 +98,9 @@ public:
+ 
+     WordRibbon* wordRibbon;
+ 
++    // FP6: microphone key <-> com.fairphone6.Dictation1 (dictationbridge.h)
++    DictationBridge* dictation = nullptr;
++
+     int previous_position;
+ 
+     QStringList languagesPaths;
+@@ -330,6 +334,27 @@ public:
+                         q, &InputMethod::opacityChanged);
+     }
+ 
++    // FP6: dictation only goes into plain text fields, never into hidden
++    // (password, PIN) or sensitive ones. Checked when the field is updated
++    // and again just before committing a result.
++    bool fieldAllowsDictation()
++    {
++        bool valid = true;
++        const int type = host->contentType(valid);
++        if (valid && type != Maliit::FreeTextContentType)
++            return false;
++        valid = true;
++        if (host->hiddenText(valid) && valid)
++            return false;
++        const QVariant hints = host->inputMethodQuery(Qt::ImHints);
++        if (hints.isValid()) {
++            const auto h = static_cast<Qt::InputMethodHints>(hints.toInt());
++            if (h & (Qt::ImhHiddenText | Qt::ImhSensitiveData))
++                return false;
++        }
++        return true;
++    }
++
+     void closeOskWindow()
+     {
+         if (!view->isVisible())
+@@ -337,6 +362,9 @@ public:
+ 
+         host->notifyImInitiatedHiding();
+ 
++        if (dictation)
++            dictation->invalidate();
++
+         m_geometry->setShown(false);
+ 
+         editor.clearPreedit();
+diff --git a/src/plugin/keyboardsettings.cpp b/src/plugin/keyboardsettings.cpp
+index f64af95..d1ec6d7 100644
+--- a/src/plugin/keyboardsettings.cpp
++++ b/src/plugin/keyboardsettings.cpp
+@@ -50,6 +50,7 @@ const QLatin1String DISABLE_HEIGHT_KEY = QLatin1String("disableHeight");
+ const QLatin1String PLUGIN_PATHS_KEY = QLatin1String("pluginPaths");
+ const QLatin1String OPACITY_KEY = QLatin1String("opacity");
+ const QLatin1String THEME_KEY = QLatin1String("theme");
++const QLatin1String DICTATION_KEY_KEY = QLatin1String("dictationKey");
+ 
+ /*!
+  * \brief KeyboardSettings::KeyboardSettings class to load the settings, and
+@@ -308,8 +309,13 @@ void KeyboardSettings::settingUpdated(const QString &key)
+     } else if (key == THEME_KEY) {
+         Q_EMIT themeChanged(theme());
+         return;
+-    } else if (key == "device")
++    } else if (key == DICTATION_KEY_KEY) {
++        Q_EMIT dictationKeyChanged(dictationKey());
++        return;
++    } else if (key == "device") {
+         Q_EMIT deviceChanged(device());
++        return;
++    }
+ 
+     qWarning() << Q_FUNC_INFO << "unknown settings key:" << key;
+ }
+@@ -318,3 +324,12 @@ QString KeyboardSettings::device() const
+ {
+     return m_settings->get("device").toString();
+ }
++
++/*!
++ * \brief KeyboardSettings::dictationKey returns true if the microphone key
++ * for on-device dictation should be shown (FP6)
++ */
++bool KeyboardSettings::dictationKey() const
++{
++    return m_settings->get(DICTATION_KEY_KEY).toBool();
++}
+diff --git a/src/plugin/keyboardsettings.h b/src/plugin/keyboardsettings.h
+index 7e28513..20d93b0 100644
+--- a/src/plugin/keyboardsettings.h
++++ b/src/plugin/keyboardsettings.h
+@@ -64,6 +64,7 @@ public:
+     double opacity() const;
+     QString theme() const;
+     QString device() const;
++    bool dictationKey() const;
+ 
+ Q_SIGNALS:
+     void activeLanguageChanged(QString);
+@@ -83,6 +84,7 @@ Q_SIGNALS:
+     void opacityChanged(double);
+     void themeChanged(const QString&);
+     void deviceChanged(const QString&);
++    void dictationKeyChanged(bool);
+ 
+ private:
+     Q_SLOT void settingUpdated(const QString &key);
+diff --git a/tests/fp6/dictationbridge_test.cpp b/tests/fp6/dictationbridge_test.cpp
+new file mode 100644
+index 0000000..2e76af5
+--- /dev/null
++++ b/tests/fp6/dictationbridge_test.cpp
+@@ -0,0 +1,304 @@
++/*
++ * FP6: tests for DictationBridge (src/plugin/dictationbridge.cpp) against
++ * FakeDictationService on a private session bus. No microphone, synthetic
++ * text only. Run under a private dbus-daemon (see keyboard/overlay.nix).
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU Lesser General Public License as published by
++ * the Free Software Foundation; version 3.
++ */
++
++#include "dictationbridge.h"
++#include "fake_dictation_service.h"
++
++#include <QCoreApplication>
++#include <QElapsedTimer>
++#include <QtDBus/QDBusConnection>
++#include <QtDBus/QDBusConnectionInterface>
++
++#include <cstdio>
++#include <cstdlib>
++#include <functional>
++
++using MaliitKeyboard::DictationBridge;
++
++namespace {
++int failures = 0;
++
++void check(bool ok, const char *what, int line)
++{
++    if (!ok) {
++        std::fprintf(stderr, "FAIL line %d: %s\n", line, what);
++        ++failures;
++    }
++}
++#define CHECK(x) check((x), #x, __LINE__)
++#define CHECK_EQ(a, b) check((a) == (b), #a " == " #b, __LINE__)
++
++bool waitFor(const std::function<bool()> &pred, int ms = 3000)
++{
++    QElapsedTimer t;
++    t.start();
++    while (!pred()) {
++        if (t.elapsed() > ms)
++            return false;
++        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
++    }
++    return true;
++}
++
++void settle(int ms = 150)
++{
++    QElapsedTimer t;
++    t.start();
++    while (t.elapsed() < ms)
++        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
++}
++
++struct Fixture {
++    explicit Fixture(FakeDictationService &fake) : fake(fake)
++    {
++        fake.calls.clear();
++        fake.text = QStringLiteral("hello from the fake service");
++        fake.startError.clear();
++        fake.startDelayMs = 0;
++        fake.stopDelayMs = 0;
++        fake.activeId = 0;
++        bridge.reset(new DictationBridge(QDBusConnection::sessionBus()));
++        QObject::connect(bridge.data(), &DictationBridge::finalText,
++                         [this](const QString &t) { texts << t; });
++        bridge->setEnabled(true);
++        waitFor([this]() { return bridge->available(); });
++    }
++    FakeDictationService &fake;
++    QScopedPointer<DictationBridge> bridge;
++    QStringList texts;
++};
++
++void testSpacing()
++{
++    CHECK_EQ(DictationBridge::spaced("", "", " Hello world. "), QStringLiteral("Hello world. "));
++    CHECK_EQ(DictationBridge::spaced("Hi", "", "there"), QStringLiteral(" there "));
++    CHECK_EQ(DictationBridge::spaced("Hi ", "", "there"), QStringLiteral("there "));
++    CHECK_EQ(DictationBridge::spaced("Hi\n", "", "there"), QStringLiteral("there "));
++    CHECK_EQ(DictationBridge::spaced("a", " b", "x"), QStringLiteral(" x"));
++    CHECK_EQ(DictationBridge::spaced("a", ".", "x"), QStringLiteral(" x"));
++    CHECK_EQ(DictationBridge::spaced("a", "b", "x"), QStringLiteral(" x "));
++    CHECK_EQ(DictationBridge::spaced("Bună", "", "ziua, ce faci?"), QStringLiteral(" ziua, ce faci? "));
++    CHECK(DictationBridge::spaced("a", "b", "   ").isEmpty());
++}
++
++void testErrors()
++{
++    CHECK_EQ(DictationBridge::describeError("Model missing or incomplete; run fp6-dictate download base-q5_1"),
++             QStringLiteral("no-model"));
++    CHECK_EQ(DictationBridge::describeError("Busy"), QStringLiteral("busy"));
++    CHECK_EQ(DictationBridge::describeError("Recording limit reached; audio discarded"), QStringLiteral("limit"));
++    CHECK_EQ(DictationBridge::describeError("Cannot start PipeWire capture"), QStringLiteral("failed"));
++}
++
++void testAvailability(FakeDictationService &fake)
++{
++    DictationBridge b(QDBusConnection::sessionBus());
++    settle();
++    CHECK(b.serviceRegistered());
++    CHECK(!b.available()); // setting off by default
++    b.setEnabled(true);
++    CHECK(b.available());
++    b.setAllowed(false); // password field
++    CHECK(!b.available());
++    b.toggle();
++    CHECK_EQ(b.phase(), QStringLiteral("idle"));
++    CHECK_EQ(b.message(), QStringLiteral("not-here"));
++    settle();
++    CHECK(fake.calls.isEmpty());
++    b.setAllowed(true);
++    CHECK(b.available());
++    fake.calls.clear();
++}
++
++void testTapTap(FakeDictationService &fake)
++{
++    Fixture f(fake);
++    CHECK(f.bridge->available());
++    f.bridge->toggle();
++    CHECK_EQ(f.bridge->phase(), QStringLiteral("starting"));
++    CHECK(f.bridge->listening());
++    CHECK(waitFor([&]() { return f.bridge->phase() == QLatin1String("listening"); }));
++    f.bridge->toggle();
++    CHECK_EQ(f.bridge->phase(), QStringLiteral("transcribing"));
++    CHECK(f.bridge->busy());
++    f.bridge->toggle(); // tap while transcribing: ignored
++    CHECK(waitFor([&]() { return f.bridge->phase() == QLatin1String("idle"); }));
++    settle();
++    CHECK_EQ(f.texts, QStringList { QStringLiteral("hello from the fake service") });
++    CHECK_EQ(fake.calls, (QStringList { "Start", "Stop 1" }));
++    CHECK(f.bridge->message().isEmpty());
++}
++
++void testSecondTapBeforeStartReply(FakeDictationService &fake)
++{
++    Fixture f(fake);
++    fake.startDelayMs = 200;
++    f.bridge->toggle();
++    f.bridge->toggle(); // still starting
++    CHECK(waitFor([&]() { return !f.texts.isEmpty(); }));
++    CHECK_EQ(f.texts.size(), 1);
++    CHECK_EQ(fake.calls.size(), 2);
++    CHECK(fake.calls.value(1).startsWith("Stop "));
++}
++
++void testInvalidateWhileTranscribing(FakeDictationService &fake)
++{
++    Fixture f(fake);
++    fake.stopDelayMs = 300;
++    f.bridge->toggle();
++    CHECK(waitFor([&]() { return f.bridge->phase() == QLatin1String("listening"); }));
++    f.bridge->toggle();
++    f.bridge->invalidate(); // focus moved to another field
++    CHECK_EQ(f.bridge->phase(), QStringLiteral("idle"));
++    settle(600);
++    CHECK(f.texts.isEmpty());
++    CHECK(fake.calls.contains(fake.calls.value(1).replace("Stop", "Cancel")));
++    CHECK_EQ(fake.activeId, 0u);
++}
++
++void testInvalidateWhileStarting(FakeDictationService &fake)
++{
++    Fixture f(fake);
++    fake.startDelayMs = 200;
++    f.bridge->toggle();
++    f.bridge->invalidate();
++    CHECK_EQ(f.bridge->phase(), QStringLiteral("idle"));
++    CHECK(waitFor([&]() { return fake.calls.size() == 2; }));
++    CHECK(fake.calls.value(1).startsWith("Cancel "));
++    settle();
++    CHECK_EQ(fake.activeId, 0u); // microphone released
++    CHECK(f.texts.isEmpty());
++}
++
++void testCancel(FakeDictationService &fake)
++{
++    Fixture f(fake);
++    f.bridge->toggle();
++    CHECK(waitFor([&]() { return f.bridge->phase() == QLatin1String("listening"); }));
++    f.bridge->cancel(); // long-press
++    CHECK_EQ(f.bridge->phase(), QStringLiteral("idle"));
++    CHECK(waitFor([&]() { return fake.activeId == 0; }));
++    CHECK(f.texts.isEmpty());
++}
++
++void testStartErrors(FakeDictationService &fake)
++{
++    Fixture f(fake);
++    fake.startError = QStringLiteral("Model missing or incomplete; run fp6-dictate download base-q5_1");
++    f.bridge->toggle();
++    CHECK(waitFor([&]() { return f.bridge->phase() == QLatin1String("idle"); }));
++    CHECK_EQ(f.bridge->message(), QStringLiteral("no-model"));
++
++    fake.startError.clear();
++    fake.activeId = 99; // someone else is dictating
++    f.bridge->toggle();
++    CHECK(waitFor([&]() { return f.bridge->message() == QLatin1String("busy"); }));
++    CHECK_EQ(f.bridge->phase(), QStringLiteral("idle"));
++    fake.activeId = 0;
++
++    // A new tap clears the message and works.
++    f.bridge->toggle();
++    CHECK(f.bridge->message().isEmpty());
++    CHECK(waitFor([&]() { return f.bridge->phase() == QLatin1String("listening"); }));
++    f.bridge->toggle();
++    CHECK(waitFor([&]() { return f.texts.size() == 1; }));
++}
++
++void testEmptyResult(FakeDictationService &fake)
++{
++    Fixture f(fake);
++    fake.text = QStringLiteral("  ");
++    f.bridge->toggle();
++    CHECK(waitFor([&]() { return f.bridge->phase() == QLatin1String("listening"); }));
++    f.bridge->toggle();
++    CHECK(waitFor([&]() { return f.bridge->phase() == QLatin1String("idle"); }));
++    CHECK(f.texts.isEmpty());
++    CHECK_EQ(f.bridge->message(), QStringLiteral("nothing-heard"));
++}
++
++void testEndsOnItsOwn(FakeDictationService &fake)
++{
++    Fixture f(fake);
++    f.bridge->toggle();
++    CHECK(waitFor([&]() { return f.bridge->phase() == QLatin1String("listening"); }));
++    fake.endOnItsOwn(); // capture failed / limit
++    CHECK(waitFor([&]() { return f.bridge->phase() == QLatin1String("idle"); }));
++    CHECK_EQ(f.bridge->message(), QStringLiteral("failed"));
++    f.bridge->toggle(); // starts a fresh session
++    CHECK(waitFor([&]() { return f.bridge->phase() == QLatin1String("listening"); }));
++    f.bridge->toggle();
++    CHECK(waitFor([&]() { return f.texts.size() == 1; }));
++}
++
++void testServiceGoesAway(FakeDictationService &fake, QDBusConnection &serviceBus)
++{
++    Fixture f(fake);
++    f.bridge->toggle();
++    CHECK(waitFor([&]() { return f.bridge->phase() == QLatin1String("listening"); }));
++    CHECK(serviceBus.unregisterService(DictationBridge::DefaultService));
++    CHECK(waitFor([&]() { return !f.bridge->available(); }));
++    CHECK_EQ(f.bridge->phase(), QStringLiteral("idle"));
++    CHECK_EQ(f.bridge->message(), QStringLiteral("failed"));
++    fake.activeId = 0;
++    CHECK(serviceBus.registerService(DictationBridge::DefaultService));
++    CHECK(waitFor([&]() { return f.bridge->available(); }));
++}
++
++void testSettingOffCancels(FakeDictationService &fake)
++{
++    Fixture f(fake);
++    f.bridge->toggle();
++    CHECK(waitFor([&]() { return f.bridge->phase() == QLatin1String("listening"); }));
++    f.bridge->setEnabled(false);
++    CHECK(!f.bridge->available());
++    CHECK_EQ(f.bridge->phase(), QStringLiteral("idle"));
++    CHECK(waitFor([&]() { return fake.activeId == 0; }));
++}
++
++} // namespace
++
++int main(int argc, char **argv)
++{
++    QCoreApplication app(argc, argv);
++
++    testSpacing();
++    testErrors();
++
++    if (!QDBusConnection::sessionBus().isConnected()) {
++        std::fprintf(stderr, "dictationbridge_test: no session bus (run under dbus-run-session)\n");
++        return 2;
++    }
++    QDBusConnection serviceBus = QDBusConnection::connectToBus(QDBusConnection::SessionBus,
++                                                               QStringLiteral("fp6-fake-dictation"));
++    FakeDictationService fake(serviceBus);
++    if (!fake.registerOn(DictationBridge::DefaultService)) {
++        std::fprintf(stderr, "dictationbridge_test: cannot register the fake service\n");
++        return 2;
++    }
++
++    testAvailability(fake);
++    testTapTap(fake);
++    testSecondTapBeforeStartReply(fake);
++    testInvalidateWhileTranscribing(fake);
++    testInvalidateWhileStarting(fake);
++    testCancel(fake);
++    testStartErrors(fake);
++    testEmptyResult(fake);
++    testEndsOnItsOwn(fake);
++    testServiceGoesAway(fake, serviceBus);
++    testSettingOffCancels(fake);
++
++    if (failures) {
++        std::fprintf(stderr, "dictationbridge_test: %d failure(s)\n", failures);
++        return 1;
++    }
++    std::printf("dictationbridge_test: ok\n");
++    return 0;
++}
+diff --git a/tests/fp6/fake_dictation_main.cpp b/tests/fp6/fake_dictation_main.cpp
+new file mode 100644
+index 0000000..ad71b49
+--- /dev/null
++++ b/tests/fp6/fake_dictation_main.cpp
+@@ -0,0 +1,31 @@
++/*
++ * FP6: fp6-fake-dictation [TEXT] - serves FakeDictationService as
++ * com.fairphone6.Dictation1 on the session bus for the keyboard render
++ * harness. Stop answers TEXT (synthetic); no microphone is used.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU Lesser General Public License as published by
++ * the Free Software Foundation; version 3.
++ */
++
++#include "fake_dictation_service.h"
++
++#include <QCoreApplication>
++#include <cstdio>
++
++int main(int argc, char **argv)
++{
++    QCoreApplication app(argc, argv);
++    QDBusConnection bus = QDBusConnection::sessionBus();
++    FakeDictationService fake(bus);
++    if (argc > 1)
++        fake.text = QString::fromUtf8(argv[1]);
++    fake.stopDelayMs = 1500; // long enough to see the "transcribing" state
++    if (!fake.registerOn(QStringLiteral("com.fairphone6.Dictation1"))) {
++        std::fprintf(stderr, "fp6-fake-dictation: cannot register on the session bus\n");
++        return 1;
++    }
++    std::printf("fp6-fake-dictation: ready\n");
++    std::fflush(stdout);
++    return app.exec();
++}
+diff --git a/tests/fp6/fake_dictation_service.h b/tests/fp6/fake_dictation_service.h
+new file mode 100644
+index 0000000..ea912d0
+--- /dev/null
++++ b/tests/fp6/fake_dictation_service.h
+@@ -0,0 +1,137 @@
++/*
++ * FP6 test helper: a stand-in for com.fairphone6.Dictation1 (the real one is
++ * nixos-fp6/feature-push/dictation, Rust). It never touches a microphone:
++ * Stop answers with a fixed synthetic text. Used by dictationbridge_test.cpp
++ * and, as fp6-fake-dictation, by the keyboard render harness.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU Lesser General Public License as published by
++ * the Free Software Foundation; version 3.
++ */
++
++#ifndef FP6_FAKE_DICTATION_SERVICE_H
++#define FP6_FAKE_DICTATION_SERVICE_H
++
++#include <QStringList>
++#include <QTimer>
++#include <QtDBus/QDBusConnection>
++#include <QtDBus/QDBusMessage>
++#include <QtDBus/QDBusVirtualObject>
++
++class FakeDictationService : public QDBusVirtualObject
++{
++public:
++    static constexpr const char *Path = "/com/fairphone6/Dictation1";
++    static constexpr const char *Iface = "com.fairphone6.Dictation1";
++
++    explicit FakeDictationService(const QDBusConnection &bus) : m_bus(bus) {}
++
++    // Behaviour knobs.
++    QString text = QStringLiteral("hello from the fake service");
++    QString startError;           // non-empty: Start fails with this message
++    int startDelayMs = 0;
++    int stopDelayMs = 0;
++
++    // What happened (method names with ids, in order).
++    QStringList calls;
++    quint64 activeId = 0;
++    QString state = QStringLiteral("idle");
++
++    bool registerOn(const QString &name)
++    {
++        return m_bus.registerVirtualObject(QString::fromLatin1(Path), this)
++            && m_bus.registerService(name);
++    }
++
++    // End the session as the 30 s limit would.
++    void endOnItsOwn()
++    {
++        activeId = 0;
++        setState(QStringLiteral("idle"));
++    }
++
++    QString introspect(const QString &) const override
++    {
++        return QStringLiteral(
++            "<interface name=\"com.fairphone6.Dictation1\">"
++            "<method name=\"Start\"><arg name=\"id\" type=\"t\" direction=\"out\"/></method>"
++            "<method name=\"Stop\"><arg name=\"id\" type=\"t\" direction=\"in\"/><arg name=\"text\" type=\"s\" direction=\"out\"/></method>"
++            "<method name=\"Cancel\"><arg name=\"id\" type=\"t\" direction=\"in\"/></method>"
++            "<signal name=\"StatusChanged\"><arg name=\"state\" type=\"s\"/><arg name=\"mic_active\" type=\"b\"/></signal>"
++            "</interface>");
++    }
++
++    bool handleMessage(const QDBusMessage &message, const QDBusConnection &connection) override
++    {
++        if (message.interface() != QLatin1String(Iface))
++            return false;
++        const QString member = message.member();
++        QDBusConnection bus(connection);
++        message.setDelayedReply(true);
++
++        if (member == QLatin1String("Start")) {
++            calls << QStringLiteral("Start");
++            QTimer::singleShot(startDelayMs, [this, message, bus]() mutable {
++                if (!startError.isEmpty()) {
++                    bus.send(message.createErrorReply(QStringLiteral("org.freedesktop.DBus.Error.Failed"), startError));
++                    return;
++                }
++                if (activeId != 0) {
++                    bus.send(message.createErrorReply(QStringLiteral("org.freedesktop.DBus.Error.Failed"), QStringLiteral("Busy")));
++                    return;
++                }
++                activeId = ++m_next;
++                setState(QStringLiteral("recording"));
++                bus.send(message.createReply(QVariant::fromValue<qulonglong>(activeId)));
++            });
++            return true;
++        }
++
++        const quint64 id = message.arguments().value(0).toULongLong();
++        if (member == QLatin1String("Stop")) {
++            calls << QStringLiteral("Stop %1").arg(id);
++            if (id == 0 || id != activeId) {
++                bus.send(message.createErrorReply(QStringLiteral("org.freedesktop.DBus.Error.Failed"), QStringLiteral("No session")));
++                return true;
++            }
++            setState(QStringLiteral("transcribing"));
++            QTimer::singleShot(stopDelayMs, [this, message, bus, id]() mutable {
++                if (activeId != id) { // cancelled meanwhile
++                    bus.send(message.createErrorReply(QStringLiteral("org.freedesktop.DBus.Error.Failed"), QStringLiteral("Cancelled")));
++                    return;
++                }
++                activeId = 0;
++                setState(QStringLiteral("idle")); // the real service signals idle before replying
++                bus.send(message.createReply(text));
++            });
++            return true;
++        }
++        if (member == QLatin1String("Cancel")) {
++            calls << QStringLiteral("Cancel %1").arg(id);
++            if (id == 0 || id != activeId) {
++                bus.send(message.createErrorReply(QStringLiteral("org.freedesktop.DBus.Error.Failed"), QStringLiteral("No session")));
++                return true;
++            }
++            activeId = 0;
++            setState(QStringLiteral("idle"));
++            bus.send(message.createReply());
++            return true;
++        }
++        return false;
++    }
++
++private:
++    void setState(const QString &s)
++    {
++        state = s;
++        QDBusMessage sig = QDBusMessage::createSignal(QString::fromLatin1(Path), QString::fromLatin1(Iface),
++                                                      QStringLiteral("StatusChanged"));
++        sig << s << (s == QLatin1String("recording"));
++        m_bus.send(sig);
++    }
++
++    QDBusConnection m_bus;
++    quint64 m_next = 0;
++};
++
++#endif
