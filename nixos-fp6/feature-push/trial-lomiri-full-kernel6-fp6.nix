@@ -108,6 +108,11 @@ let
       # after unlock; KDE Connect peer replies. Overlay lib.mkOrder 3700.
       # nixos-fp6/feature-push/notifications/inline-reply/README.md
       ({ ... }: { imports = [ ./notifications/inline-reply/inline-reply-fp6.nix ]; hardware.fairphone6.inlineReply.enable = true; })
+      # Refresh rate / Smooth display (Settings > Brightness & Display, opt-in
+      # quick-settings tile). OFF until a supervised RAM-boot test; needs the
+      # kernel7 candidate panel patches 0009/0010 for more than 120 Hz.
+      # results/feature-push-20261024/refresh-rate/README.md
+      ({ ... }: { imports = [ ./refresh-rate/refresh-rate-fp6.nix ]; hardware.fairphone6.refreshRate.enable = false; })
       ({ config, lib, ... }: let
       kernel = config.mobile.boot.stage-1.kernel.package;
     in {
